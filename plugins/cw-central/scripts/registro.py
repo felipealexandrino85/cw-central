@@ -411,7 +411,8 @@ AGENTES = {"context-mapper": ("corte", "mapeando o vídeo"), "clip-hunter": ("co
            "orquestrador-cortes": (None, "orquestrador"), "hub-cortes": (None, "hub")}
 # Quando o comando não é de um script do cw-cortes: reconhece pelo que ele faz (qualquer editor, qualquer agente).
 GENERICO = [
-    (r"rclone|gdrive|drive\.google|youtube.*upload|upload|publica", "entrega", "entregando"),
+    (r"rclone\s+(copy|copyto|move|moveto|sync)\b|gdrive\s+(files\s+)?upload|youtube.*upload|upload_(video|youtube)|publica_youtube",
+     "entrega", "entregando"),
     (r"whisper|transcri|speech.?to.?text|assemblyai|deepgram", "transcricao", "transcrevendo"),
     (r"(final|master|export|render|entrega|pronto)[^/\s\"']*\.(mp4|mov)\b", "render", "renderizando a versão final"),
     (r"\.(srt|ass|vtt)\b|subtitles=|legend|caption", "motion", "legendando"),
@@ -474,15 +475,65 @@ PASTA_TRABALHO = re.compile(r"CW-Work/(reels|episodios|cwstudio)/([^/\s\"']+)")
 ENVIO_MIN_S = 20  # entre um envio e outro à central disparado pela atividade (o vigia manda a cada minuto)
 
 
+# Verificador: comando que só lista, conta ou consulta arquivos (relatório, varredura de pasta) não é edição,
+# mesmo citando "final.mp4". Só processamento de verdade (ffmpeg, whisper, scripts de edição) abre e move etapas.
+INVENTARIO = {"ls", "find", "du", "stat", "mdls", "mdfind", "wc", "cat", "head", "tail", "grep", "egrep", "rg", "sort",
+              "uniq", "awk", "sed", "cut", "tr", "echo", "printf", "xargs", "tree", "file", "basename", "dirname", "date",
+              "cd", "pwd", "test", "[", "true", "false", "column", "nl", "jq", "realpath", "readlink", "ffprobe",
+              "mediainfo", "exiftool", "sleep", "export", "set", "which", "command", "type", "env", "printenv"}
+RCLONE_CONSULTA = re.compile(r"\brclone\s+(ls|lsd|lsl|lsf|lsjson|size|about|tree|cat|check|listremotes)\b")
+PROCESSA = re.compile(r"\b(ffmpeg|melt|handbrake(cli)?|auto-editor|whisper|faster_whisper|mlx_whisper|moviepy|remotion"
+                      r"|sox|magick|vspipe|afconvert)\b", re.I)
+
+
+def programas(cmd):
+    """Programas chamados no comando (o primeiro nome de cada trecho entre ; && || | e quebras de linha)."""
+    corpo = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\s*(?=\n|$)", "", cmd, flags=re.S)
+    saida = []
+    for trecho in re.split(r"&&|\|\||[;|\n()]|\$\(|`", corpo):
+        toks = trecho.strip().split()
+        while toks and (re.match(r"^[A-Za-z_]\w*=", toks[0]) or toks[0] in ("sudo", "time", "nice", "nohup", "!", "do",
+                                                                           "then", "else", "if", "while", "for", "done", "fi")):
+            toks = toks[1:] if toks[0] != "for" else []
+        if toks:
+            saida.append(os.path.basename(toks[0].strip("\"'")))
+    return saida
+
+
+SCRIPT_PY = re.compile(r"\bpython[0-9.]*\s+(?:-u\s+)?[^\s-][^\s]*\.py\b")
+
+
+def processa(cmd):
+    """Roda um programa de vídeo/áudio ou um script Python (arquivo .py): pode ser edição."""
+    return bool(PROCESSA.search(cmd) or SCRIPT_PY.search(cmd))
+
+
+def so_consulta(cmd):
+    """True se o comando só lista/conta/consulta arquivos (não edita nada)."""
+    if processa(cmd) or any(re.search(p, cmd, re.I) for p, _, _ in SCRIPTS):
+        return False
+    progs = programas(cmd)
+    resto = [p for p in progs if p not in INVENTARIO and p != "rclone"]
+    if "rclone" in progs and not RCLONE_CONSULTA.search(cmd):
+        return False
+    return not resto or all(p.startswith("python") for p in resto) and not re.search(r"\.(prproj|fcpxml|edl|aaf)\b|xmeml", cmd)
+
+
+GENERICOS_AGENTES = {"", "general-purpose", "Explore", "Plan", "claude-code-guide", "statusline-setup", "output-style-setup"}
+
+
 def classificar(ferramenta, entrada):
     """(etapa ou None, rótulo) do que o Claude acabou de fazer, ou None se não é passo de edição."""
     entrada = entrada or {}
     if ferramenta == "Bash":
         cmd = entrada.get("command") or ""
-        for padrao, etapa, rotulo in PREMIERE + RENDER_FINAL + SCRIPTS + GENERICO:
+        if so_consulta(cmd):
+            return None
+        regras = PREMIERE + RENDER_FINAL + SCRIPTS + GENERICO if processa(cmd) else PREMIERE + SCRIPTS + GENERICO[:1]
+        for padrao, etapa, rotulo in regras:
             if re.search(padrao, cmd, re.I):
                 return etapa, rotulo
-        if re.search(r"\bffmpeg\b|\bmelt\b|\bhandbrake", cmd):
+        if PROCESSA.search(cmd):
             return None, "processando vídeo"
         return None
     if ferramenta == "Write":
@@ -495,6 +546,8 @@ def classificar(ferramenta, entrada):
         return SKILLS.get(nome) or por_nome(nome, entrada.get("args") or "", "skill " + nome)
     if ferramenta in ("Agent", "Task"):
         nome = (entrada.get("subagent_type") or "").split(":")[-1]
+        if nome in GENERICOS_AGENTES:   # pesquisa/consulta: aparece no histórico, mas não é etapa de edição
+            return None, "{}: {}".format(nome or "agente", (entrada.get("description") or "")[:60]).rstrip(": ")
         return AGENTES.get(nome) or por_nome(nome, entrada.get("description") or "", nome or "agente")
     if "generate" in ferramenta or "upscale" in ferramenta:
         return "motion", "gerando imagem/vídeo (pago)"
@@ -784,9 +837,12 @@ def cmd_atividade(_a):
     except (OSError, ValueError):
         at = {"historico": [], "enviado": 0}
     texto_entrada = json.dumps(dados.get("tool_input") or {}, ensure_ascii=False)
-    videos = [v for v in VIDEO.findall(texto_entrada) if not NAO_E_BRUTO.search(v)]
+    videos = list(dict.fromkeys(v for v in VIDEO.findall(texto_entrada) if not NAO_E_BRUTO.search(v)))
     abriu = False
-    if videos and not at.get("video_aberto"):
+    # só abre edição com prova de trabalho no vídeo: um passo de edição de verdade, citando poucos vídeos
+    # (uma varredura que cita dezenas de arquivos é consulta, não edição)
+    prova = bool(achado and (achado[0] or dados.get("tool_name") == "Bash")) and len(videos) <= 3
+    if videos and prova and not at.get("video_aberto"):
         try:
             abrir_video(sid, videos[0], at)
             at["video_aberto"] = True
@@ -1163,7 +1219,9 @@ def atualizar_status(sid, acao):
                     t["etapa"] = "acabamento"
             usadas |= ligadas
         for sid, at in ats.items():  # editando com o plugin sem ter aberto trabalho no registro
-            if sid not in usadas and at.get("agora"):
+            # só vira "edição sem registro" se houve passo de edição de verdade (etapa); consulta não aparece
+            if sid not in usadas and at.get("agora") and not at.get("descartada") \
+                    and any(x.get("etapa") for x in at.get("historico") or []):
                 t = {"id": "sessao-" + sid[:8], "titulo": at.get("pasta") or "edição sem registro",
                      "tipo": "", "area": "", "demanda": "", "jira": "", "desde": at["historico"][0]["ts"],
                      "status": "sem registro", "agora": True}
@@ -1344,7 +1402,7 @@ def montar_resumo(eventos, dias):
         p["horas"] += t["segundos"] / 3600
         p["tokens"] += t["tokens"]
         p["custo_usd"] += t["custo_usd"]
-    abertos = [t for t in recentes if t.get("status") not in ("entregue", "cancelado")]
+    abertos = [t for t in recentes if t.get("status") not in ("entregue", "cancelado", "nao_edicao")]
     return {"gerado_em": agora(), "dias": dias, "por_pessoa": por_pessoa, "abertos": abertos,
             "trabalhos": sorted(recentes, key=lambda t: t.get("aberto_em") or ""),
             "sessoes_sem_trabalho": sem_trabalho}
@@ -1507,7 +1565,7 @@ def main():
     p.add_argument("--id", required=True)
     p = sub.add_parser("fim")
     p.add_argument("--id")
-    p.add_argument("--status", required=True, choices=["entregue", "refazer", "cancelado"])
+    p.add_argument("--status", required=True, choices=["entregue", "refazer", "cancelado", "nao_edicao"])
     p.add_argument("--pecas", type=int, default=0)
     p.add_argument("--saida")
     p.add_argument("--nota")

@@ -213,10 +213,26 @@ def enviar_status(status, timeout=3):
     if not configurada():
         return False
     try:
-        rpc("cw_pulso", timeout=timeout, p_status=status)
-        return True
+        r = rpc("cw_pulso", timeout=timeout, p_status=status)
     except ErroCentral:
         return False
+    descartar = (r or {}).get("descartar") if isinstance(r, dict) else None
+    if descartar:   # a gestão marcou como "não é edição": fecha o registro local
+        try:
+            import registro
+            abertos = registro.trabalhos_abertos()
+            for tid in descartar:
+                if tid.startswith("sessao-"):   # sessão sem vídeo aberto: marca a atividade dela como descartada
+                    for arq in registro.LOCAL.glob("atividade-{}*.json".format(tid[7:])):
+                        at = json.loads(arq.read_text())
+                        at["descartada"] = True
+                        arq.write_text(json.dumps(at, ensure_ascii=False))
+                elif tid in abertos:
+                    registro.gravar({"ev": "fim", "id": tid, "status": "nao_edicao", "pecas": 0, "saida": "",
+                                     "nota": "marcado na central como não é edição", "sessao": ""})
+        except Exception:
+            pass
+    return True
 
 
 def cmd_pulso(_a):

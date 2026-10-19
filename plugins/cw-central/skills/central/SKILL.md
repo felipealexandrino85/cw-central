@@ -54,6 +54,8 @@ material), para o vigia achar os exports. Ao terminar no Premiere, o editor diz 
 Quando o editor disser que entregou, o plugin te lembra com o id. Confirme quantas peças e rode:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/registro.py" fim --status entregue --pecas <N>`
 (`--status refazer` se voltou para ajuste, `--status cancelado` se foi abandonado; `--id` se houver mais de um vídeo).
+Se a central abriu um vídeo numa conversa que não era edição (relatório, contagem, pesquisa: "isso não era edição"),
+feche com `--status nao_edicao`: some do painel e não conta no relatório.
 Se veio da central (D-0012), entregue também lá, com o link compartilhável do Drive:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/central.py" entregar --id D-0012 --link <link> --pecas <N> --nota "<o que vale saber>"`.
 
