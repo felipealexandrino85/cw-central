@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/registro.py\" abertura || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/registro.py\" prompt || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Skill|Agent|Task|Read|Write|Edit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/registro.py\" atividade || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/registro.py\" sessao --evento Stop || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/registro.py\" sessao --evento SessionEnd || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

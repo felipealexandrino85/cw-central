@@ -1,0 +1,12 @@
+{
+  "name": "cw-studios",
+  "owner": { "name": "Cardápio Web" },
+  "description": "Plugins do CW Studios (Cardápio Web) para editores de vídeo que trabalham com o Claude.",
+  "plugins": [
+    {
+      "name": "cw-central",
+      "source": "./plugins/cw-central",
+      "description": "Acompanhamento da edição para a Central CW Studios: etapa ao vivo, tempo e entregas, com qualquer agente."
+    }
+  ]
+}
