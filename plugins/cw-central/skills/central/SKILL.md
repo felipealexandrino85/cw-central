@@ -1,6 +1,6 @@
 ---
 name: central
-description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
+description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
 ---
 
 # Central CW Studios
@@ -64,6 +64,15 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
   skill), com tokens e chaves trocados por •••. A gestão avalia na aba Kit do time.
 - O kit oficial chega sozinho ao abrir a sessão, com o prefixo `cw-kit-` (agentes em ~/.claude/agents, skills em
   ~/.claude/skills). Prefira esses fluxos ao editar. Para puxar agora: `kit.py sincronizar` (vale na próxima sessão).
+
+## Escritório (estação)
+- "Liga minha estação do escritório" → confira que está conectado (`central.py quem`) e rode
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/estacao.py" ligar`. Explique em uma linha: a partir de agora ele pode
+  escrever na central › Escritório e o Claude desta máquina executa, mesmo com esta janela fechada; o Claude age
+  sozinho só dentro da pasta do vídeo e pede OK na página para o resto. A estação sobe sozinha ao ligar o Mac.
+- "Desliga minha estação" → `estacao.py desligar`. "A estação está ligada?" → `estacao.py status`.
+- Só o próprio editor manda pedidos e aprova ações na estação dele; a gestão só acompanha. Nunca ligue a estação
+  de outra pessoa nem mude a cerca (`~/.cw-cortes/estacao/cerca.json`).
 
 ## Fila da central
 - "O que tem na fila?" → `central.py fila` (as do editor primeiro; a gestão pode ter atribuído alguma a ele).

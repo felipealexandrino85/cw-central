@@ -994,6 +994,11 @@ def cmd_abertura(_a):
                             "chegar fica disponível na próxima sessão): " + ", ".join(n.split(":", 1)[1] for n in instalados))
     except Exception:
         pass
+    try:   # escritório virtual: mantém a estação (se ligada) na mesma versão do plugin
+        import estacao
+        estacao.atualizar_se_ligada()
+    except Exception:
+        pass
     regras = regras_do_time()[:40]
     if regras:
         linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(r.get("tipo"), r.get("tipo"))) if r.get("tipo") else "", r["texto"])
