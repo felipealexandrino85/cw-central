@@ -15,6 +15,8 @@ Comandos:
   abertura                        hook SessionStart: sinal de vida e regras do time como contexto do Claude
   prompt                          hook UserPromptSubmit: liga o vídeo ao card citado (SCC-1762, D-0012) e lembra o
                                   Claude de fechar o vídeo quando o editor diz que entregou
+  vigia-premiere --trabalho ID --pasta DIR [--sessao SID]   enquanto o vídeo está em acabamento: minutos com o Premiere
+                                  em primeiro plano, exports novos (com prévia) e projeto salvo
   previa   --sessao SID --arquivo VIDEO   3 quadros (início, meio e fim) do vídeo gerado, para o card do ao vivo
   vincular [--id ID] [--jira K] [--demanda D-0012] [--titulo T] [--tipo reel|...]   corrige o vídeo aberto
   resumo   [--dias 30] [--json arquivo]  junta o registro do time (ou o local) e imprime o painel
@@ -373,9 +375,9 @@ def cmd_sessao(a):
 # ---------------------------------------------------------------- atividade ao vivo (hook PostToolUse)
 
 # Etapas da edição, na ordem do pipeline (reel, cortes e CW Studio caem nas mesmas).
-ETAPAS = ["preparo", "transcricao", "corte", "montagem", "motion", "render", "revisao", "entrega"]
+ETAPAS = ["preparo", "transcricao", "corte", "montagem", "motion", "render", "acabamento", "revisao", "entrega"]
 NOME_ETAPA = {"preparo": "Preparo", "transcricao": "Transcrição", "corte": "Corte e seleção",
-              "montagem": "Montagem", "motion": "Legenda e motion", "render": "Render",
+              "montagem": "Montagem", "motion": "Legenda e motion", "render": "Render", "acabamento": "Acabamento (Premiere)",
               "revisao": "Revisão", "entrega": "Entrega"}
 # (padrão no comando, etapa, o que aparece no painel). Primeiro que casar vence.
 SCRIPTS = [
@@ -418,6 +420,12 @@ GENERICO = [
     (r"crop=|reframe|autoframe|9:16|1080:1920", "montagem", "enquadrando"),
     (r"concat|-ss\s|-to\s|trim=|atrim|silencedetect|auto-editor", "corte", "cortando e emendando"),
 ]
+# Passagem para o Premiere (o Claude gera XML/EDL/projeto, ou abre o Premiere): vira etapa de acabamento.
+PREMIERE = [(r"\.(prproj|fcpxml|edl|aaf)\b|xmeml|premiere", "acabamento", "passando para o Premiere")]
+PROJETO_PREMIERE = re.compile(r"\.(prproj|fcpxml|edl|aaf)$", re.I)
+PEDIU_PREMIERE = re.compile(r"premiere|ajuste fino|acabamento|finalizar (?:no|na m[aã]o)", re.I)
+PREMIERE_S = int(os.environ.get("CW_PREMIERE_S", "60"))
+
 # ffmpeg/melt gravando o arquivo final (último argumento) é render, mesmo queimando legenda no caminho.
 RENDER_FINAL = [(r"\b(ffmpeg|melt)\b.*\b[^\s\"']*(final|master|export|render|pronto|entrega)[^/\s\"']*\.(mp4|mov)[\"']?\s*$",
                  "render", "renderizando a versão final")]
@@ -471,11 +479,16 @@ def classificar(ferramenta, entrada):
     entrada = entrada or {}
     if ferramenta == "Bash":
         cmd = entrada.get("command") or ""
-        for padrao, etapa, rotulo in RENDER_FINAL + SCRIPTS + GENERICO:
+        for padrao, etapa, rotulo in PREMIERE + RENDER_FINAL + SCRIPTS + GENERICO:
             if re.search(padrao, cmd, re.I):
                 return etapa, rotulo
         if re.search(r"\bffmpeg\b|\bmelt\b|\bhandbrake", cmd):
             return None, "processando vídeo"
+        return None
+    if ferramenta == "Write":
+        caminho = entrada.get("file_path") or ""
+        if PROJETO_PREMIERE.search(caminho) or (caminho.lower().endswith(".xml") and "xmeml" in (entrada.get("content") or "")[:2000]):
+            return "acabamento", "projeto do Premiere gerado"
         return None
     if ferramenta == "Skill":
         nome = (entrada.get("skill") or "").split(":")[-1]
@@ -565,6 +578,127 @@ def video_gerado(entrada):
     return None
 
 
+def app_em_frente():
+    """Nome do app em primeiro plano no macOS, sem pedir permissão (lsappinfo). '' fora do Mac."""
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=5).stdout.strip()
+        info = subprocess.run(["lsappinfo", "info", "-only", "name", asn], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r'"([^"]+)"', info)     # saída: "Adobe Premiere Pro 2025" ASN:0x0-...: (in front)
+        return m.group(1) if m else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def premiere_aberto():
+    try:
+        return subprocess.run(["pgrep", "-f", "Adobe Premiere Pro"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def arquivo_premiere(tid):
+    return LOCAL / "premiere-{}.json".format(slug(tid))
+
+
+def iniciar_vigia_premiere(sid, tid, pasta):
+    """Sobe (uma vez por vídeo) o vigia que mede o acabamento no Premiere."""
+    if not tid:
+        return
+    marca = LOCAL / ".premiere-{}.pid".format(slug(tid))
+    try:
+        if vivo(int(marca.read_text())):
+            return
+    except (OSError, ValueError):
+        pass
+    subprocess.Popen([sys.executable, __file__, "vigia-premiere", "--trabalho", tid, "--pasta", pasta or "", "--sessao", sid or ""],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def entrar_acabamento(sid, at, caminho=None):
+    """Vídeo passou para o Premiere: etapa de acabamento e vigia ligado."""
+    t = trabalho_da_sessao(sid)
+    if not t:
+        return
+    pasta = os.path.dirname(os.path.expanduser(caminho)) if caminho else os.path.dirname(os.path.expanduser(t.get("entrada") or ""))
+    iniciar_vigia_premiere(sid, t["id"], pasta)
+
+
+def cmd_vigia_premiere(a):
+    """Roda em segundo plano enquanto o vídeo está aberto (até 14 h). A cada minuto: Premiere na frente conta como
+    acabamento ativo; vídeo novo exportado na pasta vira prévia e passo; projeto salvo vira passo."""
+    LOCAL.mkdir(parents=True, exist_ok=True)
+    marca = LOCAL / ".premiere-{}.pid".format(slug(a.trabalho))
+    marca.write_text(str(os.getpid()))
+    arq = arquivo_premiere(a.trabalho)
+    try:
+        st = json.loads(arq.read_text())
+    except (OSError, ValueError):
+        st = {"desde": agora(), "segundos": 0, "exports": [], "passos": []}
+    inicio, ultimo_evento = time.time(), st.get("segundos", 0)
+    pasta = a.pasta if a.pasta and os.path.isdir(a.pasta) else None
+    def videos():
+        out = {}
+        if not pasta:
+            return out
+        for raiz, dirs, nomes in os.walk(pasta):
+            if raiz[len(pasta):].count(os.sep) >= 2:
+                dirs[:] = []
+            for n in nomes:
+                if MIDIA.search(n) and not re.search(r"\.(wav|mp3|m4a|aac)$", n, re.I):
+                    c = os.path.join(raiz, n)
+                    try:
+                        out[c] = (os.path.getsize(c), os.path.getmtime(c))
+                    except OSError:
+                        pass
+        return out
+    vistos, tamanhos, projeto_mtime = videos(), {}, {}
+    try:
+        while time.time() - inicio < 14 * 3600:
+            time.sleep(PREMIERE_S)
+            if a.trabalho not in trabalhos_abertos():
+                break
+            frente = app_em_frente()
+            st["rodando"] = premiere_aberto()
+            if "premiere" in frente.lower():
+                st["segundos"] = st.get("segundos", 0) + PREMIERE_S
+                st["ultimo_ativo"] = agora()
+            for c, (tam, mt) in videos().items():
+                if c in vistos or mt < inicio - 5:
+                    continue
+                if tamanhos.get(c) == tam and tam > 50000:      # parou de crescer: export terminou
+                    vistos[c] = (tam, mt)
+                    st.setdefault("exports", []).append({"arquivo": os.path.basename(c), "ts": agora()})
+                    st.setdefault("passos", []).append({"ts": agora(), "rotulo": "exportado do Premiere", "detalhe": os.path.basename(c)})
+                    subprocess.Popen([sys.executable, __file__, "previa", "--sessao", a.sessao or "x", "--trabalho", a.trabalho, "--arquivo", c],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                else:
+                    tamanhos[c] = tam
+            if pasta:
+                for raiz, _d, nomes in os.walk(pasta):
+                    for n in nomes:
+                        if n.lower().endswith(".prproj"):
+                            c = os.path.join(raiz, n)
+                            mt = os.path.getmtime(c)
+                            if c in projeto_mtime and mt > projeto_mtime[c]:
+                                st["projeto_salvo"] = agora()
+                            projeto_mtime[c] = mt
+                    break
+            st["passos"] = st.get("passos", [])[-8:]
+            tmp = arq.with_suffix(".tmp")
+            tmp.write_text(json.dumps(st, ensure_ascii=False))
+            os.replace(tmp, arq)
+            if st["segundos"] - ultimo_evento >= 300:
+                gravar({"ev": "premiere", "id": a.trabalho, "segundos": st["segundos"]})
+                ultimo_evento = st["segundos"]
+                enviar_em_segundo_plano()
+            atualizar_status(a.sessao or "", "sinal")
+    finally:
+        if st.get("segundos", 0) != ultimo_evento:
+            gravar({"ev": "premiere", "id": a.trabalho, "segundos": st.get("segundos", 0)})
+            enviar_em_segundo_plano()
+        marca.unlink(missing_ok=True)
+
+
 def cmd_previa(a):
     """3 quadros pequenos (15%, 50%, 85%) lado a lado, enviados à central para o card do ao vivo."""
     import base64
@@ -572,7 +706,7 @@ def cmd_previa(a):
     import central
     if not shutil.which("ffmpeg") or not central.configurada():
         return
-    t = trabalho_da_sessao(a.sessao) or {"id": "sessao-" + a.sessao[:8]}  # sem registro: mesmo id do card do ao vivo
+    t = {"id": a.trabalho} if getattr(a, "trabalho", None) else (trabalho_da_sessao(a.sessao) or {"id": "sessao-" + a.sessao[:8]})
     try:
         dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", a.arquivo],
                                    capture_output=True, text=True, timeout=30).stdout.strip() or 0)
@@ -669,6 +803,10 @@ def cmd_atividade(_a):
     if m:
         at["pasta"] = m.group(2)
     mudou_etapa = registrar_passo(at, etapa, rotulo, detalhar(dados.get("tool_name") or "", dados.get("tool_input")))
+    if etapa == "acabamento":
+        ent = dados.get("tool_input") or {}
+        caminho = ent.get("file_path") or next((t for t in reversed(_tokens(ent.get("command") or "")) if PROJETO_PREMIERE.search(t) or t.lower().endswith(".xml")), None)
+        entrar_acabamento(sid, at, caminho)
     if dados.get("tool_name") == "Bash" and time.time() - at.get("previa_ts", 0) > PREVIA_MIN_S:
         gerado = video_gerado(dados.get("tool_input"))
         if gerado:
@@ -780,6 +918,11 @@ def cmd_prompt(_a):
                             "`python3 \"{}\" {}` (copia o material para a pasta de trabalho, transcreve se der, escreve o "
                             "BRIEF.md e abre o vídeo na central). Depois leia o BRIEF.md e siga o fluxo de edição."
                             .format(chave, pasta, raiz / "preparar.py", chave))
+    if t and PEDIU_PREMIERE.search(texto) and not ENTREGOU.search(texto):
+        registrar_passo(at, "acabamento", "acabamento no Premiere")
+        at["enviado"] = time.time()
+        mudou = True
+        iniciar_vigia_premiere(sid, t["id"], os.path.dirname(os.path.expanduser(t.get("entrada") or "")))
     if t and ENTREGOU.search(texto):
         contexto.append(
             "Central CW Studios: o vídeo \"{}\" (registro {}) está aberto nesta sessão. Se o editor terminou, confirme "
@@ -989,7 +1132,19 @@ def atualizar_status(sid, acao):
         for t in abertos.values():
             ligadas = t.pop("_sessoes") & set(sessoes)
             t["agora"] = bool(ligadas)
+            try:
+                pr = json.loads(arquivo_premiere(t["id"]).read_text())
+                t["premiere"] = {k: pr.get(k) for k in ("desde", "segundos", "ultimo_ativo", "rodando", "projeto_salvo")}
+                t["premiere"]["ultimo_export"] = (pr.get("exports") or [None])[-1]
+                if pr.get("ultimo_ativo") and pr["ultimo_ativo"] >= (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat():
+                    t["agora"] = True     # editando no Premiere, mesmo com o Claude fechado
+            except (OSError, ValueError):
+                pass
             juntar_atividade(t, [ats[s] for s in ligadas if s in ats])
+            if t.get("premiere"):
+                t["etapa_max"] = max([t.get("etapa_max") or "acabamento", "acabamento"], key=lambda e: ETAPAS.index(e) if e in ETAPAS else -1)
+                if t["agora"] and not ligadas:
+                    t["etapa"] = "acabamento"
             usadas |= ligadas
         for sid, at in ats.items():  # editando com o plugin sem ter aberto trabalho no registro
             if sid not in usadas and at.get("agora"):
@@ -1127,6 +1282,8 @@ def montar_resumo(eventos, dias):
             t["aberto_em"] = e["ts"]
         elif e["ev"] == "vincular":
             t.update({k: e[k] for k in ("jira", "demanda", "titulo", "tipo") if e.get(k)})
+        elif e["ev"] == "premiere":
+            t["segundos_premiere"] = e.get("segundos") or 0
         elif e["ev"] == "fim":
             if e.get("status") == "refazer":
                 t["voltas"] += 1
@@ -1189,7 +1346,9 @@ def enviar_edicoes():
               "aberto_em": t.get("aberto_em"), "fechado_em": t.get("fechado_em"), "pecas": t.get("pecas"),
               "voltas": t.get("voltas", 0), "segundos": round(t.get("segundos", 0)),
               "tokens": round(t.get("tokens", 0)), "custo_usd": round(t.get("custo_usd", 0.0), 2),
-              "etapas": {k: round(v) for k, v in t.get("etapas", {}).items()},
+              "etapas": {k: round(v + (t.get("segundos_premiere") or 0 if k == "acabamento" else 0)) for k, v in
+                         dict(t.get("etapas", {}), **({"acabamento": t.get("etapas", {}).get("acabamento", 0)} if t.get("segundos_premiere") else {})).items()},
+              "segundos_premiere": round(t.get("segundos_premiere") or 0),
               "segundos_humanos": round(t.get("segundos_humanos", 0)), "interacoes": round(t.get("interacoes", 0)),
               "fluxo": t.get("fluxo", {})}
              for t in r["trabalhos"] if t.get("id") and t.get("aberto_em")]
@@ -1344,6 +1503,11 @@ def main():
     p = sub.add_parser("previa")
     p.add_argument("--sessao", required=True)
     p.add_argument("--arquivo", required=True)
+    p.add_argument("--trabalho")
+    p = sub.add_parser("vigia-premiere")
+    p.add_argument("--trabalho", required=True)
+    p.add_argument("--pasta", default="")
+    p.add_argument("--sessao", default="")
     p = sub.add_parser("vincular")
     p.add_argument("--id")
     p.add_argument("--jira")
@@ -1364,7 +1528,7 @@ def main():
     p.add_argument("--pasta")
     sub.add_parser("config")
     a = ap.parse_args()
-    {"atividade": cmd_atividade, "prompt": cmd_prompt, "abertura": cmd_abertura, "previa": cmd_previa, "vincular": cmd_vincular, "enviar": cmd_enviar, "inicio": cmd_inicio, "retomar": cmd_retomar, "fim": cmd_fim, "sessao": cmd_sessao,
+    {"atividade": cmd_atividade, "prompt": cmd_prompt, "abertura": cmd_abertura, "previa": cmd_previa, "vigia-premiere": cmd_vigia_premiere, "vincular": cmd_vincular, "enviar": cmd_enviar, "inicio": cmd_inicio, "retomar": cmd_retomar, "fim": cmd_fim, "sessao": cmd_sessao,
      "resumo": cmd_resumo, "pulso": cmd_pulso, "configurar": cmd_configurar, "config": cmd_config}[a.cmd](a)
 
 

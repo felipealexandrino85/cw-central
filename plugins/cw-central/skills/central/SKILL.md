@@ -42,6 +42,14 @@ ajuste pedido, regras do time, material) e abre o vídeo na central na etapa Pre
 - Se souber o tipo e o título logo no começo, rode o `vincular` uma vez: o relatório compara tempo por tipo.
 - Rode as etapas pelas ferramentas de verdade (whisper, ffmpeg, seus agentes): é isso que vira etapa no painel.
 
+## Acabamento no Premiere
+Quando o vídeo sai do Claude para o Premiere (XML/EDL/FCPXML/.prproj gerado, Premiere aberto, ou o editor diz
+"vou finalizar no Premiere"), o plugin muda a etapa para **Acabamento (Premiere)** e liga um vigia leve, só deste
+vídeo: a cada minuto, se o Premiere está em primeiro plano conta como acabamento ativo (lê só o nome do app em frente,
+sem permissão e sem ver a tela); um vídeo novo exportado na pasta do trabalho vira prévia na central; o `.prproj`
+salvo vira passo. O vigia para sozinho quando o vídeo é fechado. Gere o XML/projeto na pasta do trabalho (ao lado do
+material), para o vigia achar os exports. Ao terminar no Premiere, o editor diz "entreguei" como sempre.
+
 ## Ao terminar
 Quando o editor disser que entregou, o plugin te lembra com o id. Confirme quantas peças e rode:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/registro.py" fim --status entregue --pecas <N>`
