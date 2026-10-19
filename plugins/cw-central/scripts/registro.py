@@ -15,6 +15,7 @@ Comandos:
   abertura                        hook SessionStart: sinal de vida e regras do time como contexto do Claude
   prompt                          hook UserPromptSubmit: liga o vídeo ao card citado (SCC-1762, D-0012) e lembra o
                                   Claude de fechar o vídeo quando o editor diz que entregou
+  previa   --sessao SID --arquivo VIDEO   3 quadros (início, meio e fim) do vídeo gerado, para o card do ao vivo
   vincular [--id ID] [--jira K] [--demanda D-0012] [--titulo T] [--tipo reel|...]   corrige o vídeo aberto
   resumo   [--dias 30] [--json arquivo]  junta o registro do time (ou o local) e imprime o painel
   pulso    [--hook SessionStart]          sinal de vida da sessão (status.json para a central de controle);
@@ -487,6 +488,115 @@ def classificar(ferramenta, entrada):
     return None
 
 
+MIDIA = re.compile(r"\.(mp4|mov|mkv|m4v|webm|avi|mxf|mts|wav|mp3|m4a|aac)$", re.I)
+FILTROS = [(r"subtitles|\.ass\b|\.srt\b", "legenda"), (r"drawtext", "texto na tela"), (r"overlay", "sobreposição"),
+           (r"crop|scale=", "enquadramento"), (r"concat", "emenda"), (r"x?fade", "transição"),
+           (r"loudnorm|afftdn|amix|volume=", "áudio"), (r"setpts|atempo", "velocidade")]
+SEGREDO = re.compile(r"(cw_|sbp_|ATATT|sk-|ghp_|eyJ)[A-Za-z0-9_\-=.]{8,}|\b[A-Za-z0-9_\-]{32,}\b")
+PREVIA_MIN_S = 120
+
+
+def _tokens(cmd):
+    import shlex
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def detalhar(ferramenta, entrada):
+    """Uma linha legível do que o passo fez, só com nomes de arquivo (nunca caminhos nem o comando inteiro)."""
+    entrada = entrada or {}
+    if ferramenta in ("Agent", "Task"):
+        return (entrada.get("description") or "").strip()[:120] or None
+    if ferramenta == "Skill":
+        return (str(entrada.get("args") or "").strip().split("\n")[0])[:120] or None
+    if ferramenta != "Bash":
+        return None
+    cmd = entrada.get("command") or ""
+    tk = _tokens(cmd)
+    base = lambda x: os.path.basename(x.rstrip("/"))
+    if any(os.path.basename(t) in ("ffmpeg", "ffmpeg.exe") for t in tk):
+        ins, saida, val = [], None, {}
+        for i, t in enumerate(tk):
+            if t == "-i" and i + 1 < len(tk):
+                ins.append(base(tk[i + 1]))
+            elif t in ("-ss", "-to", "-t") and i + 1 < len(tk):
+                val.setdefault(t, tk[i + 1])
+        cand = [t for t in tk if MIDIA.search(t) and base(t) not in ins and not t.startswith("-")]
+        if cand:
+            saida = base(cand[-1])
+        tags = [nome for pad, nome in FILTROS if re.search(pad, cmd, re.I)]
+        txt = (", ".join(dict.fromkeys(ins))[:60] or "vídeo") + (" → " + saida if saida else "")
+        if "-ss" in val or "-to" in val or "-t" in val:
+            txt += " · trecho {}{}".format(val.get("-ss", "0"), "–" + val["-to"] if "-to" in val else (" +" + val["-t"] if "-t" in val else ""))
+        if tags:
+            txt += " · " + ", ".join(dict.fromkeys(tags))
+        return txt[:140]
+    midias = [base(t) for t in tk if MIDIA.search(t)]
+    script = next((base(t) for t in tk if re.search(r"\.(py|js|sh|ts)$", t)), None)
+    if re.search(r"whisper|transcri", cmd, re.I):
+        return ("transcrevendo " + midias[0]) if midias else "transcrevendo"
+    if script:
+        return (script + (" · " + ", ".join(dict.fromkeys(midias))[:80] if midias else ""))[:140]
+    return None
+
+
+def resumo_pedido(texto):
+    t = " ".join((texto or "").split())
+    if not t or t.startswith("<"):
+        return None
+    t = SEGREDO.sub("•••", t)
+    return t[:140] + ("…" if len(t) > 140 else "")
+
+
+def video_gerado(entrada):
+    """Arquivo de vídeo que o comando acabou de gravar (o último argumento de mídia que existe e é recente)."""
+    tk = _tokens((entrada or {}).get("command") or "")
+    agora_s = time.time()
+    for t in reversed(tk):
+        if MIDIA.search(t) and not re.search(r"\.(wav|mp3|m4a|aac)$", t, re.I):
+            caminho = os.path.expanduser(t)
+            try:
+                if os.path.getsize(caminho) > 50000 and agora_s - os.path.getmtime(caminho) < 180:
+                    return os.path.abspath(caminho)
+            except OSError:
+                continue
+    return None
+
+
+def cmd_previa(a):
+    """3 quadros pequenos (15%, 50%, 85%) lado a lado, enviados à central para o card do ao vivo."""
+    import base64
+    import tempfile
+    import central
+    if not shutil.which("ffmpeg") or not central.configurada():
+        return
+    t = trabalho_da_sessao(a.sessao) or {"id": "sessao-" + a.sessao[:8]}  # sem registro: mesmo id do card do ao vivo
+    try:
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", a.arquivo],
+                                   capture_output=True, text=True, timeout=30).stdout.strip() or 0)
+    except (ValueError, subprocess.SubprocessError, OSError):
+        return
+    if dur <= 0:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        saida = os.path.join(tmp, "previa.jpg")
+        args = ["ffmpeg", "-nostdin", "-v", "error"]
+        for f in (0.15, 0.5, 0.85):
+            args += ["-ss", "{:.2f}".format(dur * f), "-i", a.arquivo]
+        args += ["-filter_complex", "[0:v]scale=-2:220[a];[1:v]scale=-2:220[b];[2:v]scale=-2:220[c];[a][b][c]hstack=3",
+                 "-frames:v", "1", "-q:v", "7", "-y", saida]
+        if subprocess.run(args, capture_output=True, timeout=60).returncode or not os.path.exists(saida):
+            return
+        dados = base64.b64encode(open(saida, "rb").read()).decode()
+    try:
+        central.rpc("cw_previa", timeout=15, p_trabalho=t["id"], p_arquivo=os.path.basename(a.arquivo),
+                    p_imagem="data:image/jpeg;base64," + dados)
+    except central.ErroCentral:
+        pass
+
+
 def por_nome(nome, descricao, rotulo):
     """Agente ou skill fora do cw-cortes: a etapa sai do nome e da descrição da tarefa."""
     texto = "{} {}".format(nome, descricao)
@@ -558,7 +668,13 @@ def cmd_atividade(_a):
     m = PASTA_TRABALHO.search(texto_entrada)
     if m:
         at["pasta"] = m.group(2)
-    mudou_etapa = registrar_passo(at, etapa, rotulo)
+    mudou_etapa = registrar_passo(at, etapa, rotulo, detalhar(dados.get("tool_name") or "", dados.get("tool_input")))
+    if dados.get("tool_name") == "Bash" and time.time() - at.get("previa_ts", 0) > PREVIA_MIN_S:
+        gerado = video_gerado(dados.get("tool_input"))
+        if gerado:
+            at["previa_ts"] = time.time()
+            subprocess.Popen([sys.executable, __file__, "previa", "--sessao", sid, "--arquivo", gerado], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     enviar = mudou_etapa or abriu or time.time() - at.get("enviado", 0) > ENVIO_MIN_S
     if enviar:
         at["enviado"] = time.time()
@@ -569,7 +685,7 @@ def cmd_atividade(_a):
         enviar_status_em_segundo_plano(sid)
 
 
-def registrar_passo(at, etapa, rotulo):
+def registrar_passo(at, etapa, rotulo, detalhe=None):
     """Anota um passo na atividade da sessão; devolve True se a etapa mudou.
     O tempo desde o último passo vai para a etapa que estava em andamento (pausa longa não conta)."""
     if at.get("etapa") and at.get("ultimo_ts"):
@@ -581,10 +697,10 @@ def registrar_passo(at, etapa, rotulo):
     if etapa:
         at["etapa"] = etapa
         at["etapa_max"] = max([etapa, at.get("etapa_max") or etapa], key=ETAPAS.index)
-    at["agora"] = {"ts": agora(), "rotulo": rotulo, "etapa": etapa}
+    at["agora"] = {"ts": agora(), "rotulo": rotulo, "etapa": etapa, "detalhe": detalhe}
     hist = at.setdefault("historico", [])
-    if not hist or hist[-1].get("rotulo") != rotulo:
-        hist.append({"ts": agora(), "rotulo": rotulo, "etapa": etapa})
+    if not hist or hist[-1].get("rotulo") != rotulo or hist[-1].get("detalhe") != detalhe:
+        hist.append({"ts": agora(), "rotulo": rotulo, "etapa": etapa, "detalhe": detalhe})
     at["historico"] = hist[-12:]
     return mudou
 
@@ -628,6 +744,9 @@ def cmd_prompt(_a):
     if not sid:
         return
     at, contexto, mudou = ler_atividade(sid), [], False
+    pedido = resumo_pedido(texto)
+    if pedido:
+        at["pedido"], at["pedido_ts"] = pedido, agora()
     t = trabalho_da_sessao(sid)
     jira = achar_jira(texto)
     m = DEMANDA.search(texto)
@@ -773,6 +892,10 @@ def juntar_atividade(t, ats):
     t["agora_faz"] = ultima.get("agora")
     t["historico"] = sorted((h for x in ats for h in x.get("historico", [])), key=lambda h: h["ts"])[-12:]
     t["pasta"] = t.get("pasta") or ultima.get("pasta")
+    com_pedido = [x for x in ats if x.get("pedido")]
+    if com_pedido:
+        p = max(com_pedido, key=lambda x: x.get("pedido_ts", ""))
+        t["pedido"], t["pedido_ts"] = p["pedido"], p.get("pedido_ts")
 
 
 # ---------------------------------------------------------------- status ao vivo (central de controle)
@@ -1218,6 +1341,9 @@ def main():
     sub.add_parser("atividade")
     sub.add_parser("prompt")
     sub.add_parser("abertura")
+    p = sub.add_parser("previa")
+    p.add_argument("--sessao", required=True)
+    p.add_argument("--arquivo", required=True)
     p = sub.add_parser("vincular")
     p.add_argument("--id")
     p.add_argument("--jira")
@@ -1238,7 +1364,7 @@ def main():
     p.add_argument("--pasta")
     sub.add_parser("config")
     a = ap.parse_args()
-    {"atividade": cmd_atividade, "prompt": cmd_prompt, "abertura": cmd_abertura, "vincular": cmd_vincular, "enviar": cmd_enviar, "inicio": cmd_inicio, "retomar": cmd_retomar, "fim": cmd_fim, "sessao": cmd_sessao,
+    {"atividade": cmd_atividade, "prompt": cmd_prompt, "abertura": cmd_abertura, "previa": cmd_previa, "vincular": cmd_vincular, "enviar": cmd_enviar, "inicio": cmd_inicio, "retomar": cmd_retomar, "fim": cmd_fim, "sessao": cmd_sessao,
      "resumo": cmd_resumo, "pulso": cmd_pulso, "configurar": cmd_configurar, "config": cmd_config}[a.cmd](a)
 
 
