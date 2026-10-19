@@ -57,6 +57,14 @@ Quando o editor disser que entregou, o plugin te lembra com o id. Confirme quant
 Se veio da central (D-0012), entregue também lá, com o link compartilhável do Drive:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/central.py" entregar --id D-0012 --link <link> --pecas <N> --nota "<o que vale saber>"`.
 
+## Kit do time
+- "Compartilha meus agentes com a central" → primeiro mostre o que será enviado:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" listar` e confirme com o editor (ele pode escolher só alguns);
+  depois `kit.py compartilhar` (ou `--nomes a,b`). Vão só os arquivos de instrução (agente .md, SKILL.md e textos da
+  skill), com tokens e chaves trocados por •••. A gestão avalia na aba Kit do time.
+- O kit oficial chega sozinho ao abrir a sessão, com o prefixo `cw-kit-` (agentes em ~/.claude/agents, skills em
+  ~/.claude/skills). Prefira esses fluxos ao editar. Para puxar agora: `kit.py sincronizar` (vale na próxima sessão).
+
 ## Fila da central
 - "O que tem na fila?" → `central.py fila` (as do editor primeiro; a gestão pode ter atribuído alguma a ele).
 - "Pega a próxima" / "pega a D-0012" → `central.py pegar [--id D-0012] --json` e, em seguida, `preparar.py D-0012`

@@ -985,13 +985,24 @@ def cmd_abertura(_a):
             subprocess.Popen([sys.executable, __file__, "pulso", "--vigiar", "--sessao", sid, "--pid", str(pid)],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
+    contexto = []
+    try:   # kit do time: instala/atualiza os agentes e skills oficiais (cw-kit-*)
+        import kit
+        instalados = kit.sincronizar()
+        if instalados:
+            contexto.append("Kit do time CW Studios instalado neste Claude (prefira estes fluxos ao editar; item que acabou de "
+                            "chegar fica disponível na próxima sessão): " + ", ".join(n.split(":", 1)[1] for n in instalados))
+    except Exception:
+        pass
     regras = regras_do_time()[:40]
     if regras:
         linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(r.get("tipo"), r.get("tipo"))) if r.get("tipo") else "", r["texto"])
                   for r in regras]
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
-            "Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
-            "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas)}}, ensure_ascii=False))
+        contexto.append("Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
+                        "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas))
+    if contexto:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(contexto)}},
+                         ensure_ascii=False))
 
 
 def cmd_vincular(a):
