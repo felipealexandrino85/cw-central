@@ -439,7 +439,7 @@ NOMES = [
     (r"corte|cortar|\bcut|clip|take|ritmo|selec|highlight|moment|decup", "corte"),
     (r"prepar|ingest|import|organiz|baix|download", "preparo"),
 ]
-VIDEO = re.compile(r"(?:~|/)[^\s\"'<>|;,()\[\]]*?\.(?:mp4|mov|mkv|m4v|webm|avi|mxf|mts)\b", re.I)
+VIDEO = re.compile(r"(?:~|/)[^\s\"'<>|;,()\[\]\\$]*?\.(?:mp4|mov|mkv|m4v|webm|avi|mxf|mts)\b", re.I)
 NAO_E_BRUTO = re.compile(r"/\.claude/|/plugins/|/assets?/|/fontes/|/venv/|broll|/biblioteca/|/tmp/|/T/|scratchpad|/cache/"
                          r"|/output/|/saida/|/final/|/prontos?/|/render", re.I)
 JIRA = re.compile(r"\b(?!D-)([A-Z][A-Z0-9]{1,9}-\d{1,6})\b")
@@ -855,6 +855,10 @@ def cmd_atividade(_a):
             enviar_status_em_segundo_plano(sid)
         return
     etapa, rotulo = achado
+    try:
+        registrar_peca(sid, at, dados.get("tool_name") or "", dados.get("tool_input") or {}, rotulo)
+    except Exception as e:  # nunca trava a edição
+        print("registro: peça não registrada ({})".format(e), file=sys.stderr)
     m = PASTA_TRABALHO.search(texto_entrada)
     if m:
         at["pasta"] = m.group(2)
@@ -877,6 +881,32 @@ def cmd_atividade(_a):
     os.replace(tmp, arq)
     if enviar:  # em segundo plano: o hook volta na hora e o painel recebe em segundos
         enviar_status_em_segundo_plano(sid)
+
+
+# Versão final: render final, cópia para uma pasta PRONTOS do Drive, envio para a publicação.
+PRONTOS = re.compile(r"\b(cp|mv|rsync|ditto)\b.*PRONTOS", re.I)
+ENVIO_PUBLICACAO = re.compile(r"publicar\.py\s+enviar.*--arquivo\s+(\S+|\"[^\"]+\"|'[^']+')")
+
+
+def registrar_peca(sid, at, ferramenta, entrada, rotulo):
+    if ferramenta != "Bash":
+        return
+    cmd = entrada.get("command") or ""
+    arquivo = None
+    m = ENVIO_PUBLICACAO.search(cmd)
+    if m:
+        arquivo = m.group(1).strip("\"'")
+    elif rotulo == "renderizando a versão final" or PRONTOS.search(cmd):
+        arquivo = next((t for t in reversed(_tokens(cmd)) if MIDIA.search(t) and not re.search(r"\.(wav|mp3|m4a|aac)$", t, re.I)), None)
+    if not arquivo:
+        return
+    nome = os.path.basename(arquivo)
+    feitas = at.setdefault("pecas", [])
+    t = trabalho_da_sessao(sid)
+    if not t or nome in feitas:
+        return
+    feitas.append(nome)
+    gravar({"ev": "peca", "id": t["id"], "arquivo": nome, "sessao": sid})
 
 
 def registrar_passo(at, etapa, rotulo, detalhe=None):
@@ -1178,9 +1208,82 @@ def disco_livre_gb():
         return None
 
 
+INATIVO_S = int(os.environ.get("CW_FECHA_INATIVO_S", str(2 * 3600)))
+ETAPAS_FINAIS = {"motion", "render", "acabamento", "revisao", "entrega"}
+
+
+def _epoch(iso):
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0
+
+
+def fechar_inativos(forcar=False):
+    """Fecha sozinho o vídeo que ficou INATIVO_S sem nenhum passo (nem Premiere em uso): finalizado se chegou a uma
+    versão final (peça, render, acabamento, motion...), senão "sem entrega". O editor não precisa avisar o fim."""
+    marca = LOCAL / ".fechar.ts"
+    try:
+        if not forcar and time.time() - marca.stat().st_mtime < 600:
+            return []
+    except OSError:
+        pass
+    LOCAL.mkdir(parents=True, exist_ok=True)
+    marca.touch()
+    abertos = {k: v for k, v in trabalhos_abertos().items() if v.get("status") != "refazer"}
+    if not abertos:
+        return []
+    ats = {}
+    for arq in LOCAL.glob("atividade-*.json"):
+        try:
+            ats[arq.stem[len("atividade-"):]] = (json.loads(arq.read_text()), arq.stat().st_mtime)
+        except (OSError, ValueError):
+            pass
+    fim_sessao, etapas_sessao, pecas = {}, {}, {}
+    for e in eventos_locais():
+        if e.get("ev") == "sessao":
+            fim_sessao[e.get("sessao")] = e.get("fim") or e.get("ts")
+            etapas_sessao[e.get("sessao")] = set((e.get("por_etapa") or {}).keys())
+        elif e.get("ev") == "peca":
+            pecas[e.get("id")] = pecas.get(e.get("id"), 0) + 1
+    fechados = []
+    for tid, t in abertos.items():
+        ultimo, etapas = _epoch(t.get("desde")), set()
+        for sid in t["_sessoes"]:
+            if sid in ats:
+                at, mtime = ats[sid]
+                ultimo = max(ultimo, mtime)
+                etapas |= {h.get("etapa") for h in at.get("historico", []) if h.get("etapa")}
+                etapas |= {x for x in (at.get("etapa"), at.get("etapa_max")) if x}
+            if sid in fim_sessao:
+                ultimo = max(ultimo, _epoch(fim_sessao[sid]))
+                etapas |= etapas_sessao.get(sid, set())
+        try:
+            pr = json.loads(arquivo_premiere(tid).read_text())
+            ultimo = max(ultimo, _epoch(pr.get("ultimo_ativo")))
+            n_exports = len(pr.get("exports") or [])
+        except (OSError, ValueError):
+            n_exports = 0
+        if time.time() - ultimo < INATIVO_S:
+            continue
+        n = pecas.get(tid, 0) + n_exports
+        final = n > 0 or bool(etapas & ETAPAS_FINAIS)
+        gravar({"ev": "fim", "id": tid, "status": "entregue" if final else "sem_entrega", "pecas": max(n, 1) if final else 0,
+                "saida": "", "auto": True, "fechado_ultima_atividade": datetime.fromtimestamp(ultimo, timezone.utc).isoformat(),
+                "nota": "fechado sozinho após {} h sem atividade".format(INATIVO_S // 3600), "sessao": ""})
+        fechados.append(tid)
+    if fechados:
+        enviar_em_segundo_plano()
+    return fechados
+
+
 def atualizar_status(sid, acao):
     """acao: 'sinal' (sessão viva) ou 'fim' (sessão fechou). Regrava status.json e espelha no time."""
     LOCAL.mkdir(parents=True, exist_ok=True)
+    try:
+        fechar_inativos()
+    except Exception as e:  # nunca trava a edição
+        print("registro: fechamento automático falhou ({})".format(e), file=sys.stderr)
     with open(LOCAL / ".status.lock", "w") as trava:
         try:
             import fcntl
@@ -1361,11 +1464,13 @@ def montar_resumo(eventos, dias):
             t.update({k: e[k] for k in ("jira", "demanda", "titulo", "tipo") if e.get(k)})
         elif e["ev"] == "premiere":
             t["segundos_premiere"] = e.get("segundos") or 0
+        elif e["ev"] == "peca":
+            t["pecas_vistas"] = t.get("pecas_vistas", 0) + 1
         elif e["ev"] == "fim":
             if e.get("status") == "refazer":
                 t["voltas"] += 1
-            t.update({"status": e.get("status"), "pecas": e.get("pecas") or 0,
-                      "saida": e.get("saida"), "fechado_em": e["ts"]})
+            t.update({"status": e.get("status"), "pecas": e.get("pecas") or t.get("pecas_vistas") or 0,
+                      "saida": e.get("saida"), "fechado_em": e.get("fechado_ultima_atividade") or e["ts"], "auto": bool(e.get("auto"))})
 
     for t in trabalhos.values():
         t.update({"segundos": 0, "tokens": 0, "custo_usd": 0.0, "etapas": {}, "segundos_humanos": 0, "interacoes": 0,
@@ -1405,7 +1510,7 @@ def montar_resumo(eventos, dias):
         p["horas"] += t["segundos"] / 3600
         p["tokens"] += t["tokens"]
         p["custo_usd"] += t["custo_usd"]
-    abertos = [t for t in recentes if t.get("status") not in ("entregue", "cancelado", "nao_edicao")]
+    abertos = [t for t in recentes if t.get("status") not in ("entregue", "cancelado", "nao_edicao", "sem_entrega")]
     return {"gerado_em": agora(), "dias": dias, "por_pessoa": por_pessoa, "abertos": abertos,
             "trabalhos": sorted(recentes, key=lambda t: t.get("aberto_em") or ""),
             "sessoes_sem_trabalho": sem_trabalho}
@@ -1568,7 +1673,7 @@ def main():
     p.add_argument("--id", required=True)
     p = sub.add_parser("fim")
     p.add_argument("--id")
-    p.add_argument("--status", required=True, choices=["entregue", "refazer", "cancelado", "nao_edicao"])
+    p.add_argument("--status", required=True, choices=["entregue", "refazer", "cancelado", "nao_edicao", "sem_entrega"])
     p.add_argument("--pecas", type=int, default=0)
     p.add_argument("--saida")
     p.add_argument("--nota")
