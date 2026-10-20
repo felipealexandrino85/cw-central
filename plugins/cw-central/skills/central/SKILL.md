@@ -122,3 +122,15 @@ Use a pasta onde ele costuma abrir o Claude para editar. Na dúvida, use a pasta
 ## Recomendar ferramentas e itens da biblioteca
 
 No começo de cada sessão, a central manda o catálogo do time: as Ferramentas (APIs pagas da empresa, pelo conector cw-studios) e os itens da Biblioteca, dizendo quais já estão no Claude deste editor. Quando o pedido combinar com algum deles (gerar voz ou narração → voicestudio; imagem ou vídeo com IA → Higgsfield; motion em HTML → hyperframes), sugira em uma linha antes de improvisar. Se o editor aceitar um item que ainda não está instalado, adicione com `kit.py puxar <id>`: ele passa a valer na próxima mensagem da estação ou na próxima sessão. Para gerar com uma ferramenta paga, confirme antes o que vai ser gerado e o custo.
+
+## Levar o padrão do editor para o time (CLAUDE.md e skills)
+
+Quando o editor pedir "manda meu CLAUDE.md / minhas regras para o padrão do time":
+1. Leia o CLAUDE.md da pasta do projeto dele e o `~/.claude/CLAUDE.md`, se existir.
+2. Separe só o que é **padrão de edição** e vale para o time: estilo, fonte, legenda, motion, cortes, programas (CW Chefs, CW Cast…), o que evitar. Deixe de fora caminhos da máquina dele, senhas, contas e preferências pessoais de conversa.
+3. Escreva uma regra por item, curta e direta (até 400 letras). Quando ela valer só para um tipo de vídeo, use o campo tipo: reel, cortes, tutorial, youtube, anuncio, story ou outro.
+4. Mostre a lista ao editor e, se ele concordar, grave-a num JSON (`[{"texto": "...", "tipo": null}]`) e rode:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/central.py" sugerir-regras --arquivo regras.json --origem "CLAUDE.md de <pasta>"`
+5. Avise que as regras ficam esperando a gestão aprovar em "Padrão do time" e, depois de aprovadas, entram em todo Claude do time.
+
+Quando ele pedir "compartilha minhas skills e agentes no kit do time", rode `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" listar`, confirme com ele quais vão e rode `kit.py compartilhar --nomes a,b`. A skill vai com as subpastas (agentes/, estilos/...). A gestão decide se o item vai para todo o time ou fica na Biblioteca.

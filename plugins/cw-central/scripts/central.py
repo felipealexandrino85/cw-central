@@ -242,6 +242,29 @@ def cmd_pulso(_a):
     print("Status enviado à central.")
 
 
+SEGREDO = re.compile(r"(cw_|sbp_|ATATT|sk-|ghp_|github_pat_|eyJ|AIza)[A-Za-z0-9_\-=.]{8,}")
+TIPOS = ("reel", "cortes", "tutorial", "youtube", "anuncio", "story", "outro")
+
+
+def cmd_sugerir_regras(a):
+    """Manda à gestão regras de edição tiradas do CLAUDE.md do editor (JSON: [{"texto": ..., "tipo": "reel"|null}, ...])."""
+    bruto = Path(os.path.expanduser(a.arquivo)).read_text(encoding="utf-8") if a.arquivo else sys.stdin.read()
+    try:
+        itens = json.loads(bruto)
+    except ValueError:
+        sys.exit("o arquivo precisa ser uma lista JSON: [{\"texto\": \"...\", \"tipo\": null}]")
+    limpos = []
+    for i in itens if isinstance(itens, list) else []:
+        texto = SEGREDO.sub("[oculto]", str((i or {}).get("texto") or "")).strip()
+        tipo = (i or {}).get("tipo")
+        if len(texto) >= 5:
+            limpos.append({"texto": texto[:400], "tipo": tipo if tipo in TIPOS else None})
+    if not limpos:
+        sys.exit("nenhuma regra para mandar")
+    n = rpc("cw_regra_sugerir", p_itens=limpos[:60], p_origem=a.origem or "CLAUDE.md")
+    print("Mandei {} sugestão(ões) para a gestão aprovar no Padrão do time ({} já existiam ou estavam repetidas).".format(n, len(limpos) - n))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Central CW Studios (fila de demandas)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -271,9 +294,12 @@ def main():
     p.add_argument("--id", required=True)
     p.add_argument("--motivo", required=True)
     sub.add_parser("pulso")
+    p = sub.add_parser("sugerir-regras")
+    p.add_argument("--arquivo", help="JSON com as regras (sem isto, lê da entrada)")
+    p.add_argument("--origem", help="de onde vieram, ex.: CLAUDE.md de Skill editor - CW Studio")
     a = ap.parse_args()
     {"entrar": cmd_entrar, "quem": cmd_quem, "fila": cmd_fila, "pegar": cmd_pegar, "ver": cmd_ver,
-     "etapa": cmd_etapa, "entregar": cmd_entregar, "devolver": cmd_devolver, "pulso": cmd_pulso}[a.cmd](a)
+     "etapa": cmd_etapa, "entregar": cmd_entregar, "devolver": cmd_devolver, "pulso": cmd_pulso, "sugerir-regras": cmd_sugerir_regras}[a.cmd](a)
 
 
 if __name__ == "__main__":
