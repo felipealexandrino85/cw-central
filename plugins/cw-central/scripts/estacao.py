@@ -81,7 +81,30 @@ def raizes_drive():
 
 def zonas_leitura():
     extras = [Path(x) for x in _cfg().get("drive_raizes") or []] or (raizes_drive() if not WINDOWS else [])
-    return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras
+    liberadas = [Path(x) for x in _cfg().get("liberadas") or []]   # pastas que o editor liberou pela central
+    return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras + liberadas
+
+
+ALVO = {"pasta": None}   # última pasta de fora que pediu OK (para o botão "liberar esta pasta")
+
+
+def _fora(parte, p, motivo):
+    ALVO["pasta"] = p
+    return motivo
+
+
+def pasta_liberavel(p):
+    """Pasta que o editor pode liberar de vez: dentro da casa dele, sem pastas ocultas nem dados sensíveis."""
+    if p is None:
+        return None
+    alvo = p if p.is_dir() else p.parent
+    try:
+        rel = alvo.relative_to(HOME)
+    except ValueError:
+        return None
+    if not rel.parts or rel.parts[0] in ("Library", "AppData") or any(x.startswith(".") for x in rel.parts) or SENSIVEL.search(str(alvo)):
+        return None
+    return alvo
 
 
 SENSIVEL = re.compile(r"(^|[/\\])(\.ssh|\.aws|\.gnupg|\.config[/\\]gh|Keychains|\.netrc|\.env[^/\\]*|supabase-token|"
@@ -137,7 +160,7 @@ ESCRITA = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 CMD_LER = {"ls", "cat", "head", "tail", "wc", "grep", "egrep", "find", "sort", "uniq", "cut", "tr", "awk", "jq", "du",
            "stat", "file", "basename", "dirname", "realpath", "date", "sleep", "cd", "pwd", "test", "[", "true",
            "false", "echo", "printf", "diff", "cmp", "seq", "nl", "column", "md5", "shasum", "bc", "expr", "which",
-           "type", "mediainfo", "ffprobe", "exiftool", "python3", "python", "whisper", "open"}
+           "type", "mediainfo", "ffprobe", "exiftool", "python3", "python", "whisper", "open", "node"}
 CMD_GRAVA = {"mkdir", "cp", "mv", "rm", "touch", "tee", "sed", "ffmpeg", "magick", "convert", "sox", "unzip", "zip",
              "tar", "sips", "afconvert", "ln", "rmdir"}
 SEPARA = {";", "&&", "||", "|", "&", "(", ")", "\n", "{", "}", "$(", "`", ";;", "|&"}
@@ -162,6 +185,17 @@ def avaliar_bash(cmd, pasta):
     base = Path(pasta)
     inicio, programa, ler_proximo, gravar_proximo, args = True, None, False, False, []
     pular = False   # lista do "for x in ..." / "case x in": não é comando
+    laco = {}       # for x in 2.9 3.8: valores fixos de cada variável (dá para conferir cada um)
+    lendo_laco = None
+
+    def expandir(a):
+        nomes = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", a)
+        if not nomes or "$(" in a or any(n not in laco for n in nomes):
+            return None
+        saida = [a]
+        for n in dict.fromkeys(nomes):
+            saida = [x.replace("${" + n + "}", v).replace("$" + n, v) for x in saida for v in laco[n]][:50]
+        return saida
 
     def fechar():
         if programa is None:
@@ -181,8 +215,9 @@ def avaliar_bash(cmd, pasta):
             gravar = []
         if nome == "find" and any(a in ("-delete", "-exec", "-execdir", "-ok") for a in args):
             gravar = args
-        for a in args:
-            if "$" in a and (a in gravar or "/" in a):
+        for a0 in args:
+          for a in (expandir(a0) or [a0]) if "$" in a0 else [a0]:
+            if "$" in a and (a0 in gravar or "/" in a):
                 return "{} com caminho em variável ({}), que não dá para conferir".format(nome, a)
             for parte in ([a.split("=", 1)[1]] if a.startswith("-") and "=" in a else [a]):
                 if not (parte.startswith(("/", "~", "./", "../")) or "/" in parte):
@@ -190,14 +225,14 @@ def avaliar_bash(cmd, pasta):
                 if re.match(r"^[a-z]+://", parte):
                     continue
                 p = _resolver(parte, base)
-                if a in gravar and not pode_gravar(p, pasta):
+                if a0 in gravar and not pode_gravar(p, pasta):
                     return "mexer em {} (fora da pasta do trabalho)".format(parte)
                 if not pode_ler(p, pasta):
-                    return "usar {} (fora da pasta do trabalho)".format(parte)
+                    return _fora(parte, p, "usar {} (fora da pasta do trabalho)".format(parte))
         if nome == "cd" and args:
             p = _resolver(args[0], base)
             if not pode_ler(p, pasta):
-                return "ir para {} (fora da pasta do trabalho)".format(args[0])
+                return _fora(args[0], p, "ir para {} (fora da pasta do trabalho)".format(args[0]))
         return None
 
     for t in toks:
@@ -214,6 +249,7 @@ def avaliar_bash(cmd, pasta):
             ler_proximo = t == "<"
             continue
         if t in SEPARA or t == "$" or set(t) <= set(";&|()"):
+            lendo_laco = None
             if pular:
                 pular = False
                 inicio, programa, args = True, None, []
@@ -224,13 +260,24 @@ def avaliar_bash(cmd, pasta):
             inicio, programa, args = True, None, []
             continue
         if pular:
+            if lendo_laco is True:            # nome da variável do for
+                lendo_laco = t if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", t) else None
+                if lendo_laco:
+                    laco[lendo_laco] = []
+                continue
+            if lendo_laco and t != "in":
+                if "$" in t or "`" in t or "*" in t or "?" in t:
+                    laco.pop(lendo_laco, None)
+                    lendo_laco = None
+                elif lendo_laco in laco:
+                    laco[lendo_laco].append(t)
             if not pode_ler(_resolver(t, base), pasta) and ("/" in t or t.startswith("~")):
                 return "usar {} (fora da pasta do trabalho)".format(t)
             continue
         if ler_proximo:
             ler_proximo = False
             if not pode_ler(_resolver(t, base), pasta):
-                return "ler {} (fora da pasta do trabalho)".format(t)
+                return _fora(t, _resolver(t, base), "ler {} (fora da pasta do trabalho)".format(t))
             continue
         if inicio:
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):       # VAR=valor antes do comando
@@ -241,6 +288,7 @@ def avaliar_bash(cmd, pasta):
                 continue
             if t in ("for", "case", "select"):
                 pular = True
+                lendo_laco = True if t == "for" else None
                 continue
             if t in ("while", "until", "if"):
                 continue
@@ -253,14 +301,15 @@ def avaliar_bash(cmd, pasta):
 def decidir(ferramenta, entrada, pasta):
     """('allow', None) ou ('ask', motivo)."""
     entrada = entrada or {}
+    ALVO["pasta"] = None
     if ferramenta in LIVRES:
         return "allow", None
     if ferramenta in LEITURA:
         alvo = entrada.get("file_path") or entrada.get("notebook_path") or entrada.get("path") or pasta
-        return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", "ler {}".format(alvo))
+        return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", _fora(alvo, _resolver(alvo, pasta), "ler {}".format(alvo)))
     if ferramenta in BUSCA:
         alvo = entrada.get("path") or pasta
-        return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", "procurar em {}".format(alvo))
+        return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", _fora(alvo, _resolver(alvo, pasta), "procurar em {}".format(alvo)))
     if ferramenta in ESCRITA:
         alvo = entrada.get("file_path") or entrada.get("notebook_path") or ""
         return ("allow", None) if pode_gravar(_resolver(alvo, pasta), pasta) else ("ask", "gravar {}".format(alvo))
@@ -327,9 +376,12 @@ def cmd_porteiro(_a):
 
 def pedir_ok(conversa, ferramenta, entrada, motivo):
     detalhe = entrada.get("command") or entrada.get("file_path") or json.dumps(entrada, ensure_ascii=False)
+    dados = {"ferramenta": ferramenta, "detalhe": str(detalhe)[:1500]}
+    liberavel = pasta_liberavel(ALVO["pasta"])
+    if liberavel:
+        dados["liberar"] = str(liberavel)
     try:
-        mid = central.rpc("cw_esc_pedir_ok", timeout=10, p_conversa=conversa, p_texto="Posso " + motivo + "?",
-                          p_dados={"ferramenta": ferramenta, "detalhe": str(detalhe)[:1500]})
+        mid = central.rpc("cw_esc_pedir_ok", timeout=10, p_conversa=conversa, p_texto="Posso " + motivo + "?", p_dados=dados)
     except central.ErroCentral as e:
         return "deny", "Não consegui pedir OK ao editor na central ({}). Não faça isso; explique o que precisava.".format(e)
     limite = time.time() + ESPERA_OK_S
@@ -342,6 +394,15 @@ def pedir_ok(conversa, ferramenta, entrada, motivo):
                 return "deny", "Sem resposta do editor."
             continue
         if estado == "aprovado":
+            try:
+                liberada = central.rpc("cw_esc_ok_sempre", timeout=10, p_msg=mid)
+            except central.ErroCentral:
+                liberada = None
+            if liberada and pasta_liberavel(Path(liberada)) == Path(liberada):
+                cfg = _cfg()
+                cfg["liberadas"] = sorted(set(cfg.get("liberadas") or []) | {liberada})
+                CONFIG.write_text(json.dumps(cfg, indent=1))
+                return "allow", "O editor aprovou e liberou {} para as próximas vezes (só leitura e rodar; gravar fora da pasta continua pedindo OK).".format(liberada)
             return "allow", "O editor aprovou pela central."
         if estado in ("negado", "expirado"):
             return "deny", ("O editor NÃO aprovou: " if estado == "negado" else "O editor não respondeu em 30 min: ") + \
@@ -624,7 +685,8 @@ def cmd_ligar(_a):
         sys.exit("não achei o comando claude nesta máquina")
     copiar_scripts()
     escrever_cerca()
-    CONFIG.write_text(json.dumps({"claude": claude, "drive_raizes": [str(r) for r in raizes_drive()]}, indent=1))
+    CONFIG.write_text(json.dumps({"claude": claude, "drive_raizes": [str(r) for r in raizes_drive()],
+                                  "liberadas": _cfg().get("liberadas") or []}, indent=1))
     if WINDOWS:
         return ligar_windows(claude)
     caminho = os.pathsep.join(dict.fromkeys([str(Path(claude).parent), "/opt/homebrew/bin", "/usr/local/bin",
