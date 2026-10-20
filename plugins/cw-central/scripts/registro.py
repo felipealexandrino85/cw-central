@@ -1220,6 +1220,13 @@ def cmd_abertura(_a):
                             "chegar fica disponível na próxima sessão): " + ", ".join(n.split(":", 1)[1] for n in instalados))
     except Exception:
         pass
+    try:   # ferramentas e biblioteca do time: o Claude recomenda quando o pedido combinar
+        import kit
+        cat = kit.texto_catalogo(kit.catalogo())
+        if cat:
+            contexto.append(cat)
+    except Exception:
+        pass
     try:   # escritório virtual: mantém a estação (se ligada) na mesma versão do plugin
         import estacao
         estacao.atualizar_se_ligada()

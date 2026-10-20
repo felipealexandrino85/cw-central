@@ -118,3 +118,7 @@ Toda sessão deste Claude conectado à central aparece para a gestão em "Comput
 A estação abre o Claude na pasta do projeto do editor, se ela estiver definida. Assim ela usa o CLAUDE.md, os agentes, as skills e as fontes de sempre, e grava os arquivos na pasta do vídeo. Quando o editor pedir "usa a pasta X como projeto da estação" ou "a estação não está no meu estilo", rode:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/estacao.py" projeto "<pasta do projeto>"`
 Use a pasta onde ele costuma abrir o Claude para editar. Na dúvida, use a pasta atual desta sessão, se ela tiver CLAUDE.md ou .claude/. Depois avise que vale para as conversas novas: ele precisa clicar em "Nova conversa" na central. Para voltar ao padrão: `estacao.py projeto --limpar`.
+
+## Recomendar ferramentas e itens da biblioteca
+
+No começo de cada sessão, a central manda o catálogo do time: as Ferramentas (APIs pagas da empresa, pelo conector cw-studios) e os itens da Biblioteca, dizendo quais já estão no Claude deste editor. Quando o pedido combinar com algum deles (gerar voz ou narração → voicestudio; imagem ou vídeo com IA → Higgsfield; motion em HTML → hyperframes), sugira em uma linha antes de improvisar. Se o editor aceitar um item que ainda não está instalado, adicione com `kit.py puxar <id>`: ele passa a valer na próxima mensagem da estação ou na próxima sessão. Para gerar com uma ferramenta paga, confirme antes o que vai ser gerado e o custo.

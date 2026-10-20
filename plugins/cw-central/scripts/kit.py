@@ -227,6 +227,72 @@ def sincronizar_biblioteca():
     return _instalar([i for i in itens if i.get("conteudo")], PREFIXO_BIB, MANIFESTO_BIB)
 
 
+CATALOGO = HUB / "catalogo.json"
+# itens de manutenção de software que vêm junto dos repositórios (não ajudam a editar vídeo)
+DE_PROGRAMADOR = re.compile(r"pull request|github issue|\bci\b|release|maintainer|fastapi|\bvite\b|hmr|triage|merg", re.I)
+
+
+def util_na_edicao(i):
+    texto = "{} {}".format(i.get("nome") or "", i.get("descricao") or "")
+    return bool((i.get("descricao") or "").strip()) and i.get("repo") != "felipealexandrino85/cw-central" and not DE_PROGRAMADOR.search(texto)
+
+
+def catalogo(max_idade=3600):
+    """Ferramentas (APIs da empresa) e itens da biblioteca da central, para o Claude recomendar no meio da edição.
+    Guarda uma cópia local e só pergunta de novo à central a cada hora (a estação abre uma sessão por mensagem)."""
+    import time
+    try:
+        guardado = json.loads(CATALOGO.read_text())
+        if time.time() - guardado.get("ts", 0) < max_idade:
+            return guardado
+    except (OSError, ValueError):
+        guardado = None
+    if not central.configurada():
+        return guardado
+    novo = {"ts": time.time(), "biblioteca": [], "ferramentas": []}
+    try:
+        novo["biblioteca"] = [i for i in (central.rpc("cw_bib_buscar", timeout=6, p_termo="") or []) if util_na_edicao(i)]
+    except central.ErroCentral:
+        return guardado
+    try:
+        import ferramentas_mcp
+        novo["ferramentas"] = [f for f in (ferramentas_mcp.chamar({"acao": "listar"}, timeout=6).get("ferramentas") or []) if f.get("configurada")]
+    except Exception:
+        novo["ferramentas"] = (guardado or {}).get("ferramentas") or []
+    try:
+        HUB.mkdir(parents=True, exist_ok=True)
+        CATALOGO.write_text(json.dumps(novo, ensure_ascii=False))
+    except OSError:
+        pass
+    return novo
+
+
+def texto_catalogo(cat):
+    """O catálogo em poucas linhas, com a regra de quando recomendar."""
+    if not cat or not (cat.get("biblioteca") or cat.get("ferramentas")):
+        return None
+    linhas = ["Recursos da CW Studios para recomendar durante a edição. Quando o pedido do editor combinar com um destes "
+              "(ex.: gerar voz ou narração, imagem ou vídeo com IA, animação/motion em HTML), diga em uma linha antes de "
+              "improvisar: \"Tem o <nome> no time — quer usar?\". Não force: só quando ajudar de verdade."]
+    if cat.get("ferramentas"):
+        linhas.append("Ferramentas (APIs pagas da conta da empresa, pelo conector cw-studios: listar → gerar → status → baixar; "
+                      "antes de gerar, confirme com o editor o que vai gerar e o custo):")
+        for f in cat["ferramentas"]:
+            linhas.append("- {} ({}): {}{}".format(f.get("nome"), f.get("ferramenta"), (f.get("descricao") or "")[:160],
+                                                   " · ~US$ {}/geração".format(f["custo_estimado_usd"]) if f.get("custo_estimado_usd") else ""))
+    tem = [i for i in cat.get("biblioteca") or [] if i.get("no_meu_claude")]
+    falta = [i for i in cat.get("biblioteca") or [] if not i.get("no_meu_claude")]
+    if tem:
+        linhas.append("Já no Claude deste editor (use direto, prefixo cw-bib-):")
+        linhas += ["- {} cw-bib-{}: {}".format(i["tipo"], i["nome"], i["descricao"][:140]) for i in tem[:40]]
+    if falta:
+        linhas.append("Na biblioteca, ainda não adicionados por este editor. Se ele topar, adicione com "
+                      "`python3 \"{}\" puxar <id>` (vale a partir da próxima mensagem/sessão); plugin se instala pela página "
+                      "da Biblioteca:".format(Path(__file__).resolve()))
+        linhas += ["- [{}] {} {} ({}): {}".format(i["id"], i["tipo"], i["nome"], i.get("repo") or "", i["descricao"][:140]) for i in falta[:40]]
+    return "\n".join(linhas)
+
+
 def cmd_sincronizar(_a):
     if sincronizar(silencioso=False) is None:
         print("Não consegui falar com a central (conectado? rode central.py quem).")
