@@ -79,7 +79,7 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - "Liga minha estação do escritório" → confira que está conectado (`central.py quem`) e rode
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/estacao.py" ligar`. Explique em uma linha: a partir de agora ele pode
   escrever na central › Escritório e o Claude desta máquina executa, mesmo com esta janela fechada; o Claude age
-  sozinho só dentro da pasta do vídeo e pede OK na página para o resto. A estação sobe sozinha ao ligar o Mac.
+  sozinho só dentro da pasta do vídeo e pede OK na página para o resto. A estação sobe sozinha ao ligar o computador (Mac: serviço do macOS; Windows: item na Inicialização, sem janela). No Windows, se a estação não subir, confira se o Python está instalado (python.exe no PATH).
 - "Desliga minha estação" → `estacao.py desligar`. "A estação está ligada?" → `estacao.py status`.
 - Só o próprio editor manda pedidos e aprova ações na estação dele; a gestão só acompanha. Nunca ligue a estação
   de outra pessoa nem mude a cerca (`~/.cw-cortes/estacao/cerca.json`).

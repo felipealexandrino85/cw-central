@@ -5,7 +5,7 @@ Só biblioteca padrão. Regras (as mesmas do banco e da página):
   - só o próprio editor manda prompt e aprova pedidos de OK (a gestão só acompanha);
   - o Claude trabalha sozinho só dentro da pasta do trabalho (ler, gravar, ffmpeg, Python, scripts do kit);
     qualquer outra coisa para e pede OK ao editor na página (a "cerca", hook PreToolUse que vale mais que as
-    permissões do Claude do editor). É uma cerca de boa-fé para o dia a dia, não uma caixa de areia: um script
+    permissões do Claude do editor). Funciona no macOS (serviço do launchd) e no Windows (Inicialização). É uma cerca de boa-fé para o dia a dia, não uma caixa de areia: um script
     Python rodado na pasta ainda pode tocar o resto do computador.
 
   ligar        instala e liga a estação (serviço do macOS que sobe sozinho ao entrar no computador)
@@ -15,7 +15,6 @@ Só biblioteca padrão. Regras (as mesmas do banco e da página):
   porteiro     hook PreToolUse da cerca (chamado pelo Claude, não à mão)
 """
 import argparse
-import fcntl
 import json
 import os
 import platform
@@ -26,6 +25,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -45,6 +45,9 @@ CERCA = CASA / "cerca.json"
 ROTULO = "com.cwstudios.estacao"
 PLIST = HOME / "Library" / "LaunchAgents" / (ROTULO + ".plist")
 ESPERA_OK_S = 30 * 60
+WINDOWS = os.name == "nt"
+INICIAR_WIN = Path(os.environ.get("APPDATA", HOME)) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "cw-estacao.vbs"
+NOMES_DRIVE = ("Shared drives", "Drives compartilhados", "My Drive", "Meu Drive")
 TRABALHO = Path(os.path.expanduser(os.environ.get("CW_TRABALHO") or "~/CW-Work"))
 
 
@@ -54,23 +57,46 @@ def log(*partes):
 
 # ----------------------------------------------------------------------------------------------- cerca (porteiro)
 def _temp():
-    t = [Path("/tmp"), Path("/private/tmp"), Path("/var/folders"), Path("/private/var/folders")]
-    if os.environ.get("TMPDIR"):
-        t.append(Path(os.environ["TMPDIR"]))
+    t = [Path("/tmp"), Path("/private/tmp"), Path("/var/folders"), Path("/private/var/folders"), Path(tempfile.gettempdir())]
+    for v in ("TMPDIR", "TEMP", "TMP"):
+        if os.environ.get(v):
+            t.append(Path(os.environ[v]))
     return t
 
 
+def raizes_drive():
+    """Onde o Google Drive para computador aparece: CloudStorage no Mac, uma letra (G:, H:...) no Windows."""
+    if not WINDOWS:
+        return [HOME / "Library" / "CloudStorage"]
+    achadas = []
+    for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        raiz = Path(letra + ":/")
+        try:
+            if any((raiz / n).is_dir() for n in NOMES_DRIVE):
+                achadas.append(raiz)
+        except OSError:
+            continue
+    return achadas
+
+
 def zonas_leitura():
-    return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Library" / "CloudStorage", CASA]
+    extras = [Path(x) for x in _cfg().get("drive_raizes") or []] or (raizes_drive() if not WINDOWS else [])
+    return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras
 
 
-SENSIVEL = re.compile(r"(^|/)(\.ssh|\.aws|\.gnupg|\.config/gh|Keychains|\.netrc|\.env[^/]*|supabase-token|"
-                      r"[^/]*credential[^/]*|central\.json)(/|$)", re.I)
+SENSIVEL = re.compile(r"(^|[/\\])(\.ssh|\.aws|\.gnupg|\.config[/\\]gh|Keychains|\.netrc|\.env[^/\\]*|supabase-token|"
+                      r"[^/\\]*credential[^/\\]*|central\.json)([/\\]|$)", re.I)
+
+
+def _windows(caminho):
+    """No Windows o terminal do Claude (Git Bash) escreve /c/Users/...: vira C:/Users/..."""
+    m = re.match(r"^/([a-zA-Z])(/|$)(.*)$", caminho) if WINDOWS else None
+    return "{}:/{}".format(m.group(1).upper(), m.group(3)) if m else caminho
 
 
 def _resolver(caminho, base):
     try:
-        p = Path(os.path.expanduser(str(caminho)))
+        p = Path(os.path.expanduser(_windows(str(caminho))))
         return (p if p.is_absolute() else Path(base) / p).resolve()
     except (OSError, RuntimeError, ValueError):
         return None
@@ -352,8 +378,8 @@ def _cfg():
 
 
 def achar_claude():
-    for c in [shutil.which("claude"), HOME / ".local/bin/claude", HOME / ".claude/local/claude", "/opt/homebrew/bin/claude",
-              "/usr/local/bin/claude"]:
+    for c in [HOME / ".local/bin/claude.exe" if WINDOWS else None, shutil.which("claude"), HOME / ".local/bin/claude",
+              HOME / ".claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]:
         if c and Path(c).exists():
             return str(c)
     return None
@@ -377,7 +403,10 @@ class Execucao:
         self.parado = True
         if self.proc and self.proc.poll() is None:
             try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
+                if WINDOWS:   # encerra o Claude e tudo que ele abriu
+                    subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True)
+                else:
+                    os.killpg(self.proc.pid, signal.SIGTERM)
             except OSError:
                 pass
 
@@ -405,8 +434,10 @@ class Execucao:
         log("conversa", self.conversa, "em", pasta)
         resultado, erro_txt = None, []
         try:
+            grupo = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000} if WINDOWS   # sem janela
+                     else {"start_new_session": True})
             self.proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                         env=env, start_new_session=True, bufsize=1)
+                                         encoding="utf-8", errors="replace", env=env, bufsize=1, **grupo)
             threading.Thread(target=lambda: erro_txt.extend(self.proc.stderr.read().splitlines()[-20:]), daemon=True).start()
             for linha in self.proc.stdout:
                 try:
@@ -451,9 +482,15 @@ def cmd_rodar(_a):
     CASA.mkdir(parents=True, exist_ok=True)
     trava = open(CASA / "rodar.lock", "w")
     try:
-        fcntl.flock(trava, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if WINDOWS:
+            import msvcrt
+            msvcrt.locking(trava.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(trava, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit("a estação já está rodando nesta máquina")
+    (CASA / "rodar.pid").write_text(str(os.getpid()))
     copiar_scripts()
     escrever_cerca()
     maquina = socket.gethostname().split(".")[0]
@@ -470,6 +507,8 @@ def cmd_rodar(_a):
             atual = None
         if atual is None and meu.stat().st_mtime != marca:   # a abertura do plugin copiou uma versão nova
             log("versão nova da estação; reiniciando")
+            if WINDOWS:   # o laço do rodar.cmd sobe a versão nova em seguida
+                sys.exit(0)
             os.execv(sys.executable, [sys.executable, str(meu), "rodar"])
         try:
             r = central.rpc("cw_esc_puxar", timeout=10, p_maquina=maquina, p_versao=VERSAO,
@@ -495,9 +534,17 @@ def cmd_rodar(_a):
 
 
 # ----------------------------------------------------------------------------------------------- instalação
+def python_console():
+    """O hook precisa de saída no terminal: no Windows, python.exe (não pythonw.exe)."""
+    py = Path(sys.executable)
+    if WINDOWS and py.name.lower() == "pythonw.exe" and (py.parent / "python.exe").exists():
+        py = py.parent / "python.exe"
+    return py
+
+
 def escrever_cerca():
     CASA.mkdir(parents=True, exist_ok=True)
-    cmd = "{} {} porteiro".format(shlex.quote(sys.executable), shlex.quote(str(CASA / "scripts" / "estacao.py")))
+    cmd = '"{}" "{}" porteiro'.format(python_console().as_posix(), (CASA / "scripts" / "estacao.py").as_posix())
     CERCA.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
         {"type": "command", "command": cmd, "timeout": ESPERA_OK_S + 120}]}]}}, indent=1))
 
@@ -518,7 +565,7 @@ def copiar_scripts():
 
 
 def ligada():
-    return PLIST.exists()
+    return (CASA / "ligada").exists() if WINDOWS else PLIST.exists()
 
 
 def atualizar_se_ligada():
@@ -531,9 +578,40 @@ def _launchctl(*args):
     return subprocess.run(["launchctl", *args], capture_output=True, text=True)
 
 
+def _pid_vivo(pid):
+    if not pid:
+        return False
+    if WINDOWS:
+        r = subprocess.run(["tasklist", "/FI", "PID eq {}".format(pid), "/NH"], capture_output=True, text=True)
+        return str(pid) in r.stdout
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def ligar_windows(claude):
+    """Inicialização do Windows: um .vbs abre, sem janela, um laço que mantém a estação rodando (e a reinicia se cair)."""
+    py = python_console()
+    extra = "".join('set "{}={}"\n'.format(k, os.environ[k]) for k in ("CW_CORTES_HOME", "CW_TRABALHO") if os.environ.get(k))
+    laco = CASA / "rodar.cmd"
+    laco.write_text("@echo off\nchcp 65001 >nul\nset PYTHONIOENCODING=utf-8\n" + extra +
+                    ':loop\nif not exist "{flag}" exit /b\n"{py}" "{script}" rodar >> "{log}" 2>&1\n'
+                    "timeout /t 30 /nobreak >nul\ngoto loop\n".format(flag=CASA / "ligada", py=py, script=CASA / "scripts" / "estacao.py", log=LOG),
+                    encoding="utf-8")
+    (CASA / "ligada").write_text("1")
+    INICIAR_WIN.parent.mkdir(parents=True, exist_ok=True)
+    INICIAR_WIN.write_text('CreateObject("WScript.Shell").Run """{}""", 0, False\n'.format(laco), encoding="utf-8")
+    if not _pid_vivo((CASA / "rodar.pid").read_text().strip() if (CASA / "rodar.pid").exists() else None):
+        subprocess.Popen(["wscript", str(INICIAR_WIN)], creationflags=0x08000000)
+    print("Estação ligada neste PC. Ela sobe sozinha (sem janela) quando você entra no Windows.\n"
+          "Agora é só abrir a central › Sala e clicar no seu computador. Registro: {}".format(LOG))
+
+
 def cmd_ligar(_a):
-    if platform.system() != "Darwin":
-        sys.exit("por enquanto a estação liga sozinha só no macOS; em outro sistema rode 'estacao.py rodar' num terminal aberto")
+    if platform.system() not in ("Darwin", "Windows"):
+        sys.exit("a estação liga sozinha no macOS e no Windows; neste sistema rode 'estacao.py rodar' num terminal aberto")
     if not central.configurada():
         sys.exit("conecte primeiro: central.py entrar --token cw_...")
     claude = achar_claude()
@@ -541,7 +619,9 @@ def cmd_ligar(_a):
         sys.exit("não achei o comando claude nesta máquina")
     copiar_scripts()
     escrever_cerca()
-    CONFIG.write_text(json.dumps({"claude": claude}, indent=1))
+    CONFIG.write_text(json.dumps({"claude": claude, "drive_raizes": [str(r) for r in raizes_drive()]}, indent=1))
+    if WINDOWS:
+        return ligar_windows(claude)
     caminho = os.pathsep.join(dict.fromkeys([str(Path(claude).parent), "/opt/homebrew/bin", "/usr/local/bin",
                                              *os.environ.get("PATH", "").split(os.pathsep), "/usr/bin", "/bin"]))
     PLIST.parent.mkdir(parents=True, exist_ok=True)
@@ -566,18 +646,29 @@ def cmd_ligar(_a):
     if r.returncode != 0:
         sys.exit("não consegui ligar o serviço: " + (r.stderr or r.stdout).strip())
     print("Estação ligada nesta máquina. Ela sobe sozinha quando você entra no computador.\n"
-          "Agora é só abrir a central › Escritório e escrever o pedido. Registro: {}".format(LOG))
+          "Agora é só abrir a central › Sala e clicar no seu computador. Registro: {}".format(LOG))
 
 
 def cmd_desligar(_a):
-    _launchctl("bootout", "gui/{}/{}".format(os.getuid(), ROTULO))
-    PLIST.unlink(missing_ok=True)
+    if WINDOWS:
+        (CASA / "ligada").unlink(missing_ok=True)
+        INICIAR_WIN.unlink(missing_ok=True)
+        pid = (CASA / "rodar.pid").read_text().strip() if (CASA / "rodar.pid").exists() else None
+        if _pid_vivo(pid):
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
+    else:
+        _launchctl("bootout", "gui/{}/{}".format(os.getuid(), ROTULO))
+        PLIST.unlink(missing_ok=True)
     print("Estação desligada (o Escritório da central não manda mais nada para esta máquina).")
 
 
 def cmd_status(_a):
-    r = _launchctl("print", "gui/{}/{}".format(os.getuid(), ROTULO))
-    print("Estação:", "ligada" if r.returncode == 0 else ("instalada mas parada" if ligada() else "desligada"))
+    if WINDOWS:
+        vivo = _pid_vivo((CASA / "rodar.pid").read_text().strip() if (CASA / "rodar.pid").exists() else None)
+        print("Estação:", "ligada" if ligada() and vivo else ("instalada mas parada (reinicie o PC ou rode estacao.py ligar)" if ligada() else "desligada"))
+    else:
+        r = _launchctl("print", "gui/{}/{}".format(os.getuid(), ROTULO))
+        print("Estação:", "ligada" if r.returncode == 0 else ("instalada mas parada" if ligada() else "desligada"))
     if LOG.exists():
         print("".join(LOG.read_text(errors="replace").splitlines(True)[-8:]))
 
@@ -588,6 +679,12 @@ def main():
     for c in ("ligar", "desligar", "status", "rodar", "porteiro"):
         sub.add_parser(c)
     a = ap.parse_args()
+    if WINDOWS:   # o console do Windows não é UTF-8 por padrão
+        for f in (sys.stdout, sys.stderr):
+            try:
+                f.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     if a.cmd == "rodar" and LOG.exists() and LOG.stat().st_size > 2_000_000:
         LOG.write_text("")
     {"ligar": cmd_ligar, "desligar": cmd_desligar, "status": cmd_status, "rodar": cmd_rodar, "porteiro": cmd_porteiro}[a.cmd](a)
