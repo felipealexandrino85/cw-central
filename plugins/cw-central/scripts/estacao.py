@@ -529,7 +529,8 @@ SISTEMA = """Você está rodando na estação do editor {nome}, pelo Escritório
 Pasta do trabalho: {pasta}{trabalho}
 Dentro dessa pasta você age sozinho: ler e gravar arquivos, rodar ffmpeg, Python e os scripts do kit e dos plugins. Qualquer outra coisa (instalar programa, apagar ou gravar fora da pasta, geração paga, conectores externos) passa por um pedido de OK ao editor na página, que pode demorar. Se o OK for negado, não procure outro caminho para fazer a mesma coisa: explique e pergunte.
 Material bruto costuma estar em ~/Downloads, na pasta do Google Drive ou em ~/CW-Work/preparo/<CHAVE>; copie para a pasta do trabalho o que for editar.
-Responda em português, curto, dizendo o que fez, onde ficou o arquivo e o que falta."""
+Responda em português, curto, dizendo o que fez, onde ficou o arquivo e o que falta.
+IMPORTANTE nesta estação: quando você termina a resposta, o processo fecha e qualquer agente ou comando em segundo plano morre sem gravar nada. Então rode agentes (Agent/Task) e comandos sempre em primeiro plano (run_in_background: false), espere TODOS terminarem e só depois responda. Se a skill pede agentes em paralelo, chame-os na mesma mensagem em primeiro plano e espere os resultados. Nunca encerre dizendo "estão rodando, quando terminarem eu sigo"."""
 
 
 def resolver_pasta(pedido):
@@ -610,7 +611,8 @@ class Execucao:
                "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
         if p.get("sessao"):
             cmd += ["--resume", p["sessao"]]
-        env = dict(os.environ, CW_ESC_CONVERSA=str(self.conversa), CW_ESC_PASTA=str(pasta), CW_ESC="1")
+        env = dict(os.environ, CW_ESC_CONVERSA=str(self.conversa), CW_ESC_PASTA=str(pasta), CW_ESC="1",
+                   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1")   # sem tarefas em segundo plano: o processo fecha ao responder
         self.registrar([], "rodando", pasta=str(pasta))
         log("conversa", self.conversa, "em", pasta)
         resultado, erro_txt = None, []
@@ -801,6 +803,19 @@ def projeto_atual():
     if cwd != HOME and projeto_valido(cwd) and ((cwd / "CLAUDE.md").exists() or (cwd / ".claude").is_dir()):
         return str(cwd)
     return None
+
+
+def adotar_projeto(cwd):
+    """Sessão normal do editor numa pasta de projeto (CLAUDE.md ou .claude/) vira o projeto da estação, se ainda não houver um."""
+    if not CONFIG.exists() or _cfg().get("projeto"):
+        return None
+    p = projeto_valido(cwd)
+    if not p or p == HOME or not ((p / "CLAUDE.md").exists() or (p / ".claude").is_dir()):
+        return None
+    cfg = _cfg()
+    cfg["projeto"] = str(p)
+    CONFIG.write_text(json.dumps(cfg, indent=1))
+    return p
 
 
 def cmd_projeto(a):

@@ -1230,6 +1230,12 @@ def cmd_abertura(_a):
     try:   # escritório virtual: mantém a estação (se ligada) na mesma versão do plugin
         import estacao
         estacao.atualizar_se_ligada()
+        if not os.environ.get("CW_ESC"):   # a pasta onde o editor usa o Claude vira o projeto da estação (agentes, CLAUDE.md, memória)
+            adotado = estacao.adotar_projeto(dados.get("cwd") or os.getcwd())
+            if adotado:
+                contexto.append("A estação do escritório deste editor passou a abrir o Claude nesta pasta ({}), para usar os mesmos "
+                                "agentes, regras e memória. Avise em uma linha; conversas antigas da estação seguem como estavam "
+                                "(ele deve começar uma Nova conversa na central).".format(adotado))
     except Exception:
         pass
     regras = regras_do_time()[:40]
