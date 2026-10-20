@@ -241,6 +241,10 @@ def decidir(ferramenta, entrada, pasta):
     if ferramenta == "Bash":
         motivo = avaliar_bash(entrada.get("command") or "", pasta)
         return ("allow", None) if motivo is None else ("ask", motivo)
+    if ferramenta.startswith("mcp__") and "cw-studios__" in ferramenta:   # ferramentas da própria CW Studios
+        if ferramenta.endswith(("__listar", "__status", "__baixar")):
+            return "allow", None
+        return "ask", "gerar com a conta da empresa ({}; conta no limite do mês)".format((entrada or {}).get("ferramenta") or "API")
     if ferramenta.startswith("mcp__"):
         acao = ferramenta.split("__")[-1].lower()
         if re.search(r"(^|_)(get|list|search|read|fetch|show|query|describe|balance|status|find|lookup|explore|wait|"

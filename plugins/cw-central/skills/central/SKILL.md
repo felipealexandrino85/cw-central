@@ -86,6 +86,15 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - "Como estão meus envios?" → `publicar.py minhas` (aguardando, aprovado, postado com links, ou recusado com o motivo).
   Recusado: ajuste o que o motivo pede e envie de novo.
 
+## Ferramentas da CW Studios (Higgsfield e outras APIs da empresa)
+- O conector `cw-studios` (vem com este plugin) dá ao Claude as APIs da empresa sem chave nenhuma na máquina:
+  `listar` (o que existe, link da documentação, gerações usadas no mês), `gerar` (PAGO, conta no limite mensal do editor),
+  `status` (andamento; com `esperar_segundos` espera terminar) e `baixar` (traz o resultado para a pasta do trabalho).
+- Antes de `gerar`, leia a documentação da ferramenta (ex.: Higgsfield `https://docs.higgsfield.ai/docs/llms.txt`) para
+  achar o caminho do modelo e os parâmetros, e confirme com o editor o que vai gerar e quantas vezes. Prefira o
+  conector da empresa à conta pessoal do editor. Passe `trabalho` (SCC-…/D-…) quando houver. Arquivos de entrada
+  precisam ser URLs públicas. Os resultados ficam na API ~7 dias: baixe o que for usar.
+
 ## Fila da central
 - "O que tem na fila?" → `central.py fila` (as do editor primeiro; a gestão pode ter atribuído alguma a ele).
 - "Pega a próxima" / "pega a D-0012" → `central.py pegar [--id D-0012] --json` e, em seguida, `preparar.py D-0012`

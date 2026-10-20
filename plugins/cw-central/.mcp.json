@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cw-studios": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ferramentas_mcp.py"]
+    }
+  }
+}
