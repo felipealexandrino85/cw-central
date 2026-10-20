@@ -473,6 +473,11 @@ class Execucao:
                            "parada", sessao=resultado.get("session_id"))
         else:
             detalhe = (resultado or {}).get("result") or "\n".join(erro_txt[-6:]) or "código {}".format(self.proc.returncode)
+            if re.search(r"not logged in|please run /login|invalid api key|oauth token", str(detalhe), re.I):
+                detalhe = ("o Claude de linha de comando deste computador ({}) não está logado. O Claude que você usa no app "
+                           "tem login próprio. Para resolver uma vez só: abra o {} neste computador, digite claude, depois "
+                           "/login, entre com a mesma conta e feche. Depois mande o pedido de novo aqui."
+                           .format(claude, "PowerShell" if WINDOWS else "Terminal"))
             self.registrar([{"papel": "sistema", "texto": "Deu erro na estação: " + str(detalhe)[:1500]}], "erro",
                            sessao=(resultado or {}).get("session_id"))
         log("conversa", self.conversa, "terminou", self.proc.returncode)
