@@ -107,7 +107,12 @@ def pasta_liberavel(p):
         return None
     if not rel.parts or rel.parts[0] in ("Library", "AppData") or any(x.startswith(".") for x in rel.parts) or SENSIVEL.search(str(alvo)):
         return None
-    return alvo
+    # libera a pasta do projeto (~/estudio-video), não cada subpasta; em pastas amplas (Documentos, Mesa) vai um nível abaixo
+    amplas = {"Documents", "Documentos", "Desktop", "Mesa", "Pictures", "Music", "Public", "Applications", "OneDrive", "Dropbox"}
+    n = 2 if rel.parts[0] in amplas else 1
+    if len(rel.parts) < n:
+        return None
+    return HOME.joinpath(*rel.parts[:n])
 
 
 SENSIVEL = re.compile(r"(^|[/\\])(\.ssh|\.aws|\.gnupg|\.config[/\\]gh|Keychains|\.netrc|\.env[^/\\]*|supabase-token|"
@@ -188,7 +193,7 @@ def avaliar_bash(cmd, pasta):
     base = Path(pasta)
     inicio, programa, ler_proximo, gravar_proximo, args = True, None, False, False, []
     pular = False   # lista do "for x in ..." / "case x in": não é comando
-    laco = {}       # for x in 2.9 3.8: valores fixos de cada variável (dá para conferir cada um)
+    laco = {"HOME": [str(HOME)]}   # variáveis com valor conhecido: for x in 2.9 3.8, F=~/fontes/x.otf, $HOME
     lendo_laco = None
 
     def expandir(a):
@@ -222,13 +227,21 @@ def avaliar_bash(cmd, pasta):
           for a in (expandir(a0) or [a0]) if "$" in a0 else [a0]:
             if "$" in a and (a0 in gravar or "/" in a):
                 return "{} com caminho em variável ({}), que não dá para conferir".format(nome, a)
-            for parte in ([a.split("=", 1)[1]] if a.startswith("-") and "=" in a else [a]):
+            i0 = args.index(a0)
+            filtro = nome == "ffmpeg" and i0 and args[i0 - 1] in ("-vf", "-af", "-filter_complex", "-lavfi", "-filter:v", "-filter:a")
+            so_ler = bool(filtro or (nome == "ffmpeg" and i0 and args[i0 - 1] == "-i" and ":" in a and "=" in a and not a.startswith(("/", "~", "."))))
+            if so_ler:   # arquivos citados dentro do filtro (fonte, legenda) só são lidos
+                partes = [v for k, v in re.findall(r"(?:^|[:,;=])\s*(fontfile|textfile|filename|subtitles|ass|file|f)\s*=\s*'?([^:,;']+)", a)]
+                partes += [x for x in re.findall(r"(?:subtitles|ass)=([^:,;]+)", a)]
+            else:
+                partes = [a.split("=", 1)[1]] if a.startswith("-") and "=" in a else [a]
+            for parte in partes:
                 if not (parte.startswith(("/", "~", "./", "../")) or "/" in parte):
                     continue
                 if re.match(r"^[a-z]+://", parte):
                     continue
                 p = _resolver(parte, base)
-                if a0 in gravar and not pode_gravar(p, pasta):
+                if a0 in gravar and not so_ler and not pode_gravar(p, pasta):
                     return "mexer em {} (fora da pasta do trabalho)".format(parte)
                 if not pode_ler(p, pasta):
                     return _fora(parte, p, "usar {} (fora da pasta do trabalho)".format(parte))
@@ -283,7 +296,16 @@ def avaliar_bash(cmd, pasta):
                 return _fora(t, _resolver(t, base), "ler {} (fora da pasta do trabalho)".format(t))
             continue
         if inicio:
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):       # VAR=valor antes do comando
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):       # VAR=valor: guarda o valor se der para conferir
+                nome_v, valor = t.split("=", 1)
+                if "$(" in valor or "`" in valor:
+                    laco.pop(nome_v, None)
+                else:
+                    vals = expandir(valor) if "$" in valor else [valor]
+                    if vals is None:
+                        laco.pop(nome_v, None)
+                    else:
+                        laco[nome_v] = vals
                 continue
             if t in ("sudo", "doas", "su"):
                 return "usar {} (permissão de administrador)".format(t)
