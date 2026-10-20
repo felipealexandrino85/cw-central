@@ -63,8 +63,9 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - "Que skills tem na biblioteca?" / "tem algum agente de legenda?" → `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" biblioteca [termo]`.
 - "Puxa a skill X" → confirme com o editor qual item (pelo ID da lista) e rode `kit.py puxar <ID>`; "tira o X" → `kit.py tirar <ID>`.
   Instala em ~/.claude com o prefixo `cw-bib-` e fica disponível na próxima sessão (diga isso ao editor). Também dá
-  para escolher pela página: central › Biblioteca › "Puxar para meu Claude". Plugins não entram por aqui: a página
-  mostra o comando /plugin de cada um.
+  para escolher pela página: central › Biblioteca › "Puxar para meu Claude".
+- "Instala o plugin X da biblioteca (ID n)" (o botão da página copia esse pedido) → `kit.py plugin <ID>`: adiciona o
+  catálogo e instala o plugin. Depois diga ao editor para fechar e abrir o Claude.
 
 ## Kit do time
 - "Compartilha meus agentes com a central" → primeiro mostre o que será enviado:

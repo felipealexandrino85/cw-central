@@ -9,6 +9,7 @@ não colidir com os agentes do próprio editor; o que não está mais no kit é 
   sincronizar                    instala/atualiza o kit oficial e o que você escolheu na biblioteca (roda sozinho ao abrir a sessão)
   biblioteca [termo]             procura agentes/skills nos repositórios que a gestão conectou
   puxar ID / tirar ID            põe (ou tira) um item da biblioteca no seu Claude
+  plugin ID                      instala um plugin da biblioteca (catálogo + /plugin install), vale ao reiniciar o Claude
 """
 import argparse
 import hashlib
@@ -253,6 +254,25 @@ def cmd_puxar(a, quer=True):
         ", ".join(n.split(":", 1)[1] for n in instalados) or "(nada da biblioteca)"))
 
 
+def cmd_plugin(a):
+    info = central.rpc("cw_bib_plugin", p_item=int(a.id))
+    if not info.get("catalogo"):
+        sys.exit("o repositório {} não é um catálogo de plugins; peça à gestão o jeito de instalar".format(info["repo"]))
+    claude = shutil.which("claude") or next((str(c) for c in [Path.home() / ".local/bin/claude", Path.home() / ".claude/local/claude",
+                                                               Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")] if c.exists()), None)
+    if not claude:
+        sys.exit("não achei o comando claude; rode no Claude: /plugin marketplace add {} e /plugin install {}@{}".format(
+            info["repo"], info["plugin"], info["catalogo"]))
+    import subprocess
+    for cmd in ([claude, "plugin", "marketplace", "add", info["repo"]],
+                [claude, "plugin", "install", "{}@{}".format(info["plugin"], info["catalogo"]), "--scope", "user"]):
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        saida = (r.stdout + r.stderr).strip().splitlines()
+        if r.returncode and not any("already" in l.lower() or "já" in l.lower() for l in saida):
+            sys.exit("não consegui: {}".format(saida[-1] if saida else r.returncode))
+    print("Plugin {} instalado (catálogo {}). Feche e abra o Claude para ele começar a valer.".format(info["plugin"], info["catalogo"]))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Kit do time CW Studios")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -267,9 +287,11 @@ def main():
     p.add_argument("id")
     p = sub.add_parser("tirar")
     p.add_argument("id")
+    p = sub.add_parser("plugin")
+    p.add_argument("id")
     a = ap.parse_args()
     {"listar": cmd_listar, "compartilhar": cmd_compartilhar, "sincronizar": cmd_sincronizar, "biblioteca": cmd_biblioteca,
-     "puxar": cmd_puxar, "tirar": lambda x: cmd_puxar(x, quer=False)}[a.cmd](a)
+     "puxar": cmd_puxar, "tirar": lambda x: cmd_puxar(x, quer=False), "plugin": cmd_plugin}[a.cmd](a)
 
 
 if __name__ == "__main__":
