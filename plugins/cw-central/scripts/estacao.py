@@ -414,7 +414,7 @@ def decidir(ferramenta, entrada, pasta):
         motivo = avaliar_bash(entrada.get("command") or "", pasta)
         return ("allow", None) if motivo is None else ("ask", motivo)
     if ferramenta.startswith("mcp__") and "cw-studios__" in ferramenta:   # ferramentas da própria CW Studios
-        if ferramenta.endswith(("__listar", "__status", "__baixar")):
+        if ferramenta.endswith(("__listar", "__status", "__baixar", "__texto")):   # texto: modelo barato, centavos, com limite na central
             return "allow", None
         return "ask", duro("gerar com a conta da empresa ({}; conta no limite do mês)".format((entrada or {}).get("ferramenta") or "API"))
     if ferramenta.startswith("mcp__"):
@@ -611,6 +611,8 @@ class Execucao:
                "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
         if p.get("sessao"):
             cmd += ["--resume", p["sessao"]]
+        if p.get("modelo") in ("sonnet", "haiku", "opus"):   # escolhido na conversa (economia: sonnet/haiku gastam bem menos do limite)
+            cmd += ["--model", p["modelo"]]
         env = dict(os.environ, CW_ESC_CONVERSA=str(self.conversa), CW_ESC_PASTA=str(pasta), CW_ESC="1",
                    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1")   # sem tarefas em segundo plano: o processo fecha ao responder
         self.registrar([], "rodando", pasta=str(pasta))

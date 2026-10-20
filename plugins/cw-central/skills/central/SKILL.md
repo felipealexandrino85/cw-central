@@ -136,3 +136,15 @@ Quando o editor pedir "manda meu CLAUDE.md / minhas regras para o padrão do tim
 Quando ele pedir "compartilha minhas skills e agentes no kit do time", rode `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" listar`, confirme com ele quais vão e rode `kit.py compartilhar --nomes a,b`. A skill vai com as subpastas (agentes/, estilos/...). A gestão decide se o item vai para todo o time ou fica na Biblioteca.
 
 Se o envio para publicação der "Permission denied" ou "não achei a pasta", não conclua sozinho que é falta de acesso. Rode `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/publicar.py" pasta` e mostre ao editor o resultado: ele lista cada letra ou pasta do Google Drive da máquina, se ela tem o CW Cast e se dá para gravar.
+
+## Economia de limite: modelo barato para o trabalho braçal de texto
+
+O conector cw-studios tem a ferramenta **texto**, que manda um texto longo para um modelo barato (OpenRouter, pago pela empresa, centavos) e devolve só a resposta. Ela não gasta o limite do Claude do editor. Use quando precisar **ler muito texto para tirar pouco**:
+- triagem de momentos numa transcrição de episódio;
+- resumo de reunião ou roteiro;
+- lista de títulos ou headlines;
+- conferência de legenda contra a transcrição.
+
+Passe o **caminho** do arquivo em `arquivos` (o conector lê na máquina). Nunca cole o texto inteiro na chamada: isso gasta os tokens que queremos economizar. Modelo padrão: `anthropic/claude-haiku-5.5`. Use `anthropic/claude-sonnet-5.5` se a triagem precisar de mais julgamento. Para resposta longa, use `salvar_em` e leia só o que precisar. A decisão final (quais cortes, revisão editorial) continua com você.
+
+Na estação, cada conversa pode ter um modelo próprio (escolhido pelo editor na página). Para produção mecânica, prefira o Sonnet.

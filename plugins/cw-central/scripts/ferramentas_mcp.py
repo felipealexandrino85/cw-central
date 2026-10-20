@@ -37,6 +37,18 @@ FERRAMENTAS = [
      "inputSchema": {"type": "object", "required": ["ferramenta", "request_id"], "properties": {
          "ferramenta": {"type": "string"}, "request_id": {"type": "string"},
          "esperar_segundos": {"type": "integer", "minimum": 0, "maximum": 600}}}},
+    {"name": "texto", "description": "Manda um texto LONGO para um modelo barato (OpenRouter, conta da empresa, centavos; não gasta o seu "
+     "limite do Claude) e devolve só a resposta. Use para o trabalho braçal de leitura: triagem de momentos numa transcrição de episódio, "
+     "resumos, listas de títulos, checar legenda. Passe o CAMINHO do arquivo (o conector lê aqui na máquina): nunca cole o texto inteiro na "
+     "chamada. A decisão final (quais cortes, revisão) continua com você. Modelos: anthropic/claude-haiku-5.5 (padrão, bom e barato), "
+     "anthropic/claude-sonnet-5.5 (mais caprichado, ~20x mais caro), google/gemini-3.7-flash, google/gemini-3.1-flash-lite (o mais barato).",
+     "inputSchema": {"type": "object", "required": ["instrucao"], "properties": {
+         "instrucao": {"type": "string", "description": "o que o modelo deve fazer com o texto e em que formato responder"},
+         "arquivos": {"type": "array", "items": {"type": "string"}, "description": "caminhos de arquivos de texto (.txt .json .srt .vtt .md .csv), até ~3 MB no total"},
+         "texto": {"type": "string", "description": "texto curto opcional (para longo, use arquivos)"},
+         "modelo": {"type": "string", "description": "padrão: anthropic/claude-haiku-5.5"},
+         "salvar_em": {"type": "string", "description": "opcional: grava a resposta neste arquivo e devolve só um resumo (bom para respostas longas)"},
+         "trabalho": {"type": "string", "description": "card do Jira ou demanda (SCC-1762, D-0012), se houver"}}}},
     {"name": "baixar", "description": "Baixa o resultado de uma geração (URL https) para a pasta atual do trabalho. Os arquivos "
      "ficam na API só por ~7 dias: baixe o que for usar.",
      "inputSchema": {"type": "object", "required": ["url"], "properties": {
@@ -62,6 +74,27 @@ def chamar(corpo, timeout=60):
         raise RuntimeError(j.get("erro") or "central respondeu {}".format(e.code)) from None
 
 
+TEXTO_OK = re.compile(r"\.(txt|json|srt|vtt|md|csv|tsv|xml)$", re.I)
+SENSIVEL = re.compile(r"(^|[/\\])(\.ssh|\.aws|\.gnupg|\.config|Keychains|\.netrc|\.env[^/\\]*|[^/\\]*(credential|secret|token|senha)[^/\\]*|central\.json)([/\\]|$)", re.I)
+
+
+def ler_arquivos(caminhos):
+    """Lê os textos aqui na máquina (o Claude só passa o caminho). Recusa arquivos que não são texto ou que parecem guardar senha/chave."""
+    partes, total = [], 0
+    for c in caminhos or []:
+        p = Path(os.path.expanduser(str(c))).resolve()
+        if SENSIVEL.search(str(p)) or not TEXTO_OK.search(p.name):
+            raise RuntimeError("não envio esse arquivo: {} (só texto de trabalho: .txt .json .srt .vtt .md .csv)".format(p.name))
+        if not p.is_file():
+            raise RuntimeError("arquivo não encontrado: {}".format(p))
+        t = p.read_text(encoding="utf-8", errors="replace")
+        total += len(t)
+        if total > 3_000_000:
+            raise RuntimeError("textos grandes demais (máx. ~3 MB no total)")
+        partes.append("=== {} ===\n{}".format(p.name, t))
+    return "\n\n".join(partes)
+
+
 def executar(nome, args):
     if nome == "listar":
         return chamar({"acao": "listar"})
@@ -75,6 +108,16 @@ def executar(nome, args):
             if r.get("status") in TERMINAIS or time.time() >= fim:
                 return r
             time.sleep(8)
+    if nome == "texto":
+        corpo = "\n\n".join(x for x in (args.get("texto") or "", ler_arquivos(args.get("arquivos"))) if x)
+        r = chamar({"acao": "texto", "ferramenta": "openrouter", "modelo": args.get("modelo") or "anthropic/claude-haiku-5.5",
+                    "instrucao": args.get("instrucao") or "", "texto": corpo, "trabalho": args.get("trabalho")}, timeout=300)
+        if args.get("salvar_em") and r.get("texto"):
+            destino = Path(os.path.expanduser(args["salvar_em"]))
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text(r["texto"], encoding="utf-8")
+            r["texto"] = "(resposta gravada em {}; {} caracteres) {}".format(destino, len(r["texto"]), r["texto"][:600])
+        return r
     if nome == "baixar":
         url = str(args.get("url") or "")
         if not url.startswith("https://"):
