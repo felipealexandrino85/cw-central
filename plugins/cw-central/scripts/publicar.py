@@ -41,12 +41,28 @@ def pasta_publicacao():
     except Exception:
         raizes = sorted((Path.home() / "Library" / "CloudStorage").glob("GoogleDrive-*"))
     mae = Path(relativa).parent
+    achadas = []
     for r in raizes:
         for sub in SUBS:
             base = Path(r) / sub if sub else Path(r)
             if (base / mae).is_dir():
-                return base / relativa
-    return None
+                achadas.append(base / relativa)
+    # com mais de uma conta no Drive (uma letra/pasta por conta), usa a primeira em que dá para gravar
+    for alvo in achadas:
+        if pode_gravar_drive(alvo):
+            return alvo
+    return achadas[0] if achadas else None
+
+
+def pode_gravar_drive(alvo):
+    teste = alvo / PARA_APROVAR / ".cw-teste-{}".format(os.getpid())
+    try:
+        (alvo / PARA_APROVAR).mkdir(parents=True, exist_ok=True)
+        teste.write_bytes(b"ok")
+        teste.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def slug(texto):
@@ -109,7 +125,10 @@ def cmd_enviar(a):
         sys.exit("não achei o Google Drive do CW Studios nesta máquina (pasta 'CW Studios - Produção/CW Cast - Cortes'). "
                  "Confira se o Google Drive para computador está aberto e com o drive compartilhado disponível.")
     destino_pasta = base / PARA_APROVAR
-    destino_pasta.mkdir(parents=True, exist_ok=True)
+    if not pode_gravar_drive(base):
+        sys.exit("o Drive deste computador não deixa gravar em {}. Abra o Google Drive (ícone perto do relógio) › engrenagem › "
+                 "Preferências e confira se há uma conta com acesso de Colaborador ao drive 'CW Studios - Produção'; se acabou de "
+                 "receber o acesso, saia do Google Drive e abra de novo.".format(destino_pasta))
     nome = "{}_{}_{}{}".format(datetime.now().strftime("%Y-%m-%d"), slug(a.titulo), os.urandom(2).hex(), origem.suffix.lower())
     dur = duracao(origem)
     avisos = []
