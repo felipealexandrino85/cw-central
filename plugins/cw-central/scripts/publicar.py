@@ -27,7 +27,7 @@ import central  # noqa: E402
 
 PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes/11. PUBLICAÇÃO"
 PARA_APROVAR = "1. Para aprovar"
-SUBS = ("Drives compartilhados", "Shared drives", "Meu Drive", "My Drive", "")
+SUBS = ("Drives compartilhados", "Unidades compartilhadas", "Shared drives", "Meu Drive", "My Drive", "")
 
 
 def pasta_publicacao():
@@ -54,14 +54,16 @@ def pasta_publicacao():
     return achadas[0] if achadas else None
 
 
-def pode_gravar_drive(alvo):
-    teste = alvo / PARA_APROVAR / ".cw-teste-{}".format(os.getpid())
+def pode_gravar_drive(alvo, motivo=None):
+    teste = alvo / PARA_APROVAR / "cw-teste-{}.tmp".format(os.getpid())
     try:
         (alvo / PARA_APROVAR).mkdir(parents=True, exist_ok=True)
         teste.write_bytes(b"ok")
         teste.unlink()
         return True
-    except OSError:
+    except OSError as e:
+        if motivo is not None:
+            motivo.append("{}: {}".format(type(e).__name__, e))
         return False
 
 
@@ -166,8 +168,26 @@ def cmd_minhas(_a):
 
 
 def cmd_pasta(_a):
+    """Diagnóstico: cada lugar do Google Drive nesta máquina, se tem a pasta do CW Cast e se dá para gravar."""
+    relativa = central.config().get("pasta_publicacao") or PASTA_PADRAO
+    mae = Path(relativa).parent
+    try:
+        import registro
+        raizes = registro.raizes_drive()
+    except Exception as e:
+        raizes = []
+        print("não consegui listar o Drive:", e)
+    print("Lugares do Google Drive nesta máquina:", ", ".join(str(r) for r in raizes) or "(nenhum)")
+    for r in raizes:
+        for sub in SUBS:
+            base = Path(r) / sub if sub else Path(r)
+            if not (base / mae).is_dir():
+                continue
+            motivo = []
+            ok = pode_gravar_drive(base / relativa, motivo)
+            print("- {} → {}".format(base / relativa, "DÁ PARA GRAVAR" if ok else "NÃO grava ({})".format("; ".join(motivo))))
     p = pasta_publicacao()
-    print(p / PARA_APROVAR if p else "não achei a pasta do Drive nesta máquina")
+    print("O envio vai usar:", p / PARA_APROVAR if p else "nenhuma (não achei a pasta 'CW Studios - Produção/CW Cast - Cortes')")
 
 
 def main():

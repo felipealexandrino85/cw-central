@@ -134,3 +134,5 @@ Quando o editor pedir "manda meu CLAUDE.md / minhas regras para o padrão do tim
 5. Avise que as regras ficam esperando a gestão aprovar em "Padrão do time" e, depois de aprovadas, entram em todo Claude do time.
 
 Quando ele pedir "compartilha minhas skills e agentes no kit do time", rode `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" listar`, confirme com ele quais vão e rode `kit.py compartilhar --nomes a,b`. A skill vai com as subpastas (agentes/, estilos/...). A gestão decide se o item vai para todo o time ou fica na Biblioteca.
+
+Se o envio para publicação der "Permission denied" ou "não achei a pasta", não conclua sozinho que é falta de acesso. Rode `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/publicar.py" pasta` e mostre ao editor o resultado: ele lista cada letra ou pasta do Google Drive da máquina, se ela tem o CW Cast e se dá para gravar.
