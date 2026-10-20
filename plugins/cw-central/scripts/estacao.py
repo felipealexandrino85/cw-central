@@ -85,7 +85,10 @@ def zonas_leitura():
     return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras + liberadas
 
 
-ALVO = {"pasta": None}   # última pasta de fora que pediu OK (para o botão "liberar esta pasta")
+ALVO = {"pasta": None, "conector": None}
+EDITORES_LOCAIS = re.compile(r"premiere|after.?effects|aftereffects|\bppro\b|adobe", re.I)
+PERIGO_EDITOR = re.compile(r"export|render|encode|queue|save_as|close|quit|exit|delete_(project|item|bin|file|sequence)|"
+                           r"remove_(item|bin|project|sequence)|relink|consolidate|trash|purge|script|eval|execute", re.I)   # última pasta de fora que pediu OK (para o botão "liberar esta pasta")
 
 
 def _fora(parte, p, motivo):
@@ -301,7 +304,7 @@ def avaliar_bash(cmd, pasta):
 def decidir(ferramenta, entrada, pasta):
     """('allow', None) ou ('ask', motivo)."""
     entrada = entrada or {}
-    ALVO["pasta"] = None
+    ALVO["pasta"], ALVO["conector"] = None, None
     if ferramenta in LIVRES:
         return "allow", None
     if ferramenta in LEITURA:
@@ -321,11 +324,19 @@ def decidir(ferramenta, entrada, pasta):
             return "allow", None
         return "ask", "gerar com a conta da empresa ({}; conta no limite do mês)".format((entrada or {}).get("ferramenta") or "API")
     if ferramenta.startswith("mcp__"):
-        acao = ferramenta.split("__")[-1].lower()
+        servidor, acao = ferramenta.split("__")[1], ferramenta.split("__")[-1].lower()
+        if servidor in (_cfg().get("conectores_liberados") or []):
+            return "allow", None
+        if EDITORES_LOCAIS.search(servidor):   # Premiere/After Effects na máquina: editar a timeline é o trabalho
+            if PERIGO_EDITOR.search(acao):
+                return "ask", "{} no {} (exportar ou apagar arquivo do projeto)".format(acao.replace("_", " "), servidor)
+            return "allow", None
         if re.search(r"(^|_)(get|list|search|read|fetch|show|query|describe|balance|status|find|lookup|explore|wait|"
                      r"transactions|info)(_|$)", acao):
             return "allow", None
-        return "ask", "usar {} (conector externo; pode ter custo)".format(nome_conector(ferramenta))
+        ALVO["conector"] = servidor
+        local = not servidor.startswith(("claude_ai_", "plugin_"))
+        return "ask", "usar {}{}".format(nome_conector(ferramenta), "" if local else " (conector externo; pode ter custo)")
     return "ask", "usar a ferramenta {}".format(ferramenta)
 
 
@@ -380,6 +391,8 @@ def pedir_ok(conversa, ferramenta, entrada, motivo):
     liberavel = pasta_liberavel(ALVO["pasta"])
     if liberavel:
         dados["liberar"] = str(liberavel)
+    elif ALVO["conector"]:
+        dados["liberar_conector"] = ALVO["conector"]
     try:
         mid = central.rpc("cw_esc_pedir_ok", timeout=10, p_conversa=conversa, p_texto="Posso " + motivo + "?", p_dados=dados)
     except central.ErroCentral as e:
@@ -398,6 +411,11 @@ def pedir_ok(conversa, ferramenta, entrada, motivo):
                 liberada = central.rpc("cw_esc_ok_sempre", timeout=10, p_msg=mid)
             except central.ErroCentral:
                 liberada = None
+            if liberada and liberada.startswith("conector:"):
+                cfg = _cfg()
+                cfg["conectores_liberados"] = sorted(set(cfg.get("conectores_liberados") or []) | {liberada[9:]})
+                CONFIG.write_text(json.dumps(cfg, indent=1))
+                return "allow", "O editor aprovou e liberou o conector {} para as próximas vezes.".format(liberada[9:])
             if liberada and pasta_liberavel(Path(liberada)) == Path(liberada):
                 cfg = _cfg()
                 cfg["liberadas"] = sorted(set(cfg.get("liberadas") or []) | {liberada})
@@ -686,7 +704,8 @@ def cmd_ligar(_a):
     copiar_scripts()
     escrever_cerca()
     CONFIG.write_text(json.dumps({"claude": claude, "drive_raizes": [str(r) for r in raizes_drive()],
-                                  "liberadas": _cfg().get("liberadas") or []}, indent=1))
+                                  "liberadas": _cfg().get("liberadas") or [],
+                                  "conectores_liberados": _cfg().get("conectores_liberados") or []}, indent=1))
     if WINDOWS:
         return ligar_windows(claude)
     caminho = os.pathsep.join(dict.fromkeys([str(Path(claude).parent), "/opt/homebrew/bin", "/usr/local/bin",
