@@ -1,6 +1,6 @@
 ---
 name: central
-description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), mandar um corte pronto para publicar nas redes ("manda pra publicação", "posta esse corte"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
+description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), procurar ou puxar agentes/skills da biblioteca ("o que tem na biblioteca?", "puxa a skill X"), usar as ferramentas da empresa (Higgsfield), mandar um corte pronto para publicar nas redes ("manda pra publicação", "posta esse corte"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
 ---
 
 # Central CW Studios
@@ -58,6 +58,13 @@ Se a central abriu um vídeo numa conversa que não era edição (relatório, co
 feche com `--status nao_edicao`: some do painel e não conta no relatório.
 Se veio da central (D-0012), entregue também lá, com o link compartilhável do Drive:
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/central.py" entregar --id D-0012 --link <link> --pecas <N> --nota "<o que vale saber>"`.
+
+## Biblioteca (agentes e skills dos repositórios que a gestão conectou)
+- "Que skills tem na biblioteca?" / "tem algum agente de legenda?" → `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" biblioteca [termo]`.
+- "Puxa a skill X" → confirme com o editor qual item (pelo ID da lista) e rode `kit.py puxar <ID>`; "tira o X" → `kit.py tirar <ID>`.
+  Instala em ~/.claude com o prefixo `cw-bib-` e fica disponível na próxima sessão (diga isso ao editor). Também dá
+  para escolher pela página: central › Biblioteca › "Puxar para meu Claude". Plugins não entram por aqui: a página
+  mostra o comando /plugin de cada um.
 
 ## Kit do time
 - "Compartilha meus agentes com a central" → primeiro mostre o que será enviado:

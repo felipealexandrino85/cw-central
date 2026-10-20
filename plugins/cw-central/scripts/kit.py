@@ -7,6 +7,8 @@ não colidir com os agentes do próprio editor; o que não está mais no kit é 
   listar                         mostra os agentes e skills deste editor que podem ser compartilhados
   compartilhar [--nomes a,b]     envia (todos, ou só os nomes indicados) para a gestão avaliar na aba Kit do time
   sincronizar                    instala/atualiza o kit oficial e o que você escolheu na biblioteca (roda sozinho ao abrir a sessão)
+  biblioteca [termo]             procura agentes/skills nos repositórios que a gestão conectou
+  puxar ID / tirar ID            põe (ou tira) um item da biblioteca no seu Claude
 """
 import argparse
 import hashlib
@@ -232,6 +234,25 @@ def cmd_sincronizar(_a):
     print("Da biblioteca: {}".format(", ".join(bib) if bib else "(nada escolhido)"))
 
 
+def cmd_biblioteca(a):
+    itens = central.rpc("cw_bib_buscar", p_termo=a.termo or "") or []
+    if not itens:
+        print("Nada encontrado na biblioteca{}.".format(" para '{}'".format(a.termo) if a.termo else ""))
+        return
+    for i in itens:
+        print("{:>5}  [{}] {}{}  · {}{}".format(i["id"], i["tipo"], i["nome"], " ✓ no seu Claude" if i["no_meu_claude"] else "",
+                                             i["repo"], " · " + i["descricao"][:90] if i.get("descricao") else ""))
+
+
+def cmd_puxar(a, quer=True):
+    nome = central.rpc("cw_bib_escolher_token", p_item=int(a.id), p_quer=quer)
+    instalados = sincronizar_biblioteca() or []
+    print("{} {}. {} No seu Claude agora: {}".format(
+        "Puxado:" if quer else "Tirado:", nome,
+        "Fica disponível na próxima sessão do Claude (prefixo {}).".format(PREFIXO_BIB) if quer else "Já foi removido dos arquivos do seu Claude.",
+        ", ".join(n.split(":", 1)[1] for n in instalados) or "(nada da biblioteca)"))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Kit do time CW Studios")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -240,8 +261,15 @@ def main():
     p = sub.add_parser("compartilhar")
     p.add_argument("--nomes")
     sub.add_parser("sincronizar")
+    p = sub.add_parser("biblioteca")
+    p.add_argument("termo", nargs="?")
+    p = sub.add_parser("puxar")
+    p.add_argument("id")
+    p = sub.add_parser("tirar")
+    p.add_argument("id")
     a = ap.parse_args()
-    {"listar": cmd_listar, "compartilhar": cmd_compartilhar, "sincronizar": cmd_sincronizar}[a.cmd](a)
+    {"listar": cmd_listar, "compartilhar": cmd_compartilhar, "sincronizar": cmd_sincronizar, "biblioteca": cmd_biblioteca,
+     "puxar": cmd_puxar, "tirar": lambda x: cmd_puxar(x, quer=False)}[a.cmd](a)
 
 
 if __name__ == "__main__":
