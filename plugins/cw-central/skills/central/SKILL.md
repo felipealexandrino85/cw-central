@@ -108,3 +108,7 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - "Pega a próxima" / "pega a D-0012" → `central.py pegar [--id D-0012] --json` e, em seguida, `preparar.py D-0012`
   (o brief já traz o pedido, o ajuste pedido e as regras). Sem material na pasta: use o link da demanda, se houver.
 - "Não vai dar" → `central.py devolver --id D-0012 --motivo "..."`.
+
+## Espelho na central
+
+Toda sessão deste Claude conectado à central aparece para a gestão em "Computador de <editor>", na seção "Direto no Claude": pedidos do editor, respostas e passos do Claude. Senhas e tokens são mascarados antes de sair da máquina, e tudo é apagado em 15 dias. O editor é avisado no começo de cada sessão. Se ele perguntar, confirme isso com franqueza. As sessões da estação do escritório não entram no espelho, porque já aparecem na página.

@@ -327,6 +327,7 @@ def cmd_sessao(a):
     if not sid or not os.path.isfile(transcript):
         return
     atualizar_status(sid, "fim" if a.evento == "SessionEnd" else "sinal")
+    espelho_em_segundo_plano(sid, transcript, forcar=True, fim=a.evento == "SessionEnd")
     estado = {}
     try:
         estado = json.loads(ESTADO.read_text())
@@ -830,6 +831,7 @@ def cmd_atividade(_a):
     achado = classificar(dados.get("tool_name") or "", dados.get("tool_input"))
     if not sid:
         return
+    espelho_em_segundo_plano(sid, dados.get("transcript_path") or "")
     LOCAL.mkdir(parents=True, exist_ok=True)
     arq = arquivo_atividade(sid)
     try:
@@ -967,6 +969,7 @@ def cmd_prompt(_a):
     sid, texto = dados.get("session_id") or "", dados.get("prompt") or ""
     if not sid:
         return
+    espelho_em_segundo_plano(sid, dados.get("transcript_path") or "", forcar=True)
     at, contexto, mudou = ler_atividade(sid), [], False
     pedido = resumo_pedido(texto)
     if pedido:
@@ -1035,6 +1038,140 @@ def cmd_prompt(_a):
                                                  "additionalContext": "\n".join(contexto)}}, ensure_ascii=False))
 
 
+
+# ---------------------------------------------------------------- espelho do Claude
+# Sessão rodada direto no Claude do editor aparece para a gestão na central (o editor é avisado no começo da sessão).
+# Manda pedidos, respostas e passos; segredos mascarados; a estação (CW_ESC) já aparece por conta própria.
+ESPELHO_S = 15            # no máximo um envio a cada 15 s por sessão (Stop e fim sempre mandam)
+SEGREDOS = [
+    (re.compile(r"\bcw_[A-Za-z0-9_]{12,}"), "cw_[oculto]"),
+    (re.compile(r"\b(sk|rk|pk)-[A-Za-z0-9_\-]{16,}"), "[chave oculta]"),
+    (re.compile(r"\b(ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{16,}"), "[token oculto]"),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}"), "[chave oculta]"),
+    (re.compile(r"\beyJ[\w\-]{10,}\.[\w\-]{10,}\.[\w\-]{5,}"), "[token oculto]"),
+    (re.compile(r"\b(EAA|IGQ|IGAA)[A-Za-z0-9]{30,}"), "[token oculto]"),
+    (re.compile(r"(?i)\b(bearer|key)\s+[A-Za-z0-9_\-.:]{20,}"), r"\1 [oculto]"),
+    (re.compile(r"(?i)\b(senha|password|passwd|token|secret|segredo|api[_-]?key|client[_-]?secret)(\"?\s*[:=]\s*\"?)[^\s\"',}]{4,}"), r"\1\2[oculto]"),
+]
+
+
+def mascarar(texto):
+    for pad, troca in SEGREDOS:
+        texto = pad.sub(troca, texto)
+    return texto
+
+
+def _texto_usuario(c):
+    if isinstance(c, str):
+        return c
+    return "\n".join(x.get("text") or "" for x in c if isinstance(x, dict) and x.get("type") == "text")
+
+
+def _passo(bloco):
+    nome, ent = bloco.get("name") or "", bloco.get("input") or {}
+    if nome == "Bash":
+        cmd = (ent.get("description") or "").strip() or (ent.get("command") or "").strip().split("\n")[0]
+        return "Terminal: " + cmd[:300]
+    if nome in ("Read", "Write", "Edit", "NotebookEdit"):
+        return {"Read": "Leu", "Write": "Escreveu", "Edit": "Editou", "NotebookEdit": "Editou"}[nome] + " " + os.path.basename(str(ent.get("file_path") or ent.get("notebook_path") or ""))
+    if nome == "Skill":
+        return "Skill " + str(ent.get("skill") or "")
+    if nome in ("Agent", "Task"):
+        return "Agente {}: {}".format(ent.get("subagent_type") or "geral", (ent.get("description") or "")[:160])
+    if nome.startswith("mcp__"):
+        partes = nome.split("__")
+        return "Conector {}: {}".format(partes[1], partes[-1])
+    alvo = ent.get("pattern") or ent.get("query") or ent.get("url") or ""
+    return (nome + (" " + str(alvo)[:160] if alvo else "")).strip()
+
+
+def espelho_em_segundo_plano(sid, transcript, forcar=False, fim=False):
+    if os.environ.get("CW_ESC") or not sid or not transcript:
+        return
+    marca = LOCAL / "espelho-{}.json".format(re.sub(r"[^\w\-]", "", sid))
+    try:
+        if not (forcar or fim) and time.time() - json.loads(marca.read_text()).get("ultimo", 0) < ESPELHO_S:
+            return
+    except (OSError, ValueError):
+        pass
+    args = [sys.executable, __file__, "espelho", "--sessao", sid, "--transcript", transcript] + (["--fim"] if fim else [])
+    subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def cmd_espelho(a):
+    try:
+        import central
+        if not central.configurada():
+            return
+    except Exception:
+        return
+    LOCAL.mkdir(parents=True, exist_ok=True)
+    marca = LOCAL / "espelho-{}.json".format(re.sub(r"[^\w\-]", "", a.sessao))
+    trava = marca.with_suffix(".trava")
+    try:
+        if trava.exists() and time.time() - trava.stat().st_mtime < 120:
+            return
+        trava.write_text(str(os.getpid()))
+    except OSError:
+        return
+    try:
+        try:
+            est = json.loads(marca.read_text())
+        except (OSError, ValueError):
+            est = {"pos": 0, "seq": 0}
+        msgs, pos = [], est.get("pos", 0)
+        with open(a.transcript, "rb") as f:
+            f.seek(pos)
+            for linha in f:
+                if not linha.endswith(b"\n"):
+                    break
+                pos += len(linha)
+                try:
+                    o = json.loads(linha)
+                except ValueError:
+                    continue
+                if o.get("isSidechain"):
+                    continue
+                ts, c = o.get("timestamp"), (o.get("message") or {}).get("content")
+                if mensagem_humana(o):
+                    msgs.append(("editor", _texto_usuario(c), ts))
+                elif o.get("type") == "user" and isinstance(c, str) and "<command-name>" in c:
+                    m = re.search(r"<command-name>([^<]+)</command-name>", c)
+                    if m:
+                        msgs.append(("editor", m.group(1).strip(), ts))
+                elif o.get("type") == "assistant" and isinstance(c, list):
+                    for b in c:
+                        if b.get("type") == "text" and (b.get("text") or "").strip():
+                            msgs.append(("ia", b["text"], ts))
+                        elif b.get("type") == "tool_use":
+                            msgs.append(("ferramenta", _passo(b), ts))
+                if len(msgs) >= 280:
+                    break
+        seq = est.get("seq", 0)
+        corpo = []
+        for papel, texto, ts in msgs:
+            seq += 1
+            corpo.append({"seq": seq, "papel": papel, "texto": mascarar(texto.strip())[:4000], "ts": ts})
+        t = trabalho_da_sessao(a.sessao) or {}
+        primeiro = next((m["texto"] for m in corpo if m["papel"] == "editor"), None)
+        info = {"maquina": socket.gethostname().split(".")[0], "ativa": not a.fim,
+                "titulo": (t.get("titulo") or (primeiro or "").split("\n")[0][:120]) or None,
+                "trabalho": t.get("jira") or t.get("demanda") or None, "pasta": os.getcwd()}
+        if not corpo and not a.fim and est.get("pos"):
+            est["ultimo"] = time.time()
+        else:
+            central.rpc("cw_espelho_enviar", p_sessao=a.sessao, p_info=info, p_msgs=corpo)
+            est = {"pos": pos, "seq": seq, "ultimo": time.time()}
+        marca.write_text(json.dumps(est))
+    except Exception:
+        pass
+    finally:
+        try:
+            trava.unlink()
+        except OSError:
+            pass
+
+
 def regras_do_time():
     """Regras ativas da central (cópia local para quando estiver sem rede)."""
     cache = LOCAL / "regras.json"
@@ -1094,9 +1231,21 @@ def cmd_abertura(_a):
                   for r in regras]
         contexto.append("Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
                         "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas))
+    saida = {}
+    try:
+        import central
+        espelhada = central.configurada() and not os.environ.get("CW_ESC")
+    except Exception:
+        espelhada = False
+    if espelhada:
+        saida["systemMessage"] = ("Central CW Studios: esta sessão aparece para a gestão na central (pedidos, respostas e passos; "
+                                  "senhas e tokens ficam ocultos; apagado em 15 dias).")
+        contexto.append("Esta sessão é espelhada na Central CW Studios para a gestão (o editor foi avisado). Se o editor perguntar, "
+                        "confirme: a gestão vê pedidos, respostas e passos desta sessão; senhas e tokens são mascarados.")
     if contexto:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(contexto)}},
-                         ensure_ascii=False))
+        saida["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(contexto)}
+    if saida:
+        print(json.dumps(saida, ensure_ascii=False))
 
 
 def cmd_vincular(a):
@@ -1682,6 +1831,10 @@ def main():
     sub.add_parser("atividade")
     sub.add_parser("prompt")
     sub.add_parser("abertura")
+    p = sub.add_parser("espelho")
+    p.add_argument("--sessao", required=True)
+    p.add_argument("--transcript", required=True)
+    p.add_argument("--fim", action="store_true")
     p = sub.add_parser("previa")
     p.add_argument("--sessao", required=True)
     p.add_argument("--arquivo", required=True)
@@ -1711,7 +1864,7 @@ def main():
     sub.add_parser("config")
     a = ap.parse_args()
     {"atividade": cmd_atividade, "prompt": cmd_prompt, "abertura": cmd_abertura, "previa": cmd_previa, "vigia-premiere": cmd_vigia_premiere, "vincular": cmd_vincular, "enviar": cmd_enviar, "inicio": cmd_inicio, "retomar": cmd_retomar, "fim": cmd_fim, "sessao": cmd_sessao,
-     "resumo": cmd_resumo, "pulso": cmd_pulso, "configurar": cmd_configurar, "config": cmd_config}[a.cmd](a)
+     "resumo": cmd_resumo, "pulso": cmd_pulso, "configurar": cmd_configurar, "config": cmd_config, "espelho": cmd_espelho}[a.cmd](a)
 
 
 if __name__ == "__main__":
