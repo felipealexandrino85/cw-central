@@ -87,7 +87,7 @@ def zonas_leitura():
     return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras + liberadas
 
 
-ALVO = {"pasta": None, "conector": None}
+ALVO = {"pasta": None, "conector": None, "duro": False}
 EDITORES_LOCAIS = re.compile(r"premiere|after.?effects|aftereffects|\bppro\b|adobe", re.I)
 PERIGO_EDITOR = re.compile(r"export|render|encode|queue|save_as|close|quit|exit|delete_(project|item|bin|file|sequence)|"
                            r"remove_(item|bin|project|sequence)|relink|consolidate|trash|purge|script|eval|execute", re.I)   # última pasta de fora que pediu OK (para o botão "liberar esta pasta")
@@ -207,12 +207,25 @@ CMD_LER = {"ls", "cat", "head", "tail", "wc", "grep", "egrep", "find", "sort", "
 CMD_GRAVA = {"mkdir", "cp", "mv", "rm", "touch", "tee", "sed", "ffmpeg", "magick", "convert", "sox", "unzip", "zip",
              "tar", "sips", "afconvert", "ln", "rmdir"}
 SEPARA = {";", "&&", "||", "|", "&", "(", ")", "\n", "{", "}", "$(", "`", ";;", "|&"}
+# mesmo com "Aprovar tudo" ligado, estes continuam pedindo OK: mandam coisa para fora, instalam ou mexem no sistema
+DUROS = {"curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "telnet", "ftp", "osascript", "security", "launchctl",
+         "crontab", "dd", "diskutil", "shutdown", "reboot", "halt", "killall", "pkill", "git", "gh", "npm", "npx", "pnpm",
+         "yarn", "pip", "pip3", "brew", "port", "winget", "choco", "scoop", "powershell", "pwsh", "reg", "chmod", "chown",
+         "eval", "exec", "sh", "bash", "zsh", "fish", "defaults", "networksetup", "systemsetup", "csrutil", "spctl", "xattr"}
+APAGA = {"rm", "rmdir", "mv", "ln", "unlink", "shred", "truncate"}
+CODIGO = {"node": ("-e", "--eval", "-p", "--print"), "python3": ("-c",), "python": ("-c",)}
 REDIRECIONA = {">", ">>", "&>", ">|", "2>", "2>>", "&>>"}
 
 
 def _sem_heredoc(cmd):
     """Tira o corpo dos heredocs (python3 - <<'EOF' ... EOF): o corpo é o programa, não comandos de terminal."""
     return re.sub(r"<<-?\s*['\"]?(\w+)['\"]?([^\n]*)\n.*?\n\s*\1\s*(?=\n|$)", r"\2", cmd, flags=re.S)
+
+
+def duro(motivo):
+    """Motivo que pede OK mesmo com "Aprovar tudo" ligado."""
+    ALVO["duro"] = True
+    return motivo
 
 
 def avaliar_bash(cmd, pasta):
@@ -224,8 +237,9 @@ def avaliar_bash(cmd, pasta):
         lex.commenters = ""
         toks = list(lex)
     except ValueError:
-        return "comando que não consegui ler com segurança"
+        return duro("comando que não consegui ler com segurança")
     base = Path(pasta)
+    pilha = []      # subshell "( cd x && ... )": o cd vale só até fechar o parêntese
     inicio, programa, ler_proximo, gravar_proximo, args = True, None, False, False, []
     pular = False   # lista do "for x in ..." / "case x in": não é comando
     laco = {"HOME": [str(HOME)]}   # variáveis com valor conhecido: for x in 2.9 3.8, F=~/fontes/x.otf, $HOME
@@ -241,11 +255,15 @@ def avaliar_bash(cmd, pasta):
         return saida
 
     def fechar():
+        nonlocal base
         if programa is None:
             return None
         nome = os.path.basename(programa)
+        if nome.lower().removesuffix(".exe") in DUROS:
+            return duro("rodar '{}' (manda coisa para fora, instala ou mexe no sistema)".format(nome))
         if nome not in CMD_LER and nome not in CMD_GRAVA:
             return "rodar '{}' (fora dos programas liberados)".format(nome)
+        apaga = nome in APAGA or (nome == "find" and "-delete" in args)
         if nome == "sed" and not any(a.startswith("-i") for a in args):
             gravar = []
         elif nome == "ffmpeg":
@@ -258,11 +276,13 @@ def avaliar_bash(cmd, pasta):
             gravar = []
         if nome == "find" and any(a in ("-delete", "-exec", "-execdir", "-ok") for a in args):
             gravar = args
-        for a0 in args:
+        for i0, a0 in enumerate(args):
+          if nome in CODIGO and i0 and args[i0 - 1] in CODIGO[nome]:
+              continue   # node -e '...' / python3 -c '...': é o programa, não caminho
           for a in (expandir(a0) or [a0]) if "$" in a0 else [a0]:
             if "$" in a and (a0 in gravar or "/" in a):
-                return "{} com caminho em variável ({}), que não dá para conferir".format(nome, a)
-            i0 = args.index(a0)
+                msg = "{} com caminho em variável ({}), que não dá para conferir".format(nome, a)
+                return duro(msg) if apaga else msg
             filtro = nome == "ffmpeg" and i0 and args[i0 - 1] in ("-vf", "-af", "-filter_complex", "-lavfi", "-filter:v", "-filter:a")
             so_ler = bool(filtro or (nome == "ffmpeg" and i0 and args[i0 - 1] == "-i" and ":" in a and "=" in a and not a.startswith(("/", "~", "."))))
             if so_ler:   # arquivos citados dentro do filtro (fonte, legenda) só são lidos
@@ -276,20 +296,26 @@ def avaliar_bash(cmd, pasta):
                 if re.match(r"^[a-z]+://", parte):
                     continue
                 p = _resolver(parte, base)
+                if p is not None and SENSIVEL.search(str(p)) and not _dentro(p, [Path(pasta)]):
+                    return duro("mexer em {} (senha, chave ou credencial)".format(parte))
                 if a0 in gravar and not so_ler and not pode_gravar(p, pasta):
-                    return "mexer em {} (fora da pasta do trabalho)".format(parte)
+                    msg = "{} {} (fora da pasta do trabalho)".format("apagar/mover" if apaga else "mexer em", parte)
+                    return duro(msg) if apaga else msg
                 if not pode_ler(p, pasta):
                     return _fora(parte, p, "usar {} (fora da pasta do trabalho)".format(parte))
-        if nome == "cd" and args:
-            p = _resolver(args[0], base)
+        if nome == "cd":
+            p = _resolver(args[0], base) if args else HOME
             if not pode_ler(p, pasta):
-                return _fora(args[0], p, "ir para {} (fora da pasta do trabalho)".format(args[0]))
+                return _fora(args[0] if args else "~", p, "ir para {} (fora da pasta do trabalho)".format(args[0] if args else "~"))
+            base = p   # caminhos relativos seguintes partem daqui
         return None
 
     for t in toks:
         if gravar_proximo:
             gravar_proximo = False
             p = _resolver(t, base)
+            if not t.startswith("&") and p is not None and SENSIVEL.search(str(p)):
+                return duro("gravar em {} (senha, chave ou credencial)".format(t))
             if "$" in t or (not t.startswith("&") and not pode_gravar(p, pasta)):
                 return "gravar em {} (fora da pasta do trabalho)".format(t)
             continue
@@ -301,6 +327,7 @@ def avaliar_bash(cmd, pasta):
             continue
         if t in SEPARA or t == "$" or set(t) <= set(";&|()"):
             lendo_laco = None
+            fecha_sub = ")" in t
             if pular:
                 pular = False
                 inicio, programa, args = True, None, []
@@ -309,6 +336,10 @@ def avaliar_bash(cmd, pasta):
             if m:
                 return m
             inicio, programa, args = True, None, []
+            if t in ("(", "$("):
+                pilha.append(base)
+            elif fecha_sub and pilha:
+                base = pilha.pop()
             continue
         if pular:
             if lendo_laco is True:            # nome da variável do for
@@ -342,8 +373,8 @@ def avaliar_bash(cmd, pasta):
                     else:
                         laco[nome_v] = vals
                 continue
-            if t in ("sudo", "doas", "su"):
-                return "usar {} (permissão de administrador)".format(t)
+            if t in ("sudo", "doas", "su", "runas"):
+                return duro("usar {} (permissão de administrador)".format(t))
             if t in ("time", "nice", "nohup", "command", "do", "then", "else", "elif", "fi", "done", "esac", "!"):
                 continue
             if t in ("for", "case", "select"):
@@ -361,25 +392,31 @@ def avaliar_bash(cmd, pasta):
 def decidir(ferramenta, entrada, pasta):
     """('allow', None) ou ('ask', motivo)."""
     entrada = entrada or {}
-    ALVO["pasta"], ALVO["conector"] = None, None
+    ALVO["pasta"], ALVO["conector"], ALVO["duro"] = None, None, False
     if ferramenta in LIVRES:
         return "allow", None
     if ferramenta in LEITURA:
         alvo = entrada.get("file_path") or entrada.get("notebook_path") or entrada.get("path") or pasta
-        return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", _fora(alvo, _resolver(alvo, pasta), "ler {}".format(alvo)))
+        if pode_ler(_resolver(alvo, pasta), pasta):
+            return "allow", None
+        if SENSIVEL.search(str(alvo)):
+            return "ask", duro("ler {} (senha, chave ou credencial)".format(alvo))
+        return "ask", _fora(alvo, _resolver(alvo, pasta), "ler {}".format(alvo))
     if ferramenta in BUSCA:
         alvo = entrada.get("path") or pasta
         return ("allow", None) if pode_ler(_resolver(alvo, pasta), pasta) else ("ask", _fora(alvo, _resolver(alvo, pasta), "procurar em {}".format(alvo)))
     if ferramenta in ESCRITA:
         alvo = entrada.get("file_path") or entrada.get("notebook_path") or ""
-        return ("allow", None) if pode_gravar(_resolver(alvo, pasta), pasta) else ("ask", "gravar {}".format(alvo))
+        if pode_gravar(_resolver(alvo, pasta), pasta):
+            return "allow", None
+        return "ask", duro("gravar {} (senha, chave ou credencial)".format(alvo)) if SENSIVEL.search(str(alvo)) else "gravar {}".format(alvo)
     if ferramenta == "Bash":
         motivo = avaliar_bash(entrada.get("command") or "", pasta)
         return ("allow", None) if motivo is None else ("ask", motivo)
     if ferramenta.startswith("mcp__") and "cw-studios__" in ferramenta:   # ferramentas da própria CW Studios
         if ferramenta.endswith(("__listar", "__status", "__baixar")):
             return "allow", None
-        return "ask", "gerar com a conta da empresa ({}; conta no limite do mês)".format((entrada or {}).get("ferramenta") or "API")
+        return "ask", duro("gerar com a conta da empresa ({}; conta no limite do mês)".format((entrada or {}).get("ferramenta") or "API"))
     if ferramenta.startswith("mcp__"):
         servidor, acao = ferramenta.split("__")[1], ferramenta.split("__")[-1].lower()
         if servidor in (_cfg().get("conectores_liberados") or []):
@@ -393,7 +430,8 @@ def decidir(ferramenta, entrada, pasta):
             return "allow", None
         ALVO["conector"] = servidor
         local = not servidor.startswith(("claude_ai_", "plugin_"))
-        return "ask", "usar {}{}".format(nome_conector(ferramenta), "" if local else " (conector externo; pode ter custo)")
+        motivo = "usar {}{}".format(nome_conector(ferramenta), "" if local else " (conector externo; pode ter custo)")
+        return "ask", motivo if local else duro(motivo)
     return "ask", "usar a ferramenta {}".format(ferramenta)
 
 
@@ -444,7 +482,7 @@ def cmd_porteiro(_a):
 
 def pedir_ok(conversa, ferramenta, entrada, motivo):
     detalhe = entrada.get("command") or entrada.get("file_path") or json.dumps(entrada, ensure_ascii=False)
-    dados = {"ferramenta": ferramenta, "detalhe": str(detalhe)[:1500]}
+    dados = {"ferramenta": ferramenta, "detalhe": str(detalhe)[:1500], "livre": not ALVO["duro"]}
     liberavel = pasta_liberavel(ALVO["pasta"])
     if liberavel:
         dados["liberar"] = str(liberavel)
@@ -454,9 +492,11 @@ def pedir_ok(conversa, ferramenta, entrada, motivo):
         mid = central.rpc("cw_esc_pedir_ok", timeout=10, p_conversa=conversa, p_texto="Posso " + motivo + "?", p_dados=dados)
     except central.ErroCentral as e:
         return "deny", "Não consegui pedir OK ao editor na central ({}). Não faça isso; explique o que precisava.".format(e)
-    limite = time.time() + ESPERA_OK_S
+    limite, primeira = time.time() + ESPERA_OK_S, True
     while True:
-        time.sleep(2)
+        if not primeira:
+            time.sleep(2)
+        primeira = False
         try:
             estado = central.rpc("cw_esc_ok", timeout=10, p_msg=mid, p_expirar=time.time() > limite)
         except central.ErroCentral:
