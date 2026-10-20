@@ -6,7 +6,7 @@ não colidir com os agentes do próprio editor; o que não está mais no kit é 
 
   listar                         mostra os agentes e skills deste editor que podem ser compartilhados
   compartilhar [--nomes a,b]     envia (todos, ou só os nomes indicados) para a gestão avaliar na aba Kit do time
-  sincronizar                    instala/atualiza o kit oficial (roda sozinho ao abrir a sessão)
+  sincronizar                    instala/atualiza o kit oficial e o que você escolheu na biblioteca (roda sozinho ao abrir a sessão)
 """
 import argparse
 import hashlib
@@ -24,7 +24,9 @@ import central  # noqa: E402
 CLAUDE = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 HUB = Path(os.environ.get("CW_CORTES_HOME", Path.home() / ".cw-cortes"))
 MANIFESTO = HUB / "kit.json"
+MANIFESTO_BIB = HUB / "biblioteca.json"
 PREFIXO = "cw-kit-"
+PREFIXO_BIB = "cw-bib-"   # itens que o editor escolheu na biblioteca da central
 TEXTO = re.compile(r"\.(md|txt|py|sh|js|ts|json|ya?ml|toml|csv)$", re.I)
 SEGREDO = re.compile(r"(cw_|sbp_|ATATT|sk-|ghp_|eyJ)[A-Za-z0-9_\-=.]{8,}")
 LIMITE_ARQ, LIMITE_TOTAL = 50_000, 300_000
@@ -60,7 +62,7 @@ def locais():
     raizes = [CLAUDE, Path.cwd() / ".claude"]
     for raiz in raizes:
         for arq in sorted((raiz / "agents").glob("*.md")) if (raiz / "agents").is_dir() else []:
-            if arq.stem.startswith(PREFIXO):
+            if arq.stem.startswith((PREFIXO, PREFIXO_BIB)):
                 continue
             txt = arq.read_text(encoding="utf-8", errors="replace")
             fm = frontmatter(txt)
@@ -68,7 +70,7 @@ def locais():
                           "conteudo": limpar(txt), "arquivos": {}, "origem": str(arq)})
         for pasta in sorted((raiz / "skills").iterdir()) if (raiz / "skills").is_dir() else []:
             principal = pasta / "SKILL.md"
-            if not principal.is_file() or pasta.name.startswith(PREFIXO):
+            if not principal.is_file() or pasta.name.startswith((PREFIXO, PREFIXO_BIB)):
                 continue
             txt = principal.read_text(encoding="utf-8", errors="replace")
             fm, extras, total = frontmatter(txt), {}, 0
@@ -167,9 +169,67 @@ def sincronizar(silencioso=True):
     return sorted(agora)
 
 
+def _instalar(itens, prefixo, manifesto):
+    """Instala agentes/skills/comandos com o prefixo e remove os que saíram da lista. Devolve os nomes instalados."""
+    try:
+        antes = json.loads(manifesto.read_text())
+    except (OSError, ValueError):
+        antes = {}
+    agora = {}
+    for item in itens:
+        nome = prefixo + re.sub(r"[^a-z0-9-]+", "-", item["nome"].lower()).strip("-")
+        chave = item["tipo"] + ":" + nome
+        agora[chave] = item.get("versao") or 0
+        destino = {"agente": CLAUDE / "agents" / (nome + ".md"), "comando": CLAUDE / "commands" / (nome + ".md"),
+                   "skill": CLAUDE / "skills" / nome}.get(item["tipo"])
+        if destino is None or (antes.get(chave) == agora[chave] and destino.exists()):
+            continue
+        if item["tipo"] in ("agente", "comando"):
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text(renomear(item["conteudo"], nome) if item["tipo"] == "agente" else item["conteudo"], encoding="utf-8")
+        else:
+            if destino.exists():
+                shutil.rmtree(destino)
+            destino.mkdir(parents=True)
+            (destino / "SKILL.md").write_text(renomear(item["conteudo"], nome), encoding="utf-8")
+            for rel, txt in (item.get("arquivos") or {}).items():
+                alvo = (destino / rel).resolve()
+                if destino.resolve() not in alvo.parents:   # nunca grava fora da pasta da skill
+                    continue
+                alvo.parent.mkdir(parents=True, exist_ok=True)
+                alvo.write_text(txt, encoding="utf-8")
+    for chave in set(antes) - set(agora):   # saiu da lista: remove
+        tipo, nome = chave.split(":", 1)
+        if not nome.startswith(prefixo):
+            continue
+        if tipo == "agente":
+            (CLAUDE / "agents" / (nome + ".md")).unlink(missing_ok=True)
+        elif tipo == "comando":
+            (CLAUDE / "commands" / (nome + ".md")).unlink(missing_ok=True)
+        else:
+            shutil.rmtree(CLAUDE / "skills" / nome, ignore_errors=True)
+    HUB.mkdir(parents=True, exist_ok=True)
+    manifesto.write_text(json.dumps(agora))
+    return sorted(agora)
+
+
+def sincronizar_biblioteca():
+    """Instala o que este editor escolheu na biblioteca da central (cw-bib-*). None se não deu para falar com a central."""
+    if not central.configurada():
+        return None
+    try:
+        itens = central.rpc("cw_bib_minhas", timeout=8) or []
+    except central.ErroCentral:
+        return None
+    return _instalar([i for i in itens if i.get("conteudo")], PREFIXO_BIB, MANIFESTO_BIB)
+
+
 def cmd_sincronizar(_a):
     if sincronizar(silencioso=False) is None:
         print("Não consegui falar com a central (conectado? rode central.py quem).")
+        return
+    bib = sincronizar_biblioteca()
+    print("Da biblioteca: {}".format(", ".join(bib) if bib else "(nada escolhido)"))
 
 
 def main():

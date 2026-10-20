@@ -1045,6 +1045,9 @@ def cmd_abertura(_a):
     try:   # kit do time: instala/atualiza os agentes e skills oficiais (cw-kit-*)
         import kit
         instalados = kit.sincronizar()
+        bib = kit.sincronizar_biblioteca()
+        if bib:
+            contexto.append("Itens da biblioteca da central que este editor escolheu (já instalados): " + ", ".join(n.split(":", 1)[1] for n in bib))
         if instalados:
             contexto.append("Kit do time CW Studios instalado neste Claude (prefira estes fluxos ao editar; item que acabou de "
                             "chegar fica disponível na próxima sessão): " + ", ".join(n.split(":", 1)[1] for n in instalados))
