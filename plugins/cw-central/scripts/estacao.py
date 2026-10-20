@@ -82,6 +82,8 @@ def raizes_drive():
 def zonas_leitura():
     extras = [Path(x) for x in _cfg().get("drive_raizes") or []] or (raizes_drive() if not WINDOWS else [])
     liberadas = [Path(x) for x in _cfg().get("liberadas") or []]   # pastas que o editor liberou pela central
+    if projeto_valido(_cfg().get("projeto")):
+        liberadas.append(Path(_cfg()["projeto"]))                   # projeto do editor (agentes, skills e regras dele)
     return [HOME / ".claude", TRABALHO, HOME / "Downloads", HOME / "Movies", HOME / "Videos", CASA] + extras + liberadas
 
 
@@ -94,6 +96,39 @@ PERIGO_EDITOR = re.compile(r"export|render|encode|queue|save_as|close|quit|exit|
 def _fora(parte, p, motivo):
     ALVO["pasta"] = p
     return motivo
+
+
+def projeto_valido(caminho):
+    """Pasta do projeto do editor: dentro da casa dele, existente, sem pasta oculta nem dado sensível."""
+    if not caminho:
+        return None
+    try:
+        p = Path(os.path.expanduser(str(caminho))).resolve()
+        rel = p.relative_to(HOME)
+    except (OSError, ValueError):
+        return None
+    if not p.is_dir() or not rel.parts or rel.parts[0] in ("Library", "AppData") or \
+            any(x.startswith(".") for x in rel.parts) or SENSIVEL.search(str(p)):
+        return None
+    return p
+
+
+def _cod(p):   # como o Claude nomeia a pasta de sessões de cada diretório (~/.claude/projects/<isto>)
+    return re.sub(r"[^A-Za-z0-9]", "-", str(p))
+
+
+def pasta_de_abertura(pasta, sessao):
+    """Abre o Claude no projeto do editor (para ele ter os agentes, skills e CLAUDE.md de sempre). Conversa que já
+    começou continua no diretório em que nasceu (a sessão do Claude fica guardada por diretório)."""
+    projeto = projeto_valido(_cfg().get("projeto"))
+    if not projeto:
+        return Path(pasta)
+    if sessao:
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "projects"
+        for d in (projeto, Path(pasta)):
+            if (base / _cod(d) / (sessao + ".jsonl")).exists():
+                return d
+    return projeto
 
 
 def pasta_liberavel(p):
@@ -525,9 +560,14 @@ class Execucao:
         texto = p["texto"]
         if not p.get("sessao") and p.get("trabalho"):
             texto = "[{}] {}".format(p["trabalho"], texto)        # o plugin liga a edição ao card/demanda citado
+        abrir = pasta_de_abertura(pasta, p.get("sessao"))
+        sistema = SISTEMA.format(nome=self.nome, pasta=pasta, trabalho=" · trabalho " + p["trabalho"] if p.get("trabalho") else "")
+        if abrir != Path(pasta):
+            sistema += ("\nO Claude foi aberto na pasta do projeto do editor ({}) para você usar os agentes, skills, fontes e regras "
+                        "(CLAUDE.md) que ele sempre usa: siga esse padrão de edição. Leia o que precisar dali, mas grave os "
+                        "arquivos do trabalho na pasta do trabalho ({}), com caminho completo.".format(abrir, pasta))
         cmd = [claude, "-p", texto, "--output-format", "stream-json", "--verbose", "--permission-mode", "default",
-               "--settings", str(CERCA), "--append-system-prompt",
-               SISTEMA.format(nome=self.nome, pasta=pasta, trabalho=" · trabalho " + p["trabalho"] if p.get("trabalho") else "")]
+               "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
         if p.get("sessao"):
             cmd += ["--resume", p["sessao"]]
         env = dict(os.environ, CW_ESC_CONVERSA=str(self.conversa), CW_ESC_PASTA=str(pasta), CW_ESC="1")
@@ -537,7 +577,7 @@ class Execucao:
         try:
             grupo = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000} if WINDOWS   # sem janela
                      else {"start_new_session": True})
-            self.proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            self.proc = subprocess.Popen(cmd, cwd=str(abrir), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                          encoding="utf-8", errors="replace", env=env, bufsize=1, **grupo)
             threading.Thread(target=lambda: erro_txt.extend(self.proc.stderr.read().splitlines()[-20:]), daemon=True).start()
             for linha in self.proc.stdout:
@@ -715,6 +755,32 @@ def ligar_windows(claude):
           "Agora é só abrir a central › Sala e clicar no seu computador. Registro: {}".format(LOG))
 
 
+def projeto_atual():
+    """A pasta onde o editor pediu para ligar a estação vira o projeto, se tiver CLAUDE.md ou .claude/ (agentes, skills)."""
+    cwd = Path.cwd()
+    if cwd != HOME and projeto_valido(cwd) and ((cwd / "CLAUDE.md").exists() or (cwd / ".claude").is_dir()):
+        return str(cwd)
+    return None
+
+
+def cmd_projeto(a):
+    """Define a pasta do projeto do editor: a estação abre o Claude ali (agentes, skills, regras) e grava na pasta do vídeo."""
+    cfg = _cfg()
+    if a.limpar:
+        cfg.pop("projeto", None)
+        CONFIG.write_text(json.dumps(cfg, indent=1))
+        print("Pronto: a estação volta a abrir o Claude na pasta de cada vídeo.")
+        return
+    p = projeto_valido(a.pasta or os.getcwd())
+    if not p:
+        sys.exit("essa pasta não serve como projeto (precisa existir, ficar dentro da sua pasta pessoal e não ser oculta)")
+    cfg["projeto"] = str(p)
+    CONFIG.write_text(json.dumps(cfg, indent=1))
+    tem = [n for n in ("CLAUDE.md", ".claude/agents", ".claude/skills", ".claude/commands") if (p / n).exists()]
+    print("Pronto: as próximas conversas da estação abrem em {} ({}). Conversas antigas continuam como estavam; "
+          "comece uma 'Nova conversa' na central.".format(p, ", ".join(tem) if tem else "sem CLAUDE.md nem .claude/ — confira a pasta"))
+
+
 def cmd_ligar(_a):
     if platform.system() not in ("Darwin", "Windows"):
         sys.exit("a estação liga sozinha no macOS e no Windows; neste sistema rode 'estacao.py rodar' num terminal aberto")
@@ -727,7 +793,8 @@ def cmd_ligar(_a):
     escrever_cerca()
     CONFIG.write_text(json.dumps({"claude": claude, "drive_raizes": [str(r) for r in raizes_drive()],
                                   "liberadas": _cfg().get("liberadas") or [],
-                                  "conectores_liberados": _cfg().get("conectores_liberados") or []}, indent=1))
+                                  "conectores_liberados": _cfg().get("conectores_liberados") or [],
+                                  "projeto": _cfg().get("projeto") or projeto_atual()}, indent=1))
     if WINDOWS:
         return ligar_windows(claude)
     caminho = os.pathsep.join(dict.fromkeys([str(Path(claude).parent), "/opt/homebrew/bin", "/usr/local/bin",
@@ -786,6 +853,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     for c in ("ligar", "desligar", "status", "rodar", "porteiro"):
         sub.add_parser(c)
+    pp = sub.add_parser("projeto")
+    pp.add_argument("pasta", nargs="?")
+    pp.add_argument("--limpar", action="store_true")
     a = ap.parse_args()
     if WINDOWS:   # o console do Windows não é UTF-8 por padrão
         for f in (sys.stdout, sys.stderr):
@@ -795,7 +865,7 @@ def main():
                 pass
     if a.cmd == "rodar" and LOG.exists() and LOG.stat().st_size > 2_000_000:
         LOG.write_text("")
-    {"ligar": cmd_ligar, "desligar": cmd_desligar, "status": cmd_status, "rodar": cmd_rodar, "porteiro": cmd_porteiro}[a.cmd](a)
+    {"ligar": cmd_ligar, "desligar": cmd_desligar, "status": cmd_status, "rodar": cmd_rodar, "porteiro": cmd_porteiro, "projeto": cmd_projeto}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -112,3 +112,9 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 ## Espelho na central
 
 Toda sessão deste Claude conectado à central aparece para a gestão em "Computador de <editor>", na seção "Direto no Claude": pedidos do editor, respostas e passos do Claude. Senhas e tokens são mascarados antes de sair da máquina, e tudo é apagado em 15 dias. O editor é avisado no começo de cada sessão. Se ele perguntar, confirme isso com franqueza. As sessões da estação do escritório não entram no espelho, porque já aparecem na página.
+
+## Projeto da estação (agentes, skills e estilo do editor)
+
+A estação abre o Claude na pasta do projeto do editor, se ela estiver definida. Assim ela usa o CLAUDE.md, os agentes, as skills e as fontes de sempre, e grava os arquivos na pasta do vídeo. Quando o editor pedir "usa a pasta X como projeto da estação" ou "a estação não está no meu estilo", rode:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/estacao.py" projeto "<pasta do projeto>"`
+Use a pasta onde ele costuma abrir o Claude para editar. Na dúvida, use a pasta atual desta sessão, se ela tiver CLAUDE.md ou .claude/. Depois avise que vale para as conversas novas: ele precisa clicar em "Nova conversa" na central. Para voltar ao padrão: `estacao.py projeto --limpar`.
