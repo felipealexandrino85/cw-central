@@ -1,6 +1,6 @@
 ---
 name: central
-description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
+description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), mandar um corte pronto para publicar nas redes ("manda pra publicação", "posta esse corte"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
 ---
 
 # Central CW Studios
@@ -75,6 +75,16 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - "Desliga minha estação" → `estacao.py desligar`. "A estação está ligada?" → `estacao.py status`.
 - Só o próprio editor manda pedidos e aprova ações na estação dele; a gestão só acompanha. Nunca ligue a estação
   de outra pessoa nem mude a cerca (`~/.cw-cortes/estacao/cerca.json`).
+
+## Publicação (cortes prontos → Instagram, TikTok, YouTube Shorts)
+- "Manda pra publicação" / "posta esse corte": para cada corte final (mp4 vertical), escreva a legenda no tom do CW Cast
+  (gancho na 1ª linha, 1–3 frases, chamada para o episódio completo, 3–6 hashtags) e um título curto para o YouTube
+  (até 100 caracteres). Mostre ao editor e ajuste se ele pedir. Depois rode, um por corte:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/publicar.py" enviar --arquivo <corte.mp4> --titulo "<título>" --legenda "<legenda>" --titulo-youtube "<título YT>" [--episodio EP52] [--jira SCC-…] [--agendar "21/10 18:00"]`
+  O arquivo vai para a pasta "1. Para aprovar" do Drive e o card aparece na central para a produção aprovar.
+  Nada é postado sem a aprovação. Só uma rede: `--redes instagram` (ou `tiktok`, `youtube`, separadas por vírgula).
+- "Como estão meus envios?" → `publicar.py minhas` (aguardando, aprovado, postado com links, ou recusado com o motivo).
+  Recusado: ajuste o que o motivo pede e envie de novo.
 
 ## Fila da central
 - "O que tem na fila?" → `central.py fila` (as do editor primeiro; a gestão pode ter atribuído alguma a ele).
