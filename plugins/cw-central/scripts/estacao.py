@@ -233,6 +233,15 @@ def duro(motivo):
 
 def avaliar_bash(cmd, pasta):
     """Devolve None se liberado, ou o motivo para pedir OK."""
+    oficina = _cfg().get("oficina")   # só na Oficina (estação da gestão): consultar é livre, publicar sempre pede OK
+    if oficina and not re.search(r"[;&|`<>]|\$\(", cmd):
+        simples = cmd.strip()
+        for padrao in oficina.get("publicar") or []:
+            if re.match(padrao, simples):
+                return duro("publicar no sistema: " + simples[:200])
+        for padrao in oficina.get("livre") or []:
+            if re.match(padrao, simples):
+                return None
     texto = _sem_heredoc(cmd).replace("$(", " $( ").replace("`", " ` ")
     try:
         lex = shlex.shlex(texto, posix=True, punctuation_chars=";&|()<>")
@@ -548,6 +557,16 @@ def resolver_pasta(pedido):
     return alvo
 
 
+ROBO = """Você é {nome}, um agente do time CW Studios (Cardápio Web). Conversa pela página da Central e roda no servidor da empresa.
+Missão: {missao}
+Instruções de quem te criou:
+{instrucoes}
+Suas skills (já instaladas; use-as sempre que o pedido combinar, seguindo o que elas mandam): {skills}.
+Ferramentas pagas da empresa que você pode usar (conector cw-studios; cada geração paga pede OK): {ferramentas}.
+Você grava sem pedir OK na pasta desta conversa ({pasta}); o Drive compartilhado fica em ~/Drive (ler é livre, gravar pede OK).
+Rode agentes e comandos sempre em primeiro plano. Responda em português do Brasil, direto e curto, como um colega de time."""
+
+
 def _cfg():
     try:
         return json.loads(CONFIG.read_text())
@@ -619,6 +638,12 @@ class Execucao:
         abrir = pasta_de_abertura(pasta, p.get("sessao"))
         sistema = SISTEMA.format(nome=self.nome, pasta=pasta, trabalho=" Trabalho: " + p["trabalho"] + "." if p.get("trabalho") else "",
                                  projeto=", na pasta do projeto ({})".format(abrir) if abrir != Path(pasta) else "")
+        if p.get("agente"):   # conversa com um robô da aba Agentes: ele veste a persona e usa as skills escolhidas
+            ag = p["agente"]
+            sistema = ROBO.format(nome=ag.get("nome") or "Agente", missao=ag.get("missao") or "ajudar o time",
+                                  instrucoes=(ag.get("instrucoes") or "").strip() or "(sem instruções extras)",
+                                  skills=", ".join(x for x in ag.get("skills") or [] if x) or "nenhuma específica",
+                                  ferramentas=", ".join(ag.get("ferramentas") or []) or "nenhuma", pasta=pasta)
         cmd = [claude, "-p", texto, "--output-format", "stream-json", "--verbose", "--permission-mode", "default",
                "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
         try:   # skills criadas no app Claude (sincronizadas com a conta) não carregam sozinhas no Claude da estação
