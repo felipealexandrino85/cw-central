@@ -98,6 +98,51 @@ def hms(s):
     return "{:02d}:{:02d}:{:02d}".format(s // 3600, s % 3600 // 60, s % 60)
 
 
+def transcrever_groq(audio, pasta, dur, aviso):
+    """whisper-large-v3 na Groq (via função Ferramentas da central): pedaços de 10 min, 3 de cada vez. Devolve a lista de segmentos."""
+    import base64
+    from concurrent.futures import ThreadPoolExecutor
+    import ferramentas_mcp
+    pedaco, partes = 600, []
+    total = int((dur or 0) // pedaco) + 1
+    tmp = pasta / "pedacos"
+    tmp.mkdir(exist_ok=True)
+    feitos = [0]
+
+    def um(k):
+        arq = tmp / "p{:03d}.mp3".format(k)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(k * pedaco), "-t", str(pedaco), "-i", str(audio),
+                        "-ac", "1", "-ar", "16000", "-b:a", "32k", str(arq)], check=True)
+        if arq.stat().st_size < 2000:
+            return k, {"segmentos": [], "palavras": []}
+        for tentativa in range(3):
+            try:
+                r = ferramentas_mcp.chamar({"acao": "transcrever", "ferramenta": "groq", "modelo": "whisper-large-v3", "nome": arq.name,
+                                            "audio_b64": base64.b64encode(arq.read_bytes()).decode(), "trabalho": "esteira"}, timeout=300)
+                if r.get("erro"):
+                    raise RuntimeError(r["erro"])
+                feitos[0] += 1
+                aviso(20 + int(65 * feitos[0] / total))
+                return k, r
+            except Exception:
+                if tentativa == 2:
+                    raise
+                time.sleep(5 * (tentativa + 1))
+
+    with ThreadPoolExecutor(3) as ex:
+        resultados = dict(ex.map(um, range(total)))
+    segs = []
+    for k in range(total):
+        r, off = resultados[k], k * pedaco
+        palavras = [{"p": (w.get("p") or "").strip(), "i": round(w["i"] + off, 2), "f": round(w["f"] + off, 2)} for w in r.get("palavras") or []]
+        for sg in r.get("segmentos") or []:
+            ini, fim = sg["inicio"] + off, sg["fim"] + off
+            segs.append({"inicio": round(ini, 2), "fim": round(fim, 2), "texto": (sg.get("texto") or "").strip(),
+                         "palavras": [w for w in palavras if ini - 0.05 <= w["i"] < fim + 0.05]})
+    shutil.rmtree(tmp, ignore_errors=True)
+    return segs
+
+
 def preparar(ep):
     eid = ep["id"]
     pasta = BASE / str(eid)
@@ -116,6 +161,15 @@ def preparar(ep):
         if not audio.exists():
             subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(bruto), "-vn", "-ac", "1", "-ar", "16000", str(audio)], check=True)
         transc = pasta / "transcricao.json"
+        if not transc.exists() and os.environ.get("CW_TRANSCRICAO", "groq") == "groq":
+            srv("episodio", id=eid, etapa="transcrevendo (whisper-large-v3 na Groq)", progresso=20)
+            try:
+                segs = transcrever_groq(audio, pasta, dur, lambda pct: srv("episodio", id=eid, progresso=pct))
+                tmp = transc.with_suffix(".parcial")
+                tmp.write_text(json.dumps(segs, ensure_ascii=False))
+                tmp.replace(transc)
+            except Exception as e:   # sem Groq (chave, limite, rede): transcreve aqui mesmo
+                log("Groq falhou, transcrevendo no servidor:", e)
         if not transc.exists():
             from faster_whisper import WhisperModel
             gpu = tem_gpu()
