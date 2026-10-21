@@ -661,7 +661,9 @@ class Execucao:
                    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1")   # sem tarefas em segundo plano: o processo fecha ao responder
         if SERVIDOR:   # no servidor o Claude roda com a conta do próprio editor
             if not TOKEN_CLAUDE.exists():
-                self.registrar([{"papel": "sistema", "texto": "Sua conta Claude ainda não está ligada no servidor. Na página, abra a estação "
+                self.registrar([{"papel": "sistema", "texto": "Os robôs ainda não têm conta Claude no servidor: a gestão liga em Agentes › "
+                                 "☁️ Ligar a conta Claude dos robôs. Depois mande de novo." if p.get("agente") else
+                                 "Sua conta Claude ainda não está ligada no servidor. Na página, abra a estação "
                                  "e clique em ☁️ Ligar minha conta Claude no servidor; depois mande o pedido de novo."}], "erro")
                 return
             env["CLAUDE_CODE_OAUTH_TOKEN"] = TOKEN_CLAUDE.read_text().strip()
