@@ -826,7 +826,10 @@ def _extrair_token(texto):
             break
         partes.append(l)
     token = re.match(r"sk-ant-[0-9A-Za-z_-]+", "".join(partes))
-    return token.group(0) if token and len(token.group(0)) >= 60 else None
+    if not token or len(token.group(0)) < 60:
+        return None
+    # a tela do login come o "o" de "oat01" junto com um código invisível: o prefixo é sempre sk-ant-oat01-
+    return re.sub(r"^sk-ant-at01-", "sk-ant-oat01-", token.group(0))
 
 
 def _parear_fechar():
