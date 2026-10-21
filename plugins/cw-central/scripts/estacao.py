@@ -809,6 +809,26 @@ def _sem_escape(t):
     return re.sub(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()*+][0-9A-Za-z]|[@-Z\\_=>78-])", "", t)
 
 
+def _extrair_token(texto):
+    """O token do 'claude setup-token', mesmo se a tela o quebrou em várias linhas (junta só linhas que são pedaços do token)."""
+    i = texto.find("sk-ant-")
+    if i < 0:
+        return None
+    linhas = texto[i:].replace("\r", "\n").split("\n")
+    partes = [linhas[0].strip()]
+    for l in linhas[1:]:
+        l = l.strip()
+        if not l:
+            if len("".join(partes)) >= 80:
+                break
+            continue
+        if not re.fullmatch(r"[0-9A-Za-z_-]+", l):
+            break
+        partes.append(l)
+    token = re.match(r"sk-ant-[0-9A-Za-z_-]+", "".join(partes))
+    return token.group(0) if token and len(token.group(0)) >= 60 else None
+
+
 def _parear_fechar():
     if _PAREAR["proc"]:
         try:
@@ -865,8 +885,9 @@ def conta_claude_no_servidor():
         texto = _ler_pty(_PAREAR["fd"], 60, ate=r"sk-ant-oat[0-9A-Za-z_-]{40,}|[Ee]rror|[Ii]nvalid")
         texto += _ler_pty(_PAREAR["fd"], 1)   # o resto do token, se ainda estava chegando
         _parear_fechar()
-        token = re.search(r"sk-ant-oat[0-9A-Za-z_-]{40,}", texto)   # sem tirar espaços: o texto depois do token grudaria nele
+        token = _extrair_token(texto)
         if not token:
+            log("conta Claude: formato da resposta (letras e números viram x):", repr(re.sub(r"[A-Za-z0-9]", "x", texto))[:900])
             erro = re.search(r"(OAuth error[^\n]{0,120}|[Ii]nvalid[^\n]{0,80})", texto)
             # nunca registrar a saída bruta do login: ela pode conter o token
             log("conta Claude: código recusado", erro.group(1) if erro else "(resposta em formato inesperado, {} caracteres)".format(len(texto)))
@@ -876,7 +897,7 @@ def conta_claude_no_servidor():
         CASA.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(TOKEN_CLAUDE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write(token.group(0))
+            f.write(token)
         status("ok", msg="Conta Claude ligada no servidor. Os pedidos rodam com o seu plano.")
         log("conta Claude ligada no servidor")
 
