@@ -182,7 +182,8 @@ def _dentro(p, raizes):
 
 
 def pode_gravar(p, pasta):
-    return p is not None and (str(p) == "/dev/null" or _dentro(p, [Path(pasta)] + _temp()))
+    projeto = projeto_valido(_cfg().get("projeto"))   # as skills do editor gravam na estrutura do projeto dele (work/, lotes/...)
+    return p is not None and (str(p) == "/dev/null" or _dentro(p, [Path(pasta)] + _temp() + ([projeto] if projeto else [])))
 
 
 def pode_ler(p, pasta):
@@ -525,11 +526,9 @@ def pedir_ok(conversa, ferramenta, entrada, motivo):
 
 
 # ----------------------------------------------------------------------------------------------- execução
-SISTEMA = """Você está rodando na estação do editor {nome}, pelo Escritório da Central CW Studios. Quem escreve é o próprio editor, pela página da central (ele não vê o terminal).
-Pasta do trabalho: {pasta}{trabalho}
-Dentro dessa pasta você age sozinho: ler e gravar arquivos, rodar ffmpeg, Python e os scripts do kit e dos plugins. Qualquer outra coisa (instalar programa, apagar ou gravar fora da pasta, geração paga, conectores externos) passa por um pedido de OK ao editor na página, que pode demorar. Se o OK for negado, não procure outro caminho para fazer a mesma coisa: explique e pergunte.
-Material bruto costuma estar em ~/Downloads, na pasta do Google Drive ou em ~/CW-Work/preparo/<CHAVE>; copie para a pasta do trabalho o que for editar.
-Responda em português, curto, dizendo o que fez, onde ficou o arquivo e o que falta.
+SISTEMA = """Você está rodando na estação do editor {nome}: é o mesmo Claude dele, só que comandado pela página da Central CW Studios (ele escreve pela página e não vê o terminal).
+Trabalhe exatamente como ele trabalha no Claude normal: siga as skills, os agentes, o CLAUDE.md e as regras do time, com as pastas, os scripts e o formato de resposta que eles definem. Não simplifique nem pule etapas por estar na estação.
+Você grava sem pedir OK na pasta do trabalho ({pasta}){projeto}, nas pastas que o editor liberou e nas temporárias.{trabalho} Fora disso (instalar programa, apagar fora dessas pastas, geração paga, conectores externos) o pedido de OK aparece para o editor na página e pode demorar; se for negado, não procure outro caminho para fazer a mesma coisa: explique e pergunte.
 IMPORTANTE nesta estação: quando você termina a resposta, o processo fecha e qualquer agente ou comando em segundo plano morre sem gravar nada. Então rode agentes (Agent/Task) e comandos sempre em primeiro plano (run_in_background: false), espere TODOS terminarem e só depois responda. Se a skill pede agentes em paralelo, chame-os na mesma mensagem em primeiro plano e espere os resultados. Nunca encerre dizendo "estão rodando, quando terminarem eu sigo"."""
 
 
@@ -555,8 +554,16 @@ def _cfg():
 
 
 def achar_claude():
-    for c in [HOME / ".local/bin/claude.exe" if WINDOWS else None, shutil.which("claude"), HOME / ".local/bin/claude",
-              HOME / ".claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]:
+    import glob as _glob
+    candidatos = [HOME / ".local/bin/claude.exe" if WINDOWS else None, shutil.which("claude"), HOME / ".local/bin/claude",
+                  HOME / ".claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", HOME / ".npm-global/bin/claude",
+                  HOME / ".bun/bin/claude", HOME / ".volta/bin/claude"]
+    candidatos += sorted(_glob.glob(str(HOME / ".nvm/versions/node/*/bin/claude")), reverse=True)
+    candidatos += sorted(_glob.glob(str(HOME / "Library/Application Support/Claude/claude-code/*/claude")), reverse=True)   # o do app Claude (Mac)
+    if WINDOWS:
+        candidatos += [Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd"]
+        candidatos += sorted(_glob.glob(os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code", "*", "claude.exe")), reverse=True)
+    for c in candidatos:
         if c and Path(c).exists():
             return str(c)
     return None
@@ -594,7 +601,13 @@ class Execucao:
         except OSError as e:
             self.registrar([{"papel": "sistema", "texto": "Não consegui criar a pasta do trabalho: {}".format(e)}], "erro")
             return
-        claude = _cfg().get("claude") or achar_claude()
+        claude = _cfg().get("claude")
+        if not claude or not Path(claude).exists():   # o Claude foi reinstalado em outro lugar: procura de novo e guarda
+            claude = achar_claude()
+            if claude:
+                cfg = _cfg()
+                cfg["claude"] = claude
+                CONFIG.write_text(json.dumps(cfg, indent=1))
         if not claude:
             self.registrar([{"papel": "sistema", "texto": "Não achei o Claude Code nesta máquina."}], "erro")
             return
@@ -602,11 +615,8 @@ class Execucao:
         if not p.get("sessao") and p.get("trabalho"):
             texto = "[{}] {}".format(p["trabalho"], texto)        # o plugin liga a edição ao card/demanda citado
         abrir = pasta_de_abertura(pasta, p.get("sessao"))
-        sistema = SISTEMA.format(nome=self.nome, pasta=pasta, trabalho=" · trabalho " + p["trabalho"] if p.get("trabalho") else "")
-        if abrir != Path(pasta):
-            sistema += ("\nO Claude foi aberto na pasta do projeto do editor ({}) para você usar os agentes, skills, fontes e regras "
-                        "(CLAUDE.md) que ele sempre usa: siga esse padrão de edição. Leia o que precisar dali, mas grave os "
-                        "arquivos do trabalho na pasta do trabalho ({}), com caminho completo.".format(abrir, pasta))
+        sistema = SISTEMA.format(nome=self.nome, pasta=pasta, trabalho=" Trabalho: " + p["trabalho"] + "." if p.get("trabalho") else "",
+                                 projeto=", na pasta do projeto ({})".format(abrir) if abrir != Path(pasta) else "")
         cmd = [claude, "-p", texto, "--output-format", "stream-json", "--verbose", "--permission-mode", "default",
                "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
         if p.get("sessao"):
@@ -631,7 +641,8 @@ class Execucao:
                     continue
                 tipo = ev.get("type")
                 if tipo == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
-                    self.registrar([], None, sessao=ev["session_id"])
+                    info = "Claude {} · aberto em {}".format(ev.get("model") or "?", Path(ev.get("cwd") or str(abrir)).name)
+                    self.registrar([{"papel": "sistema", "texto": info}], None, sessao=ev["session_id"])
                 elif tipo == "assistant":
                     msgs = []
                     for c in (ev.get("message") or {}).get("content") or []:
