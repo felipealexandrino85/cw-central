@@ -46,6 +46,7 @@ FERRAMENTAS = [
          "instrucao": {"type": "string", "description": "o que o modelo deve fazer com o texto e em que formato responder"},
          "arquivos": {"type": "array", "items": {"type": "string"}, "description": "caminhos de arquivos de texto (.txt .json .srt .vtt .md .csv), até ~3 MB no total"},
          "texto": {"type": "string", "description": "texto curto opcional (para longo, use arquivos)"},
+         "etapa": {"type": "string", "description": "a etapa do roteamento do time que este pedido cumpre (ex.: mapa_bruto, candidatos, revisao_legenda), para a gestão medir a economia"},
          "modelo": {"type": "string", "description": "padrão: anthropic/claude-haiku-5.5"},
          "salvar_em": {"type": "string", "description": "opcional: grava a resposta neste arquivo e devolve só um resumo (bom para respostas longas)"},
          "trabalho": {"type": "string", "description": "card do Jira ou demanda (SCC-1762, D-0012), se houver"}}}},
@@ -111,7 +112,8 @@ def executar(nome, args):
     if nome == "texto":
         corpo = "\n\n".join(x for x in (args.get("texto") or "", ler_arquivos(args.get("arquivos"))) if x)
         r = chamar({"acao": "texto", "ferramenta": "openrouter", "modelo": args.get("modelo") or "anthropic/claude-haiku-5.5",
-                    "instrucao": args.get("instrucao") or "", "texto": corpo, "trabalho": args.get("trabalho")}, timeout=300)
+                    "instrucao": args.get("instrucao") or "", "texto": corpo, "trabalho": args.get("trabalho"),
+                    "etapa": args.get("etapa")}, timeout=300)
         if args.get("salvar_em") and r.get("texto"):
             destino = Path(os.path.expanduser(args["salvar_em"]))
             destino.parent.mkdir(parents=True, exist_ok=True)

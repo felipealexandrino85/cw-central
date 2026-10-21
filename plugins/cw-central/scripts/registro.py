@@ -1208,6 +1208,40 @@ def licoes_aprendidas():
         return []
 
 
+def roteamento():
+    """Etapas da edição que o time manda para modelos baratos (OpenRouter), se valer nesta máquina. Cópia local sem rede."""
+    cache = LOCAL / "roteamento.json"
+    try:
+        import central
+        if central.configurada():
+            r = central.rpc("cw_roteamento", timeout=3) or {}
+            LOCAL.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(r, ensure_ascii=False))
+        else:
+            r = json.loads(cache.read_text())
+    except Exception:
+        try:
+            r = json.loads(cache.read_text())
+        except (OSError, ValueError):
+            return []
+    onde = r.get("onde") or "servidor"
+    vale = onde == "todos" or (onde == "servidor" and os.environ.get("CW_SERVIDOR") == "1")
+    return (r.get("etapas") or []) if vale else []
+
+
+def texto_roteamento(etapas):
+    linhas = ["- {} (etapa `{}`, modelo `{}`): {}".format(e["nome"], e["etapa"], e["modelo"], e["quando"]) for e in etapas]
+    return ("Economia do time (roteamento definido pela gestão): estas etapas da edição NÃO são feitas por você. Mande para um "
+            "modelo barato com a ferramenta cw-studios › texto, passando o CAMINHO do arquivo (transcrição, legenda), a `etapa` "
+            "e o `modelo` indicados, e `salvar_em` quando a resposta for longa; depois trabalhe em cima do resultado:\n"
+            + "\n".join(linhas) +
+            "\nContinuam com você (Claude), sempre: a decisão final (quais cortes, o que aprovar ou refazer), conferir o que o "
+            "modelo barato devolveu antes de usar, escrever ou mudar código e scripts, ffmpeg/Remotion/render, olhar quadros e "
+            "vídeo, a revisão de qualidade final, a conversa com o editor e tudo que mexe em arquivos do projeto. Se a "
+            "ferramenta falhar ou o resultado vier ruim, faça você mesmo e diga em uma linha. Ao chamar um agente ou subagente "
+            "para uma dessas etapas, peça que ele use a ferramenta cw-studios › texto do mesmo jeito.")
+
+
 TIPO_NOME = {"reel": "Reel", "cortes": "Cortes", "tutorial": "Tutorial", "youtube": "YouTube", "anuncio": "Anúncio",
              "story": "Story", "outro": "Outro"}
 
@@ -1269,6 +1303,9 @@ def cmd_abertura(_a):
                   for r in regras]
         contexto.append("Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
                         "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas))
+    rotas = roteamento()
+    if rotas:
+        contexto.append(texto_roteamento(rotas))
     licoes = licoes_aprendidas()[:40]
     if licoes:
         linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(l.get("tipo"), l.get("tipo"))) if l.get("tipo") else "", l["texto"]) for l in licoes]
