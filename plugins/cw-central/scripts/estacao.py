@@ -799,9 +799,14 @@ def _ler_pty(fd, segundos, ate=None):
                 saida += os.read(fd, 65536).decode("utf-8", "replace")
             except OSError:
                 break
-            if ate and re.search(ate, re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\s", "", saida)):
+            if ate and re.search(ate, re.sub(r"\s", "", _sem_escape(saida))):
                 break
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", saida)
+    return _sem_escape(saida)
+
+
+def _sem_escape(t):
+    """Tira as sequências invisíveis do terminal (cor, cursor, link, troca de charset ESC(B), que quebram o token no meio."""
+    return re.sub(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()*+][0-9A-Za-z]|[@-Z\\_=>78-])", "", t)
 
 
 def _parear_fechar():
@@ -858,11 +863,13 @@ def conta_claude_no_servidor():
         time.sleep(1)
         os.write(_PAREAR["fd"], b"\r")
         texto = _ler_pty(_PAREAR["fd"], 60, ate=r"sk-ant-oat[0-9A-Za-z_-]{40,}|[Ee]rror|[Ii]nvalid")
+        texto += _ler_pty(_PAREAR["fd"], 1)   # o resto do token, se ainda estava chegando
         _parear_fechar()
-        token = re.search(r"sk-ant-oat[0-9A-Za-z_-]{40,}", re.sub(r"\s", "", texto))
+        token = re.search(r"sk-ant-oat[0-9A-Za-z_-]{40,}", texto)   # sem tirar espaços: o texto depois do token grudaria nele
         if not token:
             erro = re.search(r"(OAuth error[^\n]{0,120}|[Ii]nvalid[^\n]{0,80})", texto)
-            log("conta Claude: código recusado", (erro.group(1) if erro else re.sub(r"\s+", " ", texto)[-200:]))
+            # nunca registrar a saída bruta do login: ela pode conter o token
+            log("conta Claude: código recusado", erro.group(1) if erro else "(resposta em formato inesperado, {} caracteres)".format(len(texto)))
             status("erro", msg="O Claude não aceitou esse código{}. Peça um link novo e cole o código assim que aparecer (ele vence em poucos minutos)."
                    .format(" (" + erro.group(1).strip()[:80] + ")" if erro else ""))
             return
