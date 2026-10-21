@@ -854,12 +854,17 @@ def conta_claude_no_servidor():
         if _PAREAR["fd"] is None:
             status("erro", msg="O link venceu. Peça um link novo.")
             return
-        os.write(_PAREAR["fd"], (r["codigo"].strip() + "\r").encode())
+        os.write(_PAREAR["fd"], r["codigo"].strip().encode())   # colar e, depois, Enter separado: junto, o login trata o Enter como parte da colagem
+        time.sleep(1)
+        os.write(_PAREAR["fd"], b"\r")
         texto = _ler_pty(_PAREAR["fd"], 60, ate=r"sk-ant-oat[0-9A-Za-z_-]{40,}|[Ee]rror|[Ii]nvalid")
         _parear_fechar()
         token = re.search(r"sk-ant-oat[0-9A-Za-z_-]{40,}", re.sub(r"\s", "", texto))
         if not token:
-            status("erro", msg="O Claude não aceitou esse código. Peça um link novo e cole o código assim que aparecer.")
+            erro = re.search(r"(OAuth error[^\n]{0,120}|[Ii]nvalid[^\n]{0,80})", texto)
+            log("conta Claude: código recusado", (erro.group(1) if erro else re.sub(r"\s+", " ", texto)[-200:]))
+            status("erro", msg="O Claude não aceitou esse código{}. Peça um link novo e cole o código assim que aparecer (ele vence em poucos minutos)."
+                   .format(" (" + erro.group(1).strip()[:80] + ")" if erro else ""))
             return
         CASA.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(TOKEN_CLAUDE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
