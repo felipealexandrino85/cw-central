@@ -206,7 +206,8 @@ ESCRITA = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 CMD_LER = {"ls", "cat", "head", "tail", "wc", "grep", "egrep", "find", "sort", "uniq", "cut", "tr", "awk", "jq", "du",
            "stat", "file", "basename", "dirname", "realpath", "date", "sleep", "cd", "pwd", "test", "[", "true",
            "false", "echo", "printf", "diff", "cmp", "seq", "nl", "column", "md5", "shasum", "bc", "expr", "which",
-           "type", "mediainfo", "ffprobe", "exiftool", "python3", "python", "whisper", "open", "node"}
+           "type", "mediainfo", "ffprobe", "exiftool", "python3", "python", "whisper", "open", "node",
+           "ps", "pgrep", "pidof", "uptime", "free", "df", "nproc"}   # conferir se um processo ainda roda / espaço livre
 CMD_GRAVA = {"mkdir", "cp", "mv", "rm", "touch", "tee", "sed", "ffmpeg", "magick", "convert", "sox", "unzip", "zip",
              "tar", "sips", "afconvert", "ln", "rmdir"}
 SEPARA = {";", "&&", "||", "|", "&", "(", ")", "\n", "{", "}", "$(", "`", ";;", "|&"}
@@ -254,6 +255,7 @@ def avaliar_bash(cmd, pasta):
     pilha = []      # subshell "( cd x && ... )": o cd vale só até fechar o parêntese
     inicio, programa, ler_proximo, gravar_proximo, args = True, None, False, False, []
     pular = False   # lista do "for x in ..." / "case x in": não é comando
+    no_timeout = False
     laco = {"HOME": [str(HOME)]}   # variáveis com valor conhecido: for x in 2.9 3.8, F=~/fontes/x.otf, $HOME
     lendo_laco = None
 
@@ -389,6 +391,12 @@ def avaliar_bash(cmd, pasta):
                 return duro("usar {} (permissão de administrador)".format(t))
             if t in ("time", "nice", "nohup", "command", "do", "then", "else", "elif", "fi", "done", "esac", "!"):
                 continue
+            if t == "timeout":   # "timeout 600 ffmpeg ...": quem conta é o comando de dentro
+                no_timeout = True
+                continue
+            if no_timeout and (t.startswith("-") or re.match(r"^\d+(\.\d+)?[smhd]?$", t)):
+                continue
+            no_timeout = False
             if t in ("for", "case", "select"):
                 pular = True
                 lendo_laco = True if t == "for" else None
