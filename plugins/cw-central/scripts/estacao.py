@@ -48,6 +48,8 @@ ESPERA_OK_S = 30 * 60
 WINDOWS = os.name == "nt"
 INICIAR_WIN = Path(os.environ.get("APPDATA", HOME)) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "cw-estacao.vbs"
 NOMES_DRIVE = ("Shared drives", "Drives compartilhados", "My Drive", "Meu Drive")
+SERVIDOR = os.environ.get("CW_SERVIDOR") == "1"   # estação no servidor da nuvem (um usuário Linux por editor)
+TOKEN_CLAUDE = CASA / "claude-token"            # só no servidor: o token da conta Claude do editor (fica só aqui, 600)
 TRABALHO = Path(os.path.expanduser(os.environ.get("CW_TRABALHO") or "~/CW-Work"))
 
 
@@ -619,12 +621,25 @@ class Execucao:
                                  projeto=", na pasta do projeto ({})".format(abrir) if abrir != Path(pasta) else "")
         cmd = [claude, "-p", texto, "--output-format", "stream-json", "--verbose", "--permission-mode", "default",
                "--settings", str(CERCA), "--add-dir", str(pasta), "--append-system-prompt", sistema]
+        try:   # skills criadas no app Claude (sincronizadas com a conta) não carregam sozinhas no Claude da estação
+            import capacidades
+            app = capacidades.pasta_skills_app()
+            if app:
+                cmd += ["--add-dir", str(app)]
+        except Exception:
+            capacidades = None
         if p.get("sessao"):
             cmd += ["--resume", p["sessao"]]
         if p.get("modelo") in ("sonnet", "haiku", "opus"):   # escolhido na conversa (economia: sonnet/haiku gastam bem menos do limite)
             cmd += ["--model", p["modelo"]]
         env = dict(os.environ, CW_ESC_CONVERSA=str(self.conversa), CW_ESC_PASTA=str(pasta), CW_ESC="1",
                    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1")   # sem tarefas em segundo plano: o processo fecha ao responder
+        if SERVIDOR:   # no servidor o Claude roda com a conta do próprio editor
+            if not TOKEN_CLAUDE.exists():
+                self.registrar([{"papel": "sistema", "texto": "Sua conta Claude ainda não está ligada no servidor. Na página, abra a estação "
+                                 "e clique em ☁️ Ligar minha conta Claude no servidor; depois mande o pedido de novo."}], "erro")
+                return
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = TOKEN_CLAUDE.read_text().strip()
         self.registrar([], "rodando", pasta=str(pasta))
         log("conversa", self.conversa, "em", pasta)
         resultado, erro_txt = None, []
@@ -642,6 +657,13 @@ class Execucao:
                 tipo = ev.get("type")
                 if tipo == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
                     info = "Claude {} · aberto em {}".format(ev.get("model") or "?", Path(ev.get("cwd") or str(abrir)).name)
+                    if capacidades:
+                        cap = capacidades.do_init(ev)
+                        info += " · {} skills, {} agentes".format(len(cap["skills"]), len(cap["agentes"]))
+                        ruins = [m["nome"] for m in cap["mcp"] if m["status"] in ("failed", "needs-auth")]
+                        if ruins:
+                            info += " · conector sem acesso: " + ", ".join(ruins[:4])
+                        threading.Thread(target=capacidades.enviar, args=("estacao", cap), daemon=True).start()
                     self.registrar([{"papel": "sistema", "texto": info}], None, sessao=ev["session_id"])
                 elif tipo == "assistant":
                     msgs = []
@@ -694,7 +716,7 @@ def cmd_rodar(_a):
     (CASA / "rodar.pid").write_text(str(os.getpid()))
     copiar_scripts()
     escrever_cerca()
-    maquina = socket.gethostname().split(".")[0]
+    maquina = "servidor" if SERVIDOR else socket.gethostname().split(".")[0]
     try:
         nome = central.rpc("cw_quem_sou", timeout=10).get("nome") or "editor"
     except Exception:
@@ -731,7 +753,93 @@ def cmd_rodar(_a):
                     pass
         if r.get("pedido") and atual is None:
             atual = Execucao(r["pedido"], nome)
+        if SERVIDOR:
+            conta_claude_no_servidor()
         time.sleep(2 if atual else pausa)
+
+
+# ----------------------------------------------------------------------------------------------- conta Claude no servidor
+_PAREAR = {"proc": None, "fd": None, "desde": 0, "visto": 0}
+
+
+def _ler_pty(fd, segundos, ate=None):
+    import select
+    saida, fim = "", time.time() + segundos
+    while time.time() < fim:
+        pronto, _, _ = select.select([fd], [], [], 0.5)
+        if pronto:
+            try:
+                saida += os.read(fd, 65536).decode("utf-8", "replace")
+            except OSError:
+                break
+            if ate and re.search(ate, re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\s", "", saida)):
+                break
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", saida)
+
+
+def _parear_fechar():
+    if _PAREAR["proc"]:
+        try:
+            _PAREAR["proc"].kill()
+        except OSError:
+            pass
+    if _PAREAR["fd"] is not None:
+        try:
+            os.close(_PAREAR["fd"])
+        except OSError:
+            pass
+    _PAREAR.update(proc=None, fd=None)
+
+
+def conta_claude_no_servidor():
+    """Liga a conta Claude do editor: o editor pede na página, o servidor abre o login do Claude (setup-token), publica o
+    link, recebe o código que o editor colou e guarda o token só aqui. A cada ~5 s; não trava a estação."""
+    if time.time() - _PAREAR["visto"] < 5:
+        return
+    _PAREAR["visto"] = time.time()
+    if _PAREAR["proc"] and time.time() - _PAREAR["desde"] > 900:   # link esquecido: fecha
+        _parear_fechar()
+    try:
+        r = central.rpc("cw_srv_conta_puxar", timeout=10)
+    except central.ErroCentral:
+        return
+    if not r:
+        return
+    status = lambda estado, link=None, msg=None: central.rpc("cw_srv_conta_status", timeout=10, p_estado=estado, p_link=link, p_mensagem=msg)
+    if r.get("estado") == "pedido":
+        import pty, fcntl, termios, struct
+        _parear_fechar()
+        mestre, escravo = pty.openpty()
+        fcntl.ioctl(escravo, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 2000, 0, 0))   # largo: o link e o token não quebram linha
+        claude = _cfg().get("claude") or achar_claude() or "claude"
+        _PAREAR["proc"] = subprocess.Popen([claude, "setup-token"], stdin=escravo, stdout=escravo, stderr=escravo, close_fds=True,
+                                           env=dict(os.environ, BROWSER="/bin/false", COLUMNS="2000"), start_new_session=True)
+        os.close(escravo)
+        _PAREAR.update(fd=mestre, desde=time.time())
+        texto = _ler_pty(mestre, 40, ate=r"Paste|code")
+        links = re.findall(r"https://claude\.(?:com|ai)/[^\s\x07\x1b]*oauth/authorize\?[^\s\x07\x1b]+", texto)
+        if not links:
+            _parear_fechar()
+            status("erro", msg="O login do Claude não abriu no servidor. Tente de novo em instantes.")
+            return
+        status("link", link=max(links, key=len), msg="Abra o link, entre com a sua conta Claude e cole aqui o código que aparecer.")
+    elif r.get("estado") == "codigo" and r.get("codigo"):
+        if _PAREAR["fd"] is None:
+            status("erro", msg="O link venceu. Peça um link novo.")
+            return
+        os.write(_PAREAR["fd"], (r["codigo"].strip() + "\r").encode())
+        texto = _ler_pty(_PAREAR["fd"], 60, ate=r"sk-ant-oat[0-9A-Za-z_-]{40,}|[Ee]rror|[Ii]nvalid")
+        _parear_fechar()
+        token = re.search(r"sk-ant-oat[0-9A-Za-z_-]{40,}", re.sub(r"\s", "", texto))
+        if not token:
+            status("erro", msg="O Claude não aceitou esse código. Peça um link novo e cole o código assim que aparecer.")
+            return
+        CASA.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(TOKEN_CLAUDE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token.group(0))
+        status("ok", msg="Conta Claude ligada no servidor. Os pedidos rodam com o seu plano.")
+        log("conta Claude ligada no servidor")
 
 
 # ----------------------------------------------------------------------------------------------- instalação
@@ -756,6 +864,7 @@ def copiar_scripts():
     (CASA / "scripts").mkdir(parents=True, exist_ok=True)
     for origem, destino in [(AQUI / "estacao.py", CASA / "scripts" / "estacao.py"),
                             (AQUI / "central.py", CASA / "scripts" / "central.py"),
+                            (AQUI / "capacidades.py", CASA / "scripts" / "capacidades.py"),
                             (AQUI.parent / "central.json", CASA / "central.json")]:
         if origem.resolve() == destino.resolve() or not origem.exists():
             continue
@@ -766,7 +875,7 @@ def copiar_scripts():
 
 
 def ligada():
-    return (CASA / "ligada").exists() if WINDOWS else PLIST.exists()
+    return (CASA / "ligada").exists() if WINDOWS or platform.system() == "Linux" else PLIST.exists()   # Linux: servidor
 
 
 def atualizar_se_ligada():

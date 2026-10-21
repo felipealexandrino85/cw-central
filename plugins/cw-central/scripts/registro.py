@@ -1190,6 +1190,24 @@ def regras_do_time():
         return []
 
 
+def licoes_aprendidas():
+    """Lições que a Lia aprendeu com as correções do time e estão ativas para o kit deste editor (cópia local sem rede)."""
+    cache = LOCAL / "licoes.json"
+    try:
+        import central
+        if central.configurada():
+            licoes = central.rpc("cw_conhecimento_ativo", timeout=3) or []
+            LOCAL.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(licoes, ensure_ascii=False))
+            return licoes
+    except Exception:
+        pass
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        return []
+
+
 TIPO_NOME = {"reel": "Reel", "cortes": "Cortes", "tutorial": "Tutorial", "youtube": "YouTube", "anuncio": "Anúncio",
              "story": "Story", "outro": "Outro"}
 
@@ -1238,12 +1256,25 @@ def cmd_abertura(_a):
                                 "(ele deve começar uma Nova conversa na central).".format(adotado))
     except Exception:
         pass
+    if not os.environ.get("CW_ESC"):   # o que este Claude enxerga (skills, agentes, conectores), para comparar com a estação
+        try:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "capacidades.py"), "enviar",
+                              "--cwd", dados.get("cwd") or os.getcwd()], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
     regras = regras_do_time()[:40]
     if regras:
         linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(r.get("tipo"), r.get("tipo"))) if r.get("tipo") else "", r["texto"])
                   for r in regras]
         contexto.append("Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
                         "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas))
+    licoes = licoes_aprendidas()[:40]
+    if licoes:
+        linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(l.get("tipo"), l.get("tipo"))) if l.get("tipo") else "", l["texto"]) for l in licoes]
+        contexto.append("Lições aprendidas com as correções do time (aba Conhecimento da central; o time já corrigiu isso antes, "
+                        "então siga sempre. Ao chamar um agente/subagente, copie no pedido dele as lições que valem para a tarefa, porque ele não "
+                        "recebe esta lista sozinho):\n" + "\n".join(linhas))
     saida = {}
     try:
         import central

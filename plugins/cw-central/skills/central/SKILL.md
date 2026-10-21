@@ -1,6 +1,6 @@
 ---
 name: central
-description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), procurar ou puxar agentes/skills da biblioteca ("o que tem na biblioteca?", "puxa a skill X"), usar as ferramentas da empresa (Higgsfield), mandar um corte pronto para publicar nas redes ("manda pra publicação", "posta esse corte"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
+description: Central CW Studios — pré-produção e acompanhamento da edição de vídeo para o painel da gestão. Use quando o editor for começar um vídeo de um card ou demanda ("vamos fazer o SCC-1762", "prepara a D-0012", "pega a próxima"), pedir "me conecta na central com o token cw_…", disser de qual card é o vídeo ("é do SCC-1762", "é a D-0012"), disser que terminou ou entregou um vídeo ("entreguei", "terminei o vídeo", "pode fechar"), corrigir título ou tipo do vídeo, perguntar "o que tem na fila?", ligar/desligar a estação do Escritório ("liga minha estação"), procurar ou puxar agentes/skills da biblioteca ("o que tem na biblioteca?", "puxa a skill X"), preparar ou compartilhar os agentes para o kit ("prepara meus agentes para o kit da Cardápio Web / do CW Cast", "compartilha meus agentes com a central"), usar as ferramentas da empresa (Higgsfield), mandar um corte pronto para publicar nas redes ("manda pra publicação", "posta esse corte"), pedir "pega a próxima"/"pega a D-0012", ou devolver uma demanda. Funciona com qualquer agente de edição; não edita vídeo.
 ---
 
 # Central CW Studios
@@ -74,6 +74,37 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
   skill), com tokens e chaves trocados por •••. A gestão avalia na aba Kit do time.
 - O kit oficial chega sozinho ao abrir a sessão, com o prefixo `cw-kit-` (agentes em ~/.claude/agents, skills em
   ~/.claude/skills). Prefira esses fluxos ao editar. Para puxar agora: `kit.py sincronizar` (vale na próxima sessão).
+
+### Preparar o fluxo para o KIT - Cardápio Web ou o KIT - CW Cast
+Pedido: "prepara meus agentes para o kit da Cardápio Web" (ou "do CW Cast"). O objetivo é que o fluxo rode igual em
+qualquer máquina do time e no servidor da nuvem (Linux, sem Premiere, Drive em `~/Drive`), com o mesmo estilo de edição.
+Não mexa nos originais do editor: monte uma cópia em `~/CW-Kit/<kit>/` (kit = `cardapio-web` ou `cw-cast`).
+
+1. **Levante o fluxo.** Pergunte qual é o fluxo daquela marca e ache tudo que ele usa: agentes (~/.claude/agents e
+   `.claude/agents` do projeto), skills (~/.claude/skills, as do app em ~/.claude/skills/synced, as do projeto), o
+   CLAUDE.md do projeto, scripts, e os arquivos de estilo (fontes, logos, vinhetas, trilhas, efeitos sonoros, LUTs,
+   presets, templates do Remotion/HTML). Mostre a lista ao editor e confirme antes de seguir.
+2. **Monte o pacote:** `skills/<nome>/SKILL.md` com tudo o que a skill usa dentro da própria pasta (scripts/, assets/,
+   estilos/…) e `agents/<nome>.md`. Agente não leva arquivos: se ele precisa de arquivos, eles vão numa skill do pacote
+   e o agente diz para usar a skill `cw-kit-<nome-da-skill>`. Regras do CLAUDE.md que fazem parte do estilo viram uma
+   skill (ex.: `estilo-cw-cast`) ou vão para o texto do agente.
+3. **Deixe portátil:**
+   - nenhum caminho da máquina (`/Users/...`, `C:\Users\...`, `~/Library/CloudStorage/...`): arquivos da skill são
+     referenciados a partir da pasta da skill ("a pasta desta skill"), e o Drive pelo caminho dentro do drive
+     "CW Studios - Produção" (ex.: `CW Cast - Cortes/11. PUBLICAÇÃO/1. Para aprovar`), dizendo que a raiz do Drive é a
+     do computador (no servidor, `~/Drive`);
+   - nomes finais: o kit instala com o prefixo `cw-kit-`, então referências a outros itens do pacote usam `cw-kit-<nome>`;
+   - nada de tokens, senhas ou chaves (a central troca por •••, mas não deixe nem chegar lá).
+4. **Escreva `REQUISITOS.md`** na raiz do pacote (ou um por skill): programas (ffmpeg, Python e pacotes pip, Node e
+   pacotes npm, fontes que precisam estar instaladas), conectores (MCP) e APIs usados, e marque com **[só no computador]**
+   cada etapa que depende de app de desktop (Premiere, After Effects, CapCut): no servidor essa etapa é pulada ou
+   entregue para o editor finalizar.
+5. **Teste** pelo menos o começo do fluxo a partir da cópia do pacote (leitura dos arquivos, scripts rodando com caminhos
+   relativos) e corrija o que quebrar.
+6. **Envie**, depois do OK do editor:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kit.py" compartilhar --pasta ~/CW-Kit/<kit> --kit <kit>`.
+   Textos vão como texto; os demais arquivos (até 50 MB cada) vão como anexos guardados na central e chegam junto quando
+   o item entra no kit. Diga ao editor o que foi enviado e o que ficou de fora (acima de 50 MB: avise para a gestão decidir).
 
 ## Escritório (estação)
 - "Liga minha estação do escritório" → confira que está conectado (`central.py quem`) e rode
