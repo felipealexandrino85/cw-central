@@ -1242,7 +1242,7 @@ def texto_roteamento(etapas):
             "para uma dessas etapas, peça que ele use a ferramenta cw-studios › texto do mesmo jeito.")
 
 
-TIPO_NOME = {"reel": "Reel", "cortes": "Cortes", "tutorial": "Tutorial", "youtube": "YouTube", "anuncio": "Anúncio",
+TIPO_NOME = {"sistema": "Todo trabalho", "reel": "Reel", "cortes": "Cortes", "tutorial": "Tutorial", "youtube": "YouTube", "anuncio": "Anúncio",
              "story": "Story", "outro": "Outro"}
 
 
@@ -1256,8 +1256,12 @@ def cmd_abertura(_a):
     if os.environ.get("CW_ESTEIRA"):   # Titeu (esteira): abertura enxuta, só as regras e as lições do time (economia de contexto)
         partes = []
         regras = regras_do_time()[:40]
-        if regras:
-            partes.append("Regras do time CW Studios para edição de vídeo:\n" + "\n".join("- " + r["texto"] for r in regras))
+        sistema = [r for r in regras if r.get("tipo") == "sistema"]
+        video = [r for r in regras if r.get("tipo") != "sistema"] if os.environ.get("CW_PAPEL", "video") == "video" else []
+        if sistema:
+            partes.append("Regras do sistema CW Studios (valem em todo trabalho):\n" + "\n".join("- " + r["texto"] for r in sistema))
+        if video:
+            partes.append("Regras do time CW Studios para edição de vídeo:\n" + "\n".join("- " + r["texto"] for r in video))
         licoes = licoes_aprendidas()[:40]
         if licoes:
             partes.append("Lições aprendidas com as correções do time (siga sempre):\n" + "\n".join("- " + l["texto"] for l in licoes))
@@ -1309,6 +1313,11 @@ def cmd_abertura(_a):
         except OSError:
             pass
     regras = regras_do_time()[:40]
+    sistema = [r for r in regras if r.get("tipo") == "sistema"]
+    regras = [r for r in regras if r.get("tipo") != "sistema"]
+    if sistema:
+        contexto.append("Regras do sistema CW Studios (definidas pela gestão; valem em todo trabalho, de vídeo ou não):\n"
+                        + "\n".join("- " + r["texto"] for r in sistema))
     if regras:
         linhas = ["- {}{}".format("[{}] ".format(TIPO_NOME.get(r.get("tipo"), r.get("tipo"))) if r.get("tipo") else "", r["texto"])
                   for r in regras]

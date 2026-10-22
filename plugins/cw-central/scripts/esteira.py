@@ -415,7 +415,7 @@ def cmd_porteiro():
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
 
 
-def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0):
+def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video"):
     """Roda um Claude da esteira em 'pasta'. Devolve o texto final."""
     if not TOKEN_CLAUDE.exists():
         raise RuntimeError("a conta Claude do CW Studios ainda não foi ligada na esteira (aba Esteira › ☁️)")
@@ -425,7 +425,7 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
         cmd += ["--add-dir", str(d)]
     env = dict(os.environ, CLAUDE_CODE_OAUTH_TOKEN=TOKEN_CLAUDE.read_text().strip(), CW_EST_PASTA=str(pasta),
                CW_ESC_PASTA=str(pasta), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1", CW_SERVIDOR="1",
-               CW_ESTEIRA="1", CW_EST_HIGGS=str(higgs))   # CW_ESTEIRA: abertura enxuta (só regras e lições do time)
+               CW_ESTEIRA="1", CW_EST_HIGGS=str(higgs), CW_PAPEL=papel or "video")   # CW_ESTEIRA: abertura enxuta (só regras e lições do time)
     proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
                             encoding="utf-8", errors="replace", start_new_session=True)
     fim, resultado = time.time() + limite, ""

@@ -303,8 +303,15 @@ def vigiar_e_agendar(E):
         time.sleep(90)
 
 
-TRABALHO = """Você é {nome}, um agente do CW Studios (estúdio de vídeo da Cardápio Web), trabalhando sozinho no servidor: ninguém
-está olhando, então não pergunte nada — decida e siga.
+PAPEIS = {"video": "edição de vídeo", "conteudo": "conteúdo e texto (legendas, roteiros, posts, e-mails)", "design": "imagens e design",
+          "dados": "análise e relatórios", "operacao": "operação e organização do time", "outro": "tarefas gerais"}
+SAIDAS = {"video": "vídeo final .mp4 em 1080x1920 quando for vídeo vertical, imagens, e textos em .md",
+          "design": "imagens .png/.jpg na resolução pedida, e um .md explicando cada uma",
+          "dados": "relatório em .md (com números e conclusões) e, se fizer sentido, planilha .csv",
+          "conteudo": "os textos em .md, um arquivo por peça", "operacao": "o resultado em .md (listas, planos, respostas)", "outro": "o resultado em .md e os arquivos que fizer"}
+
+TRABALHO = """Você é {nome}, um agente do CW Studios (time de conteúdo da Cardápio Web) com o papel de {papel}, trabalhando sozinho
+no servidor: ninguém está olhando, então não pergunte nada — decida e siga.
 Missão: {missao}
 Como trabalhar:
 {instrucoes}
@@ -312,8 +319,7 @@ Skills que você usa (já instaladas; use-as pelo nome): {skills}
 Valem as regras e lições do time. Nada é publicado sem aprovação: você só prepara o resultado.
 TRABALHO: {texto}
 {entrada}{refs}{ajuste}{higgs}
-{estilo}{etapa}Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} (vídeo final .mp4 em 1080x1920 quando for vídeo vertical,
-imagens, e textos em .md).
+{estilo}{etapa}Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} ({formato}).
 Responda APENAS com JSON: {{"ok": true, "resumo": "o que fez, em até 4 linhas", "titulo": "título curto do resultado",
 "legenda": "legenda do post, se for vídeo para as redes", "arquivos": ["saida/..."]}}"""
 
@@ -390,7 +396,8 @@ def _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta
         passo("trabalhando")
         etapa_txt = ""
     texto = E.claude(TRABALHO.format(
-        nome=a["nome"], missao=a.get("missao") or "", instrucoes=a.get("instrucoes") or "(sem instruções extras)",
+        nome=a["nome"], papel=PAPEIS.get(a.get("papel") or "video", "tarefas gerais"), formato=SAIDAS.get(a.get("papel") or "video", SAIDAS["outro"]),
+        missao=a.get("missao") or "", instrucoes=a.get("instrucoes") or "(sem instruções extras)",
         skills=", ".join(s["nome"] for s in a.get("skills") or []) or "(nenhuma: use o que o Claude já sabe)",
         texto=ent.get("texto") or ("processe o material recebido" if ent.get("arquivo") else ""),
         entrada=entrada_txt, refs=("Referências: {}\n".format(", ".join(str(x) for x in refs)) if refs else ""),
@@ -400,7 +407,8 @@ def _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta
         estilo=("ESTILO DE EDIÇÃO deste trabalho: \"{}\" — o acabamento (visual, legenda, gancho, cores, sons, trilha) segue a skill {}. "
                 "O processo (o que selecionar, cortar, enquadrar) é o das etapas/instruções.\n".format(a["_estilo"]["titulo"], a["_estilo"]["nome"])
                 if a.get("_estilo") and a["_estilo"].get("nome") else ""),
-        etapa=etapa_txt, pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs)
+        etapa=etapa_txt, pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs,
+        papel=a.get("papel") or "video")
     try:
         return E.json_final(texto)
     except Exception:
