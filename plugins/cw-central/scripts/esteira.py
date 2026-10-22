@@ -116,9 +116,17 @@ def preparar_reel(ep):
     bruto = pasta / "bruto"
     try:
         srv("episodio", id=eid, estado="preparando", etapa="copiando a pasta do reel", progresso=10)
-        if bruto.exists():
-            shutil.rmtree(bruto)
-        shutil.copytree(DRIVE / ep["arquivo"], bruto)
+        for tentativa in range(4):   # o Drive montado às vezes falha no meio de um arquivo grande: tenta de novo
+            if bruto.exists():
+                shutil.rmtree(bruto)
+            try:
+                shutil.copytree(DRIVE / ep["arquivo"], bruto)
+                break
+            except (OSError, shutil.Error) as e:
+                if tentativa == 3:
+                    raise
+                log("cópia do reel", eid, "falhou, tentando de novo:", str(e)[:200])
+                time.sleep(30 * (tentativa + 1))
         videos = sorted([f for f in bruto.rglob("*") if f.is_file() and VIDEO.search(f.name)], key=lambda f: ffprobe_dur(f) or 0, reverse=True)
         com_audio = [f for f in videos if subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(f)],
                                                          capture_output=True, text=True).stdout.strip()]
@@ -810,6 +818,11 @@ Pasta de trabalho: {pasta}. Arquivos da marca (telas do sistema, logos e vinheta
 ESTILO DE EDIÇÃO:
 {receita}
 
+PARA SER RÁPIDO (vale por cima da receita):
+- Rode os scripts do estilo com "python3 script.py ..." (sem -I): a transcrição deles vai para a Groq, como no podcast.
+- Rascunho primeiro: enquanto ajusta (plano, montagem, conferência e correções), monte na resolução menor (ex.: --res 1080x1920).
+  Só quando a conferência aprovar, renderize UMA vez na qualidade final da receita (ex.: 2160x3840) e entregue esse arquivo.
+
 Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "legenda_post": "legenda curta para o post",
 "final": "caminho do vídeo final", "previa": "caminho de uma prévia leve (pode ser o próprio final)"}}"""
 
@@ -834,6 +847,9 @@ PREVIAS_DRIVE = DRIVE / "CW Cast - Cortes" / "2. PARA APROVAR" / "Prévias da IA
 # scripts dos estilos (ex.: reel.py do Fabiano) acham o Drive e a biblioteca por estas variáveis
 os.environ.setdefault("CW_DRIVE", str(DRIVE))
 os.environ.setdefault("CW_BIBLIOTECA", str(BIBLIOTECA_CW))
+# transcrição dos scripts dos estilos (faster_whisper) vai para a Groq, como no podcast; vale para "python3 script.py" (não para "python -I")
+os.environ["CW_SCRIPTS"] = str(AQUI)
+os.environ["PYTHONPATH"] = os.pathsep.join([str(AQUI / "groq_whisper")] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p])
 
 
 def produzir(item):
