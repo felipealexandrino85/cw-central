@@ -30,6 +30,8 @@ import central  # noqa: E402
 HOME = Path.home()
 DRIVE = Path(os.environ.get("CW_DRIVE", "/srv/drive"))
 ENTRADA = DRIVE / "CW Cast - Cortes" / "1. ENVIE AQUI - Podcast (episódio inteiro)"
+ENTRADA_REELS = DRIVE / "CW Cast - Cortes" / "2. ENVIE AQUI - Reels (câmera + tela)"     # FabI.Ano: uma pasta por reel
+PRONTOS_REELS = DRIVE / "CW Cast - Cortes" / "4. PRONTOS - Reels"
 BASE = Path(os.environ.get("CW_ESTEIRA", HOME / "esteira"))
 OPERARIOS = int(os.environ.get("CW_OPERARIOS", "3"))
 TOKEN_CLAUDE = HOME / ".cw-cortes" / "estacao" / "claude-token"
@@ -83,6 +85,59 @@ def vigiar():
         if _TAMANHOS.get(arq.name) == tam:
             srv("registrar", arquivo=str(arq.relative_to(DRIVE)), nome=arq.stem, tamanho=tam)
         _TAMANHOS[arq.name] = tam
+
+
+def vigiar_reels():
+    """Cada pasta nova em "2. ENVIE AQUI - Reels" vira um reel do FabI.Ano (depois que os arquivos pararem de mudar).
+    Pastas que já têm pronto em "4. PRONTOS - Reels" são registradas como arquivadas (não reprocessa o que já foi feito)."""
+    if not ENTRADA_REELS.is_dir():
+        return
+    for pasta in sorted(ENTRADA_REELS.iterdir()):
+        if not pasta.is_dir():
+            continue
+        try:
+            arqs = [f for f in pasta.rglob("*") if f.is_file() and VIDEO.search(f.name)]
+            tam = sum(f.stat().st_size for f in arqs)
+        except OSError:
+            continue
+        if not arqs:
+            continue
+        chave = "reels:" + pasta.name
+        if _TAMANHOS.get(chave) == tam:
+            srv("registrar", arquivo=str(pasta.relative_to(DRIVE)), nome=pasta.name, tamanho=tam, linha="reels",
+                arquivado=(PRONTOS_REELS / pasta.name).exists())
+        _TAMANHOS[chave] = tam
+
+
+def preparar_reel(ep):
+    """Copia a pasta do reel (câmera + tela), transcreve a fala (a gravação mais longa com áudio) e manda para a produção."""
+    eid = ep["id"]
+    pasta = BASE / str(eid)
+    bruto = pasta / "bruto"
+    try:
+        srv("episodio", id=eid, estado="preparando", etapa="copiando a pasta do reel", progresso=10)
+        if bruto.exists():
+            shutil.rmtree(bruto)
+        shutil.copytree(DRIVE / ep["arquivo"], bruto)
+        videos = sorted([f for f in bruto.rglob("*") if f.is_file() and VIDEO.search(f.name)], key=lambda f: ffprobe_dur(f) or 0, reverse=True)
+        com_audio = [f for f in videos if subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(f)],
+                                                         capture_output=True, text=True).stdout.strip()]
+        principal = (com_audio or videos)[0]
+        dur = ffprobe_dur(principal)
+        srv("episodio", id=eid, etapa="transcrevendo a fala", progresso=40, duracao_s=round(dur or 0, 1))
+        audio = pasta / "audio.wav"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(principal), "-vn", "-ac", "1", "-ar", "16000", str(audio)], check=True)
+        segs = transcrever_groq(audio, pasta, dur, lambda pct: srv("episodio", id=eid, progresso=pct))
+        (pasta / "transcricao.json").write_text(json.dumps(segs, ensure_ascii=False))
+        (pasta / "transcricao.txt").write_text("\n".join("[{}] {}".format(hms(s["inicio"]), s["texto"]) for s in segs), encoding="utf-8")
+        (pasta / "material.txt").write_text("Fala principal (com áudio): {}\nTodos os vídeos da pasta:\n{}".format(
+            principal, "\n".join("- {} ({:.0f} s)".format(f, ffprobe_dur(f) or 0) for f in videos)), encoding="utf-8")
+        srv("episodio", id=eid, estado="pronto", etapa="na produção do FabI.Ano", progresso=100)
+        srv("reel_pronto", id=eid)
+        log("reel", eid, "pronto para editar")
+    except Exception as e:
+        log("preparo do reel", eid, "falhou:", traceback.format_exc()[-600:])
+        srv("episodio", id=eid, estado="erro", erro=str(e)[:500])
 
 
 MAPA = """Você recebe a transcrição de um episódio do CW Cast (podcast da Cardápio Web sobre gestão, marketing e finanças para
@@ -637,6 +692,21 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
     return final, (previa if previa.exists() else final)
 
 
+PRODUCAO_REEL = """Você é o FabI.Ano, o editor de reels da Cardápio Web na esteira do CW Studios, sem ninguém olhando: não pergunte nada,
+decida e siga. Valem as regras e lições do time e o pedido abaixo.
+Reel {cid} "{titulo}": o material gravado está em {bruto} (a câmera e, se houver, a gravação de tela do OBS); veja {material}.
+Transcrição da fala com tempo por palavra: {transc} (texto em {transc_txt}).
+{ajuste}{higgs}
+Pasta de trabalho: {pasta}. Arquivos da marca (telas do sistema, logos e vinhetas, trilhas, sons, fundos, mascote) em
+{biblioteca} (só leitura).
+
+ESTILO DE EDIÇÃO:
+{receita}
+
+Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "legenda_post": "legenda curta para o post",
+"final": "caminho do vídeo final", "previa": "caminho de uma prévia leve (pode ser o próprio final)"}}"""
+
+
 def subir_previa(arq, corte):
     """Prévia leve (540x960) no bucket "previas", para o player da página. Devolve o caminho no bucket."""
     import urllib.request
@@ -662,6 +732,9 @@ def produzir(item):
     passo = lambda t: srv("corte", id=c["id"], etapa=t)
     try:
         sincronizar_estilos()
+        if ep.get("linha") == "reels":
+            produzir_reel(item, pasta, passo)
+            return
         bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
         ini, fim = max(0.0, float(c["inicio"]) - 1), float(c["fim"]) + 1
         segs = json.loads((BASE / str(ep["id"]) / "transcricao.json").read_text())
@@ -714,6 +787,35 @@ def produzir(item):
         srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
 
 
+def produzir_reel(item, pasta, passo):
+    c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
+    cid = "r{}".format(ep["id"])
+    higgs = int(lote.get("higgs_orcamento") or 0)
+    prints = baixar_prints(c, pasta) if c.get("ajuste") else []
+    base = BASE / str(ep["id"])
+    texto = claude(PRODUCAO_REEL.format(cid=cid, titulo=c["titulo"], bruto=base / "bruto", material=base / "material.txt",
+                                        transc=base / "transcricao.json", transc_txt=base / "transcricao.txt",
+                                        ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito; parta do que existe na pasta de trabalho e mude SÓ isto): "
+                                                + c["ajuste"] + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
+                                        higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
+                                        pasta=pasta, biblioteca=DRIVE / "CW Cast - Cortes" / "10. BIBLIOTECA - Cardápio Web",
+                                        receita=receita(estilo, "CORTE") if estilo else "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
+                   pasta, "sonnet", ao_passo=passo, limite=3000, extra_dirs=[base / "bruto", DRIVE / "CW Cast - Cortes" / "10. BIBLIOTECA - Cardápio Web"], higgs=higgs)
+    r = json_final(texto)
+    final = Path(r.get("final") or "")
+    if final and not final.is_absolute():
+        final = pasta / final
+    if not r.get("aprovado") or not final.is_file():
+        srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
+        return
+    previa = Path(r.get("previa") or final)
+    if not previa.is_absolute():
+        previa = pasta / previa
+    if c.get("ajuste"):
+        registrar_conferencia(c, conferir_ajuste(c, final, pasta, prints, passo), cid)
+    entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta)
+
+
 def entregar_previa(c, final, previa, cid, legenda, pasta):
     """Prévia leve no bucket (player da página) + final no Drive "0. Prévias do Titeu"; o corte vai para 'previa'."""
     srv("corte", id=c["id"], etapa="Prévia")
@@ -741,6 +843,18 @@ def entregar_previa(c, final, previa, cid, legenda, pasta):
 def entregar(item):
     """Corte aprovado na prévia → Publicação (Drive "1. Para aprovar" + card)."""
     c, ep = item["corte"], item["episodio"]
+    if ep.get("linha") == "reels":   # FabI.Ano: o reel aprovado vai para "4. PRONTOS - Reels/<pasta>"
+        try:
+            final = Path(c.get("arquivo") or "")
+            destino = PRONTOS_REELS / ep["nome"]
+            destino.mkdir(parents=True, exist_ok=True)
+            nome = "{} (FabI.Ano){}".format(ep["nome"], final.suffix)
+            shutil.copyfile(final, destino / nome)
+            srv("corte", id=c["id"], estado="entregue", etapa="em 4. PRONTOS - Reels/" + ep["nome"])
+            log("reel", c["id"], "entregue em PRONTOS")
+        except Exception as e:
+            srv("corte", id=c["id"], estado="erro", erro=("entrega do reel: " + str(e))[:500])
+        return
     try:
         final = Path(c.get("arquivo") or "")
         legenda = Path(BASE / str(ep["id"])).glob("lote-{}/corte-{:02d}/legenda_post.txt".format(c["lote_id"], c["ordem"]))
@@ -805,9 +919,10 @@ def cmd_rodar():
             if time.time() - ultimo_vigia > 120:
                 ultimo_vigia = time.time()
                 vigiar()
+                vigiar_reels()
             t = srv("trabalho")
             if t and t.get("tipo") == "preparar":
-                preparar(t["episodio"])
+                (preparar_reel if (t["episodio"].get("linha") == "reels") else preparar)(t["episodio"])
                 continue
             if t and t.get("tipo") == "selecionar":
                 selecionar(t["lote"], t["episodio"], t.get("estilo"))
