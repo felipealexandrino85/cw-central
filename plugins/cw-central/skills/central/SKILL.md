@@ -75,6 +75,23 @@ Se veio da central (D-0012), entregue também lá, com o link compartilhável do
 - O kit oficial chega sozinho ao abrir a sessão, com o prefixo `cw-kit-` (agentes em ~/.claude/agents, skills em
   ~/.claude/skills). Prefira esses fluxos ao editar. Para puxar agora: `kit.py sincronizar` (vale na próxima sessão).
 
+### Transferir o meu jeito de editar para a IA do time (Titeu, FabI.Ano)
+Pedido: "transfere meu jeito de editar para a IA" / "prepara meu estilo para o FabI.Ano (ou Titeu)". Faça o roteiro de
+"Preparar o fluxo para o KIT" abaixo e, no MESMO pacote (`~/CW-Kit/<kit>/skills/<nome-do-estilo>/`), acrescente:
+1. **APRENDIZADOS.md**: tudo o que este editor já ensinou ao Claude e vale para o estilo, em regras curtas e acionáveis:
+   o CLAUDE.md dos projetos de edição dele, as memórias (`~/.claude/projects/*/memory/*.md` que falam de edição), correções
+   que ele já fez ("não use…", "sempre…"), medidas aprovadas (tamanhos, cores, tempos, posições) e exemplos do que foi
+   reprovado e por quê. Nada de dado pessoal, senha ou token. Mostre ao editor e confirme antes de enviar.
+2. **RECEITA.md**: como produzir UM vídeo neste estilo **sem ninguém olhando e sem app de desktop** (servidor Linux, sem
+   Premiere/After/CapCut), com as seções `## EPISÓDIO` (opcional, o que se faz uma vez por material) e `## CORTE` (um vídeo).
+   Diga a entrada (ex.: para reels, a pasta do bruto com a câmera e, se houver, a gravação de tela do OBS), cada comando ou
+   script da skill na ordem, onde fica o final (`final`) e uma prévia leve (`previa`), e como conferir antes de entregar.
+   Termine pedindo a resposta em JSON: `{"aprovado": true|false, "motivo": "...", "legenda_post": "...", "final": "caminho", "previa": "caminho"}`.
+   Teste a receita a partir da cópia do pacote antes de enviar.
+3. **EXEMPLOS/**: 2 ou 3 vídeos aprovados de referência (até 50 MB cada) ou quadros deles, para a IA comparar o resultado.
+Depois envie com `kit.py compartilhar --pasta ~/CW-Kit/<kit> --kit <kit>` e diga ao editor que a gestão transforma o pacote
+num Estilo da IA (aba do Titeu/FabI.Ano › Estilos).
+
 ### Preparar o fluxo para o KIT - Cardápio Web ou o KIT - CW Cast
 Pedido: "prepara meus agentes para o kit da Cardápio Web" (ou "do CW Cast"). O objetivo é que o fluxo rode igual em
 qualquer máquina do time e no servidor da nuvem (Linux, sem Premiere, Drive em `~/Drive`), com o mesmo estilo de edição.

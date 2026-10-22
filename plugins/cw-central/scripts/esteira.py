@@ -245,7 +245,8 @@ def receita(estilo, parte):
     t = (estilo or {}).get("receita") or ""
     cab = t.split("\n## ")[0]
     sec = re.search(r"^## " + parte + r"[^\n]*\n(.*?)(?=^## |\Z)", t, re.S | re.M)
-    return (cab + ("\n" + sec.group(1) if sec else "")).strip()
+    apr = re.search(r"^## APRENDIZADOS[^\n]*\n(.*?)(?=^## |\Z)", t, re.S | re.M)   # aprendizados do editor valem sempre
+    return (cab + ("\n" + sec.group(1) if sec else "") + ("\n\nAPRENDIZADOS DO EDITOR (siga sempre):\n" + apr.group(1) if apr else "")).strip()
 
 
 def pasta_estilo(ep, estilo):
