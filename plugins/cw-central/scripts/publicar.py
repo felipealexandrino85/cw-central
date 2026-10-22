@@ -3,7 +3,7 @@
 posta no Instagram, TikTok e YouTube Shorts.
 
 Só biblioteca padrão (ffmpeg/ffprobe, se houver, para duração e prévia). O arquivo é copiado para a pasta
-"1. Para aprovar" da publicação no Google Drive compartilhado (o Drive para computador sobe sozinho).
+"2. PARA APROVAR" da publicação no Google Drive compartilhado (o Drive para computador sobe sozinho).
 
   enviar --arquivo CORTE.mp4 --titulo "..." --legenda "..." [--titulo-youtube "..."] [--episodio EP52] [--jira SCC-1]
          [--redes instagram,tiktok,youtube] [--agendar "2026-10-21 18:00"]
@@ -25,13 +25,13 @@ AQUI = Path(__file__).resolve().parent
 sys.path.insert(0, str(AQUI))
 import central  # noqa: E402
 
-PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes/11. PUBLICAÇÃO"
-PARA_APROVAR = "1. Para aprovar"
+PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes"
+PARA_APROVAR = "2. PARA APROVAR"
 SUBS = ("Drives compartilhados", "Unidades compartilhadas", "Shared drives", "Meu Drive", "My Drive", "")
 
 
 def pasta_publicacao():
-    """<drive compartilhado>/…/11. PUBLICAÇÃO nesta máquina (a primeira raiz do Drive em que a pasta-mãe existe)."""
+    """<drive compartilhado>/…/CW Cast - Cortes nesta máquina (a primeira raiz do Drive em que a pasta-mãe existe)."""
     if os.environ.get("CW_PASTA_PUBLICACAO"):
         return Path(os.path.expanduser(os.environ["CW_PASTA_PUBLICACAO"]))
     relativa = central.config().get("pasta_publicacao") or PASTA_PADRAO
@@ -143,7 +143,7 @@ def cmd_enviar(a):
     redes = [r.strip() for r in (a.redes or "instagram,tiktok,youtube").split(",") if r.strip()]
     pid = central.rpc("cw_pub_enviar", timeout=30, p_dados={
         "titulo": a.titulo, "legenda": a.legenda or "", "titulo_youtube": a.titulo_youtube or a.titulo[:100],
-        "episodio": a.episodio, "jira": a.jira, "redes": redes, "arquivo": nome,
+        "episodio": a.episodio, "jira": a.jira, "destino": a.destino, "redes": redes, "arquivo": nome,
         "pasta": str(Path(central.config().get("pasta_publicacao") or PASTA_PADRAO) / PARA_APROVAR),
         "tamanho": origem.stat().st_size, "duracao_s": round(dur, 1) if dur else None, "previa": imagem,
         "agendado_para": agendamento(a.agendar)})
@@ -202,6 +202,7 @@ def main():
     p.add_argument("--jira")
     p.add_argument("--redes")
     p.add_argument("--agendar")
+    p.add_argument("--destino", help="pasta da sprint (ex.: \"Instagram Cardapio Web\", \"CW Club\"); sem isso vai pelo kit do editor")
     sub.add_parser("minhas")
     sub.add_parser("pasta")
     a = ap.parse_args()

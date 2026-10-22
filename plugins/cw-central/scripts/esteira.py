@@ -29,9 +29,9 @@ import central  # noqa: E402
 
 HOME = Path.home()
 DRIVE = Path(os.environ.get("CW_DRIVE", "/srv/drive"))
-ENTRADA = DRIVE / "CW Cast - Cortes" / "1. ENVIE AQUI - Podcast (episódio inteiro)"
-ENTRADA_REELS = DRIVE / "CW Cast - Cortes" / "2. ENVIE AQUI - Reels (câmera + tela)"     # FabI.Ano: uma pasta por reel
-PRONTOS_REELS = DRIVE / "CW Cast - Cortes" / "4. PRONTOS - Reels"
+ENTRADA = DRIVE / "CW Cast - Cortes" / "1. ENVIE AQUI" / "Podcast (episódio inteiro)"
+ENTRADA_REELS = DRIVE / "CW Cast - Cortes" / "1. ENVIE AQUI" / "Reels (câmera + tela)"     # FabI.Ano: uma pasta por reel
+PRONTOS_REELS = DRIVE / "CW Cast - Cortes" / "_sistema (não mexer)" / "Prontos (antes da reorganização)" / "4. PRONTOS - Reels"   # só para não refazer os antigos
 BASE = Path(os.environ.get("CW_ESTEIRA", HOME / "esteira"))
 OPERARIOS = int(os.environ.get("CW_OPERARIOS", "3"))
 TOKEN_CLAUDE = HOME / ".cw-cortes" / "estacao" / "claude-token"
@@ -88,8 +88,8 @@ def vigiar():
 
 
 def vigiar_reels():
-    """Cada pasta nova em "2. ENVIE AQUI - Reels" vira um reel do FabI.Ano (depois que os arquivos pararem de mudar).
-    Pastas que já têm pronto em "4. PRONTOS - Reels" são registradas como arquivadas (não reprocessa o que já foi feito)."""
+    """Cada pasta nova em "1. ENVIE AQUI/Reels" vira um reel do FabI.Ano (depois que os arquivos pararem de mudar).
+    Pastas que já tinham pronto nos PRONTOS antigos são registradas como arquivadas (não reprocessa o que já foi feito)."""
     if not ENTRADA_REELS.is_dir():
         return
     for pasta in sorted(ENTRADA_REELS.iterdir()):
@@ -541,7 +541,7 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None):
     t_frase = _tempo_da_frase(pedido, transcript) if transcript else None
     if t_frase is not None:
         tempos = [max(0, t_frase - 0.5), t_frase + 0.3, t_frase + 1.0, min(dur - 0.1, t_frase + 2.0)]
-    for m in re.finditer(r"(\d{1,2}):(\d{2})|(?:segundo|seg|s)\s*(\d{1,3})", pedido or "", re.I):
+    for m in re.finditer(r"(\d{1,2}):(\d{2})|(?:segundo|seg|s)\s*(\d{1,3})(?![:\d])", pedido or "", re.I):
         t = int(m.group(1)) * 60 + int(m.group(2)) if m.group(1) else int(m.group(3))
         if 0 <= t <= dur:
             tempos.append(t)
@@ -766,7 +766,8 @@ def subir_previa(arq, corte):
     return caminho
 
 
-PREVIAS_DRIVE = DRIVE / "CW Cast - Cortes" / "11. PUBLICAÇÃO" / "0. Prévias do Titeu"
+BIBLIOTECA_CW = DRIVE / "CW Cast - Cortes" / "3. BIBLIOTECA" / "Cardápio Web"
+PREVIAS_DRIVE = DRIVE / "CW Cast - Cortes" / "2. PARA APROVAR" / "Prévias da IA (Titeu e FabI.Ano)"
 
 
 def produzir(item):
@@ -842,9 +843,9 @@ def produzir_reel(item, pasta, passo):
                                         ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito; parta do que existe na pasta de trabalho e mude SÓ isto): "
                                                 + c["ajuste"] + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
-                                        pasta=pasta, biblioteca=DRIVE / "CW Cast - Cortes" / "10. BIBLIOTECA - Cardápio Web",
+                                        pasta=pasta, biblioteca=BIBLIOTECA_CW,
                                         receita=receita(estilo, "CORTE") if estilo else "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
-                   pasta, "sonnet", ao_passo=passo, limite=3000, extra_dirs=[base / "bruto", DRIVE / "CW Cast - Cortes" / "10. BIBLIOTECA - Cardápio Web"], higgs=higgs)
+                   pasta, "sonnet", ao_passo=passo, limite=3000, extra_dirs=[base / "bruto", BIBLIOTECA_CW], higgs=higgs)
     r = json_final(texto)
     final = Path(r.get("final") or "")
     if final and not final.is_absolute():
@@ -861,7 +862,7 @@ def produzir_reel(item, pasta, passo):
 
 
 def entregar_previa(c, final, previa, cid, legenda, pasta):
-    """Prévia leve no bucket (player da página) + final no Drive "0. Prévias do Titeu"; o corte vai para 'previa'."""
+    """Prévia leve no bucket (player da página) + final no Drive "2. PARA APROVAR/Prévias da IA"; o corte vai para 'previa'."""
     srv("corte", id=c["id"], etapa="Prévia")
     caminho = subir_previa(previa, c)
     PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
@@ -885,26 +886,16 @@ def entregar_previa(c, final, previa, cid, legenda, pasta):
 
 
 def entregar(item):
-    """Corte aprovado na prévia → Publicação (Drive "1. Para aprovar" + card)."""
+    """Corte ou reel aprovado na prévia → Publicação (Drive "2. PARA APROVAR" + card)."""
     c, ep = item["corte"], item["episodio"]
-    if ep.get("linha") == "reels":   # FabI.Ano: o reel aprovado vai para "4. PRONTOS - Reels/<pasta>"
-        try:
-            final = Path(c.get("arquivo") or "")
-            destino = PRONTOS_REELS / ep["nome"]
-            destino.mkdir(parents=True, exist_ok=True)
-            nome = "{} (FabI.Ano){}".format(ep["nome"], final.suffix)
-            shutil.copyfile(final, destino / nome)
-            srv("corte", id=c["id"], estado="entregue", etapa="em 4. PRONTOS - Reels/" + ep["nome"])
-            log("reel", c["id"], "entregue em PRONTOS")
-        except Exception as e:
-            srv("corte", id=c["id"], estado="erro", erro=("entrega do reel: " + str(e))[:500])
-        return
+    reel = ep.get("linha") == "reels"   # FabI.Ano: o reel também vai para a Publicação, na pasta da sprint da Cardápio Web
     try:
         final = Path(c.get("arquivo") or "")
         legenda = Path(BASE / str(ep["id"])).glob("lote-{}/corte-{:02d}/legenda_post.txt".format(c["lote_id"], c["ordem"]))
         leg = next(legenda, None)
         saida = subprocess.run([sys.executable, str(AQUI / "publicar.py"), "enviar", "--arquivo", str(final), "--titulo", c["titulo"][:120],
-                                "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]],
+                                "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]]
+                               + (["--destino", "Instagram Cardapio Web"] if reel else []),
                                capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:

@@ -89,7 +89,7 @@ Pedido: "transfere meu jeito de editar para a IA" / "prepara meu estilo para o F
    Termine pedindo a resposta em JSON: `{"aprovado": true|false, "motivo": "...", "legenda_post": "...", "final": "caminho", "previa": "caminho"}`.
    Teste a receita a partir da cópia do pacote antes de enviar.
 3. **EXEMPLOS/**: 2 ou 3 vídeos aprovados de referência (até 50 MB cada) ou quadros deles, para a IA comparar o resultado.
-4. **Assets da Cardápio Web já ficam no Drive:** a pasta `CW Cast - Cortes/10. BIBLIOTECA - Cardápio Web` (telas do
+4. **Assets da Cardápio Web já ficam no Drive:** a pasta `CW Cast - Cortes/3. BIBLIOTECA/Cardápio Web` (telas do
    sistema, logos e vinhetas, trilhas da casa, efeitos sonoros, fundos e formas) é a biblioteca oficial e o FabI.Ano já lê
    dela. Não ponha no pacote o que já está lá: compare os arquivos de estilo do editor com essa pasta (pelo nome e pelo
    conteúdo, `shasum -a 256`) e, na RECEITA.md, aponte para o caminho dentro da biblioteca. Só vai no pacote o que NÃO
@@ -113,7 +113,7 @@ Não mexa nos originais do editor: monte uma cópia em `~/CW-Kit/<kit>/` (kit = 
 3. **Deixe portátil:**
    - nenhum caminho da máquina (`/Users/...`, `C:\Users\...`, `~/Library/CloudStorage/...`): arquivos da skill são
      referenciados a partir da pasta da skill ("a pasta desta skill"), e o Drive pelo caminho dentro do drive
-     "CW Studios - Produção" (ex.: `CW Cast - Cortes/11. PUBLICAÇÃO/1. Para aprovar`), dizendo que a raiz do Drive é a
+     "CW Studios - Produção" (ex.: `CW Cast - Cortes/2. PARA APROVAR`), dizendo que a raiz do Drive é a
      do computador (no servidor, `~/Drive`);
    - nomes finais: o kit instala com o prefixo `cw-kit-`, então referências a outros itens do pacote usam `cw-kit-<nome>`;
    - nada de tokens, senhas ou chaves (a central troca por •••, mas não deixe nem chegar lá).
@@ -142,7 +142,7 @@ Não mexa nos originais do editor: monte uma cópia em `~/CW-Kit/<kit>/` (kit = 
   (gancho na 1ª linha, 1–3 frases, chamada para o episódio completo, 3–6 hashtags) e um título curto para o YouTube
   (até 100 caracteres). Mostre ao editor e ajuste se ele pedir. Depois rode, um por corte:
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/publicar.py" enviar --arquivo <corte.mp4> --titulo "<título>" --legenda "<legenda>" --titulo-youtube "<título YT>" [--episodio EP52] [--jira SCC-…] [--agendar "21/10 18:00"]`
-  O arquivo vai para a pasta "1. Para aprovar" do Drive e o card aparece na central para a produção aprovar.
+  O arquivo vai para a pasta "2. PARA APROVAR" do Drive e o card aparece na central para a produção aprovar.
   Nada é postado sem a aprovação. Só uma rede: `--redes instagram` (ou `tiktok`, `youtube`, separadas por vírgula).
 - "Como estão meus envios?" → `publicar.py minhas` (aguardando, aprovado, postado com links, ou recusado com o motivo).
   Recusado: ajuste o que o motivo pede e envie de novo.
