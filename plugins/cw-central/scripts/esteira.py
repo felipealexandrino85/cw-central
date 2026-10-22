@@ -208,6 +208,46 @@ def preparar(ep):
         srv("episodio", id=eid, estado="erro", erro=str(e)[:500])
 
 
+# ------------------------------------------------------------------------------------------- estilos de edição
+_ESTILOS = {"ts": 0}
+
+
+def sincronizar_estilos():
+    """Instala os estilos ativos como skills cw-estilo-<slug> (com fontes, sons, scripts...). A cada 10 min no máximo."""
+    if time.time() - _ESTILOS["ts"] < 600:
+        return
+    _ESTILOS["ts"] = time.time()
+    try:
+        import kit
+        estilos = srv("estilos") or []
+        itens = [e["item"] for e in estilos if e.get("item")]
+        manifesto = HOME / ".cw-cortes" / "estilos.json"
+        try:
+            antes = json.loads(manifesto.read_text())
+        except (OSError, ValueError):
+            antes = {}
+        kit._instalar(itens, "cw-", manifesto)
+        for it in itens:
+            pasta = kit.CLAUDE / "skills" / ("cw-" + re.sub(r"[^a-z0-9-]+", "-", it["nome"].lower()).strip("-"))
+            if it.get("anexos") and (antes.get("skill:" + pasta.name) != it.get("versao") or not any(pasta.joinpath(a["caminho"]).exists() for a in it["anexos"][:3])):
+                log("baixando os arquivos do estilo", pasta.name, len(it["anexos"]))
+                kit._baixar_anexos(pasta, it["anexos"])
+    except Exception as e:
+        log("estilos:", e)
+
+
+def receita(estilo, parte):
+    """Trecho da receita do estilo: o cabeçalho (vale sempre) + a seção '## EPISÓDIO' ou '## CORTE'."""
+    t = (estilo or {}).get("receita") or ""
+    cab = t.split("\n## ")[0]
+    sec = re.search(r"^## " + parte + r"[^\n]*\n(.*?)(?=^## |\Z)", t, re.S | re.M)
+    return (cab + ("\n" + sec.group(1) if sec else "")).strip()
+
+
+def pasta_estilo(ep, estilo):
+    return BASE / str(ep["id"]) / ("estilo-" + ((estilo or {}).get("slug") or "generico"))
+
+
 # ------------------------------------------------------------------------------------------- Claude sem ninguém olhando
 def escrever_cerca():
     BASE.mkdir(parents=True, exist_ok=True)
@@ -230,6 +270,12 @@ def cmd_porteiro():
         duro = bool(estacao.ALVO.get("duro"))
     except Exception as e:
         decisao, motivo, duro = "ask", "não consegui avaliar ({})".format(e), True
+    if decisao != "allow" and "cw-studios__gerar" in ferramenta:   # Higgsfield: liberado até o orçamento do lote
+        orc, cont = int(os.environ.get("CW_EST_HIGGS") or 0), Path(pasta or "/tmp") / ".higgs_usados"
+        usados = int(cont.read_text()) if cont.exists() else 0
+        if usados < orc:
+            cont.write_text(str(usados + 1))
+            decisao, duro = "allow", False
     if decisao != "allow":
         # sem ninguém para aprovar: ler e rodar programas do fluxo (venv, vch, node) passa; gravar/apagar/mover fora da pasta
         # e tudo que é "duro" (mandar para fora, instalar, administrador, senha) é recusado
@@ -240,7 +286,7 @@ def cmd_porteiro():
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
 
 
-def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=()):
+def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0):
     """Roda um Claude da esteira em 'pasta'. Devolve o texto final."""
     if not TOKEN_CLAUDE.exists():
         raise RuntimeError("a conta Claude do CW Studios ainda não foi ligada na esteira (aba Esteira › ☁️)")
@@ -249,7 +295,8 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=()):
     for d in extra_dirs:
         cmd += ["--add-dir", str(d)]
     env = dict(os.environ, CLAUDE_CODE_OAUTH_TOKEN=TOKEN_CLAUDE.read_text().strip(), CW_EST_PASTA=str(pasta),
-               CW_ESC_PASTA=str(pasta), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1", CW_SERVIDOR="1")
+               CW_ESC_PASTA=str(pasta), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1", CW_SERVIDOR="1",
+               CW_ESTEIRA="1", CW_EST_HIGGS=str(higgs))   # CW_ESTEIRA: abertura enxuta (só regras e lições do time)
     proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
                             encoding="utf-8", errors="replace", start_new_session=True)
     fim, resultado = time.time() + limite, ""
@@ -300,10 +347,21 @@ Responda APENAS com JSON: {{"resumo": "2-3 linhas sobre o episódio e o critéri
 "fim": segundos, "gancho": "primeira frase do corte", "motivo": "por que funciona"}}]}}"""
 
 
-def selecionar(lote, ep):
+def selecionar(lote, ep, estilo=None):
     pasta = BASE / str(ep["id"])
     try:
-        texto = claude(SELECAO.format(n=lote["quantidade"], instrucoes=lote.get("instrucoes") or "(nenhum)"), pasta, "opus", limite=1800)
+        sincronizar_estilos()
+        prompt = SELECAO.format(n=lote["quantidade"], instrucoes=lote.get("instrucoes") or "(nenhum)")
+        extra = []
+        if estilo and "## EPISÓDIO" in (estilo.get("receita") or ""):
+            W = pasta_estilo(ep, estilo)
+            W.mkdir(parents=True, exist_ok=True)
+            bruto = next(pasta.glob("bruto.*"))
+            prompt += ("\n\nANTES de responder, prepare o episódio para o estilo escolhido (pasta de trabalho W = {}; bruto = {}; "
+                       "transcrição = {}). Os cortes que você escolher vão ser produzidos nesse estilo:\n{}").format(
+                W, bruto, pasta / "transcricao.txt", receita(estilo, "EPISÓDIO"))
+            extra = [W]
+        texto = claude(prompt, pasta, "opus", limite=2400, extra_dirs=extra)
         r = json_final(texto)
         cortes = [c for c in r.get("cortes") or [] if float(c.get("fim", 0)) > float(c.get("inicio", 0))]
         if not cortes:
@@ -316,54 +374,110 @@ def selecionar(lote, ep):
 
 
 # ------------------------------------------------------------------------------------------- ③ produção e ④ entrega
-PRODUCAO = """Você produz UM corte vertical da esteira do CW Studios (CW Cast). Nesta pasta:
-- trecho.mp4: o trecho do episódio (do segundo {inicio:.1f} ao {fim:.1f}, com 1 s de folga antes e depois), na resolução original;
-- palavras.json: cada palavra com o tempo (já contado a partir do começo do trecho), para a legenda.
+PRODUCAO = """Você produz UM corte vertical da esteira do CW Studios (CW Cast), sem ninguém olhando: não pergunte nada, decida e
+siga. Valem as regras e lições do time que você recebeu e o pedido abaixo.
+Corte {cid}: do segundo {inicio:.2f} ao {fim:.2f} do episódio (bruto: {bruto}; transcrição com tempo por palavra: {transc}).
 Título: {titulo}
-Gancho: {gancho}
-{ajuste}
-Faça no padrão do kit do time (skills cw-kit-* de cortes, motion e legenda; se não houver, use as skills de corte e motion
-instaladas): enquadramento vertical 1080x1920 com o rosto de quem fala, corte limpo no começo e no fim, legenda no padrão do
-CW Cast sincronizada com palavras.json, gancho na abertura. Render final em final.mp4 (H.264 + AAC, 1080x1920). Trabalhe só
-nesta pasta. Depois confira o resultado de verdade (ffprobe, duração, quadros) como o revisor do kit faria.
-Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "legenda_post": "legenda curta para o post"}}"""
+Gancho sugerido: {gancho}
+{ajuste}{higgs}
+Pasta de trabalho do corte: {pasta}{w}
+
+ESTILO DE EDIÇÃO:
+{receita}
+
+Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "legenda_post": "legenda curta para o post",
+"final": "caminho do vídeo final", "previa": "caminho de uma prévia leve (pode ser o próprio final)"}}"""
+
+
+def subir_previa(arq, corte):
+    """Prévia leve (540x960) no bucket "previas", para o player da página. Devolve o caminho no bucket."""
+    import urllib.request
+    leve = arq.with_name(arq.stem + "_web.mp4")
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(arq), "-vf", "scale=540:-2", "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(leve)], check=True)
+    caminho = "{}/{}-{}.mp4".format(corte["lote_id"], corte["id"], os.urandom(4).hex())
+    import kit
+    r = kit._funcao({"acao": "previa", "caminho": caminho})
+    req = urllib.request.Request(r["url"], data=leve.read_bytes(), method="PUT", headers={"Content-Type": "video/mp4", "x-upsert": "true"})
+    with urllib.request.urlopen(req, timeout=300):
+        pass
+    return caminho
+
+
+PREVIAS_DRIVE = DRIVE / "CW Cast - Cortes" / "11. PUBLICAÇÃO" / "0. Prévias do Titeu"
 
 
 def produzir(item):
-    c, lote, ep = item["corte"], item["lote"], item["episodio"]
+    c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
     pasta = BASE / str(ep["id"]) / "lote-{}".format(lote["id"]) / "corte-{:02d}".format(c["ordem"])
     pasta.mkdir(parents=True, exist_ok=True)
     passo = lambda t: srv("corte", id=c["id"], etapa=t)
     try:
+        sincronizar_estilos()
         bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
         ini, fim = max(0.0, float(c["inicio"]) - 1), float(c["fim"]) + 1
-        passo("cortando o trecho do 4K")
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(ini), "-i", str(bruto), "-t", str(fim - ini),
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(pasta / "trecho.mp4")], check=True)
         segs = json.loads((BASE / str(ep["id"]) / "transcricao.json").read_text())
         palavras = [{"p": w["p"], "i": round(w["i"] - ini, 2), "f": round(w["f"] - ini, 2)}
                     for s in segs for w in s.get("palavras") or [] if ini <= w["i"] <= fim]
         (pasta / "palavras.json").write_text(json.dumps(palavras, ensure_ascii=False))
-        (pasta / "final.mp4").unlink(missing_ok=True)
-        texto = claude(PRODUCAO.format(inicio=float(c["inicio"]), fim=float(c["fim"]), titulo=c["titulo"], gancho=c.get("gancho") or "",
-                                       ajuste="Ajuste pedido pelo editor: " + c["ajuste"] if c.get("ajuste") else ""),
-                       pasta, "sonnet", ao_passo=passo, limite=2400)
+        extra, w = [], ""
+        if estilo and "## EPISÓDIO" in (estilo.get("receita") or ""):
+            W = pasta_estilo(ep, estilo)
+            extra, w = [W], "\nPasta de trabalho do episódio neste estilo (W): {} (já preparada na seleção)".format(W)
+        else:   # estilos simples trabalham num trecho já cortado
+            passo("cortando o trecho do 4K")
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(ini), "-i", str(bruto), "-t", str(fim - ini),
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(pasta / "trecho.mp4")], check=True)
+            w = "\nNa pasta do corte: trecho.mp4 (com 1 s de folga) e palavras.json (tempos a partir do começo do trecho)."
+        cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
+        higgs = int(lote.get("higgs_orcamento") or 0)
+        texto = claude(PRODUCAO.format(cid=cid, inicio=float(c["inicio"]), fim=float(c["fim"]), bruto=bruto,
+                                       transc=BASE / str(ep["id"]) / "transcricao.json", titulo=c["titulo"], gancho=c.get("gancho") or "",
+                                       ajuste="Pedido de melhoria do editor (aplique na versão anterior, se existir): " + c["ajuste"] + "\n" if c.get("ajuste") else "",
+                                       higgs="Higgsfield liberado: até {} geração(ões) neste lote (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
+                                       pasta=pasta, w=w, receita=receita(estilo, "CORTE") if estilo else "Vertical 1080x1920 com legenda e gancho."),
+                       pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs)
         r = json_final(texto)
-        final = pasta / "final.mp4"
-        if not r.get("aprovado") or not final.exists():
-            srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem final.mp4")[:500])
+        final = Path(r.get("final") or "")
+        if final and not final.is_absolute():
+            final = (extra[0] if extra else pasta) / final
+        if not r.get("aprovado") or not final.is_file():
+            srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
             return
-        passo("entregando na Publicação")
+        passo("subindo a prévia")
+        previa = Path(r.get("previa") or final)
+        if not previa.is_absolute():
+            previa = (extra[0] if extra else pasta) / previa
+        caminho = subir_previa(previa if previa.is_file() else final, c)
+        PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
+        nome = "{}_{}{}".format(cid, re.sub(r"[^A-Za-z0-9]+", "-", c["titulo"])[:60].strip("-"), final.suffix)
+        shutil.copyfile(final, PREVIAS_DRIVE / nome)
+        (pasta / "legenda_post.txt").write_text(r.get("legenda_post") or c["titulo"], encoding="utf-8")
+        srv("corte", id=c["id"], estado="previa", etapa="esperando aprovação", arquivo=str(final), previa=caminho,
+            final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
+        log("corte", c["id"], "em prévia")
+    except Exception as e:
+        log("corte", c["id"], "falhou:", traceback.format_exc()[-600:])
+        srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
+
+
+def entregar(item):
+    """Corte aprovado na prévia → Publicação (Drive "1. Para aprovar" + card)."""
+    c, ep = item["corte"], item["episodio"]
+    try:
+        final = Path(c.get("arquivo") or "")
+        legenda = Path(BASE / str(ep["id"])).glob("lote-{}/corte-{:02d}/legenda_post.txt".format(c["lote_id"], c["ordem"]))
+        leg = next(legenda, None)
         saida = subprocess.run([sys.executable, str(AQUI / "publicar.py"), "enviar", "--arquivo", str(final), "--titulo", c["titulo"][:120],
-                                "--legenda", r.get("legenda_post") or c["titulo"], "--episodio", ep["nome"][:120]],
-                               capture_output=True, text=True, timeout=600)
+                                "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]],
+                               capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:
             raise RuntimeError("não consegui entregar: " + (saida.stderr or saida.stdout)[-300:])
-        srv("corte", id=c["id"], estado="entregue", etapa="na Publicação", arquivo=str(final), publicacao_id=int(m.group(1)))
+        srv("corte", id=c["id"], estado="entregue", etapa="na Publicação", publicacao_id=int(m.group(1)))
         log("corte", c["id"], "entregue P-" + m.group(1))
     except Exception as e:
-        log("corte", c["id"], "falhou:", e)
+        log("entrega do corte", c["id"], "falhou:", e)
         srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
 
 
@@ -377,6 +491,13 @@ def operario(n):
             continue
         if item:
             produzir(item)
+            continue
+        try:
+            aprovado = srv("pegar_aprovado")
+        except central.ErroCentral:
+            aprovado = None
+        if aprovado:
+            entregar(aprovado)
         else:
             time.sleep(10)
 
@@ -387,6 +508,7 @@ def cmd_rodar():
     for n in range(OPERARIOS):
         threading.Thread(target=operario, args=(n + 1,), daemon=True).start()
     log("esteira ligada:", OPERARIOS, "operários; GPU:", tem_gpu())
+    threading.Thread(target=sincronizar_estilos, daemon=True).start()
     ultimo_vigia = 0
     while True:
         try:
@@ -398,7 +520,7 @@ def cmd_rodar():
                 preparar(t["episodio"])
                 continue
             if t and t.get("tipo") == "selecionar":
-                selecionar(t["lote"], t["episodio"])
+                selecionar(t["lote"], t["episodio"], t.get("estilo"))
                 continue
         except central.ErroCentral as e:
             log("central:", e)

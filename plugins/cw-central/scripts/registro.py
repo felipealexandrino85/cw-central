@@ -1253,6 +1253,17 @@ def cmd_abertura(_a):
     except ValueError:
         dados = {}
     sid = dados.get("session_id") or ""
+    if os.environ.get("CW_ESTEIRA"):   # Titeu (esteira): abertura enxuta, só as regras e as lições do time (economia de contexto)
+        partes = []
+        regras = regras_do_time()[:40]
+        if regras:
+            partes.append("Regras do time CW Studios para edição de vídeo:\n" + "\n".join("- " + r["texto"] for r in regras))
+        licoes = licoes_aprendidas()[:40]
+        if licoes:
+            partes.append("Lições aprendidas com as correções do time (siga sempre):\n" + "\n".join("- " + l["texto"] for l in licoes))
+        if partes:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(partes)}}, ensure_ascii=False))
+        return
     if sid:
         pid = pid_do_claude()
         enviar_status_em_segundo_plano(sid)
@@ -1888,6 +1899,8 @@ def cmd_config(_a):
 
 
 def main():
+    if os.environ.get("CW_ESTEIRA") and len(sys.argv) > 1 and sys.argv[1] in ("prompt", "atividade", "sessao"):
+        return   # Titeu (esteira): sem registro de atividade nem espelho a cada passo
     ap = argparse.ArgumentParser(description="Registro de produção do hub de cortes")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("inicio")
