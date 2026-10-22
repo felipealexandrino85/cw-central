@@ -393,6 +393,112 @@ Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "lege
 "final": "caminho do vídeo final", "previa": "caminho de uma prévia leve (pode ser o próprio final)"}}"""
 
 
+# ------------------------------------------------------------------------------------------- motor automático (estilo do Timeu)
+# A parte mecânica do roteiro do Timeu roda como programa; o Claude entra uma vez (decisões editoriais) e só volta se um gate reprovar.
+DECISAO_TIMEU = """Você é o editor do corte {cid} (CW Cast, estilo do Timeu), sem ninguém olhando. A parte mecânica já foi feita: na pasta
+{W} existem work/{cid}/plan.json (rascunho com fonte, headline, gancho, câmeras, trilha), work/{cid}/transcript.txt,
+work/{cid}/transcript.json e work/{cid}/sugestoes.json (candidatos e a lista "revisar").
+Sua tarefa é SÓ a parte editorial, editando work/{cid}/plan.json:
+- highlights (amarelos) e enfase: leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref};
+- gancho: confira hook.duration e headline (no máximo 2 linhas de ~32 letras, quebra com |);
+- foto do gancho (hook.media): {foto}
+- b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico); P&B, punch, sfx e trilha conforme §6–§10 se fizer sentido.
+{ajuste}Valem as regras e lições do time. NÃO rode render, gates nem ferramentas de tempo (isso é automático). Seja direto: poucas leituras.
+Responda APENAS com JSON: {{"ok": true, "notas": "uma linha do que decidiu"}}"""
+
+CORRIGE_TIMEU = """O corte {cid} (CW Cast, estilo do Timeu) foi renderizado e os gates técnicos reprovaram. Pasta {W}:
+work/{cid}/plan.json, work/{cid}/gates.json (o que falhou), transcript.json e a prévia saida/{cid}_rascunho.mp4.
+Corrija SÓ a causa de cada FAIL (editando plan.json ou com o script indicado em RECEITAS_OPERACIONAIS §3 em {ref}),
+sem refazer o corte. NÃO renderize nem rode os gates (é automático). Valem as regras do time.
+Responda APENAS com JSON: {{"ok": true, "corrigiu": "uma linha"}}"""
+
+
+class Falhou(Exception):
+    pass
+
+
+def mmss_t(seg):
+    seg = max(0.0, float(seg))
+    h, r = divmod(seg, 3600)
+    return "{}:{:02d}:{:05.2f}".format(int(h), int(r // 60), r % 60) if h else "{}:{:05.2f}".format(int(r // 60), r % 60)
+
+
+def produzir_timeu(c, lote, ep, W, pasta, passo, higgs):
+    """Roteiro do Timeu como programa. Devolve (final, previa). Levanta Falhou se um passo mecânico quebrar."""
+    cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
+    bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
+    ref = HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references"
+    env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
+    epj = W / "work" / "eps" / "ep" / "episodio.json"
+    if not epj.exists():
+        raise Falhou("o episódio ainda não foi preparado no estilo (episodio.json)")
+
+    def rodar(nome, args, ok=(0,), tempo=900):
+        passo(nome)
+        r = subprocess.run([sys.executable, "-I"] + [str(a) for a in args], cwd=str(W), env=env, capture_output=True, text=True, timeout=tempo)
+        (pasta / "motor.log").open("a").write("\n$ {}\n{}\n{}\n".format(" ".join(str(a) for a in args), r.stdout[-3000:], r.stderr[-2000:]))
+        if r.returncode not in ok:
+            raise Falhou("{}: {}".format(nome, (r.stderr or r.stdout)[-400:]))
+        return r.stdout
+
+    work = W / "work" / cid
+    plan = work / "plan.json"
+    ini, fim = float(c["inicio"]), float(c["fim"])
+    if c.get("ajuste") and plan.exists():
+        pass   # ajuste: parte do plano que já existe (vai direto para a decisão com o pedido do editor)
+    else:
+        if work.exists():   # tentativa anterior: guarda e começa limpo
+            shutil.move(str(work), str(W / "work" / "{}_antigo_{}".format(cid, int(time.time()))))
+        work.mkdir(parents=True)
+        ficha = W / "work" / "eps" / "ep" / "ficha_{}".format(cid)
+        if not ficha.with_suffix(".json").exists():
+            (work / "propostas.json").write_text(json.dumps([{"id": cid, "ranges": "{}-{}".format(mmss_t(ini), mmss_t(fim)),
+                "headline": c["titulo"][:64], "foto": c.get("gancho") or c["titulo"], "motivo": c.get("motivo") or ""}], ensure_ascii=False))
+            rodar("Ficha do corte", ["tools/ficha_corte.py", "--episodio", epj, "--propostas", work / "propostas.json", "--out", ficha])
+            rodar("Ficha do corte", ["tools/ficha_corte.py", "--aprovar", "humano:conferencia-na-central", "--ficha", ficha.with_suffix(".json")])
+        ranges = "{}-{}".format(mmss_t(ini), mmss_t(fim))
+        saida = rodar("Pontas no vale do som", ["tools/pontas.py", "--src", bruto, "--ranges", ranges], ok=(0, 1))
+        linha = next((l for l in saida.splitlines() if l.startswith("RANGES:")), "")
+        sug = linha.split(":", 1)[1].strip() if linha else ""
+        medido = bool(sug) and not re.search(r"^FAIL", saida, re.M)   # alguma ponta sem vale: deixa o transcribe ajustar sozinho
+        rodar("Transcrição do trecho", ["scripts/transcribe.py", "--src", bruto, "--ranges", sug if medido else ranges, "--out", "work/" + cid,
+                                        "--cut-silence", "0.8", "--cut-gaps", "0", "--keep-pause", "0.24"] + (["--no-snap-edges"] if medido else []), tempo=1200)
+        base = ["tools/plano_rascunho.py", "--ficha", ficha.with_suffix(".json"), "--corte", cid, "--episodio", epj, "--transcript", "work/{}/transcript.json".format(cid), "--root", "."]
+        rodar("Plano do corte", base)
+        rodar("Pontas e emendas", ["scripts/refinar_inicios.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+        rodar("Pontas e emendas", ["scripts/encaixar_voz.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+        rodar("Pontas e emendas", ["scripts/alinhar_frames.py", cid], ok=(0, 1))
+        rodar("Enquadramento", base + ["--atualizar-shots"], ok=(0, 1))
+    # a única chamada do Claude: as decisões editoriais
+    foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
+            if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
+    passo("Plano do corte (gancho, legenda, B-roll)")
+    claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto,
+                                ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso.\n") if c.get("ajuste") else ""),
+           W, "sonnet", ao_passo=passo, limite=900, higgs=higgs)
+    for ciclo in range(3):
+        rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+        rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
+        rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
+        rodar("Revisão técnica", ["tools/gates.py", "work/{}/plan.json".format(cid), "--root", ".", "--video", "saida/{}_rascunho.mp4".format(cid),
+                                  "--json", "work/{}/gates.json".format(cid), "--replay"], ok=(0, 1, 2))
+        try:
+            g = json.loads((work / "gates.json").read_text())
+        except (OSError, ValueError):
+            g = {}
+        falhas = [x for x in g.get("gates") or [] if x.get("status") == "FAIL"]
+        if g.get("geral") != "FAIL" or not falhas or ciclo == 2:
+            break
+        passo("Corrigindo o que os gates reprovaram")
+        claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref), W, "sonnet", ao_passo=passo, limite=900)
+    rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
+    rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
+    final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
+    if not final.exists():
+        raise Falhou("o render final não gerou saida/{}.mov".format(cid))
+    return final, (previa if previa.exists() else final)
+
+
 def subir_previa(arq, corte):
     """Prévia leve (540x960) no bucket "previas", para o player da página. Devolve o caminho no bucket."""
     import urllib.request
@@ -435,6 +541,14 @@ def produzir(item):
             w = "\nNa pasta do corte: trecho.mp4 (com 1 s de folga) e palavras.json (tempos a partir do começo do trecho)."
         cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
         higgs = int(lote.get("higgs_orcamento") or 0)
+        if estilo and estilo.get("motor") == "timeu" and extra:
+            try:
+                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs)
+                entregar_previa(c, final, previa, cid, "", pasta)
+                return
+            except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
+                log("motor automático do corte", c["id"], "caiu para o modo Claude:", e)
+                passo("modo Claude (o automático parou em: {})".format(str(e)[:80]))
         texto = claude(PRODUCAO.format(cid=cid, inicio=float(c["inicio"]), fim=float(c["fim"]), bruto=bruto,
                                        transc=BASE / str(ep["id"]) / "transcricao.json", titulo=c["titulo"], gancho=c.get("gancho") or "",
                                        ajuste=("AJUSTE PEDIDO PELO EDITOR (este corte já foi produzido e revisado): " + c["ajuste"] + "\n"
@@ -450,21 +564,37 @@ def produzir(item):
         if not r.get("aprovado") or not final.is_file():
             srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
             return
-        passo("subindo a prévia")
         previa = Path(r.get("previa") or final)
         if not previa.is_absolute():
             previa = (extra[0] if extra else pasta) / previa
-        caminho = subir_previa(previa if previa.is_file() else final, c)
-        PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
-        nome = "{}_{}{}".format(cid, re.sub(r"[^A-Za-z0-9]+", "-", c["titulo"])[:60].strip("-"), final.suffix)
-        shutil.copyfile(final, PREVIAS_DRIVE / nome)
-        (pasta / "legenda_post.txt").write_text(r.get("legenda_post") or c["titulo"], encoding="utf-8")
-        srv("corte", id=c["id"], estado="previa", etapa="esperando aprovação", arquivo=str(final), previa=caminho,
-            final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
-        log("corte", c["id"], "em prévia")
+        entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta)
     except Exception as e:
         log("corte", c["id"], "falhou:", traceback.format_exc()[-600:])
         srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
+
+
+def entregar_previa(c, final, previa, cid, legenda, pasta):
+    """Prévia leve no bucket (player da página) + final no Drive "0. Prévias do Titeu"; o corte vai para 'previa'."""
+    srv("corte", id=c["id"], etapa="Prévia")
+    caminho = subir_previa(previa, c)
+    PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
+    nome = "{}_{}{}".format(cid, re.sub(r"[^A-Za-z0-9]+", "-", c["titulo"])[:60].strip("-"), final.suffix)
+    shutil.copyfile(final, PREVIAS_DRIVE / nome)
+    if not legenda:   # legenda do post: modelo barato (OpenRouter), a partir da transcrição do corte
+        try:
+            import ferramentas_mcp
+            t = next(Path(final).parent.parent.glob("work/{}/transcript.txt".format(cid)), None)
+            r = ferramentas_mcp.chamar({"acao": "texto", "ferramenta": "openrouter", "modelo": "anthropic/claude-haiku-5.5", "etapa": "textos_post",
+                                        "instrucao": "Escreva a legenda de um Reels do CW Cast (podcast da Cardápio Web para donos de restaurante e delivery) "
+                                                     "para este corte: 2 a 3 linhas, gancho na primeira, chamada para ouvir o episódio, no máximo 3 hashtags. Só a legenda.",
+                                        "texto": "Título: {}\n\n{}".format(c["titulo"], t.read_text(encoding="utf-8")[:6000] if t else ""), "trabalho": "esteira"}, timeout=120)
+            legenda = (r.get("texto") or "").strip()
+        except Exception:
+            legenda = ""
+    (pasta / "legenda_post.txt").write_text(legenda or c["titulo"], encoding="utf-8")
+    srv("corte", id=c["id"], estado="previa", etapa="esperando aprovação", arquivo=str(final), previa=caminho,
+        final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
+    log("corte", c["id"], "em prévia")
 
 
 def entregar(item):
