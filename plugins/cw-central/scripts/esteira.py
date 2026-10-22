@@ -417,21 +417,144 @@ class Falhou(Exception):
     pass
 
 
+# ------------------------------------------------------------------------------------------- ajuste garantido
+CONFERE = """Conferência de um AJUSTE pedido pelo editor no corte "{titulo}" (CW Cast).
+Pedido do editor: {pedido}
+{prints}Quadros do corte já refeito (com o tempo no nome do arquivo): {quadros}
+Abra os prints (se houver) e os quadros e responda com honestidade se o pedido foi ATENDIDO no corte novo.
+Se foi, escreva também uma LIÇÃO curta e geral (imperativo, vale para os próximos cortes, sem citar este corte) para o erro não se repetir.
+Responda APENAS com JSON: {{"atendido": true|false, "motivo": "uma linha do que você viu", "licao": "regra geral ou vazio",
+"categoria": "corte|legenda|visual|audio|conteudo|marca|outro"}}"""
+
+
+def baixar_prints(c, pasta):
+    """Prints anexados ao pedido de ajuste → arquivos na pasta do corte."""
+    caminhos = c.get("ajuste_imagens") or []
+    if not caminhos:
+        return []
+    import urllib.request
+    import kit
+    destino = pasta / "prints_ajuste"
+    destino.mkdir(exist_ok=True)
+    saida = []
+    try:
+        links = kit._funcao({"acao": "ajuste", "caminhos": caminhos}).get("links") or {}
+    except Exception as e:
+        log("prints do ajuste:", e)
+        return []
+    for i, (cam, url) in enumerate(links.items()):
+        arq = destino / "print{}{}".format(i + 1, Path(cam).suffix or ".png")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                arq.write_bytes(r.read())
+            saida.append(arq)
+        except OSError:
+            pass
+    return saida
+
+
+def texto_prints(prints):
+    return ("Prints que o editor mandou mostrando o problema (abra e veja): {}\n".format(", ".join(str(x) for x in prints))) if prints else ""
+
+
+def quadros_do_ajuste(video, pedido, pasta):
+    """Quadros do trecho citado no pedido (ex.: "0:18 até 0:29"); sem tempo citado, 5 quadros espalhados."""
+    dur = ffprobe_dur(video) or 60
+    tempos = []
+    for m in re.finditer(r"(\d{1,2}):(\d{2})|(?:segundo|seg|s)\s*(\d{1,3})", pedido or "", re.I):
+        t = int(m.group(1)) * 60 + int(m.group(2)) if m.group(1) else int(m.group(3))
+        if 0 <= t <= dur:
+            tempos.append(t)
+    if len(tempos) >= 2:
+        a, b = min(tempos), max(tempos)
+        tempos = [a + (b - a) * k / 4 for k in range(5)]
+    elif tempos:
+        tempos = [max(0, tempos[0] - 1), tempos[0], min(dur - 0.1, tempos[0] + 1.5)]
+    else:
+        tempos = [dur * k / 6 for k in range(1, 6)]
+    destino = pasta / "conferencia"
+    shutil.rmtree(destino, ignore_errors=True)
+    destino.mkdir()
+    saida = []
+    for t in tempos:
+        arq = destino / "quadro_{:05.1f}s.jpg".format(t)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "{:.2f}".format(t), "-i", str(video), "-frames:v", "1", "-vf", "scale=540:-2", str(arq)],
+                       env=dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", "")))
+        if arq.exists():
+            saida.append(arq)
+    return saida
+
+
+def conferir_ajuste(c, video, pasta, prints, passo):
+    """O Claude olha os quadros do trecho e diz se o pedido foi atendido. Devolve o dict da resposta."""
+    passo("Conferindo se o ajuste foi atendido")
+    quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta)
+    try:
+        r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
+                                             quadros=", ".join(str(q) for q in quadros)), pasta, "sonnet", ao_passo=passo, limite=600))
+    except Exception as e:
+        r = {"atendido": False, "motivo": "não consegui conferir ({})".format(e)}
+    return r
+
+
+def registrar_conferencia(c, r, cid):
+    ok = bool(r.get("atendido"))
+    srv("corte", id=c["id"], ajuste_conferido="sim" if ok else "nao", ajuste_nota=(r.get("motivo") or "")[:500])
+    if ok and len(r.get("licao") or "") >= 5:
+        srv("licao", texto=r["licao"][:500], categoria=r.get("categoria") or "", kit="cw-cast", ref="corte " + cid, pedido=c.get("ajuste") or "")
+
+
+CAMERAS = """Mapa de câmeras do episódio (estilo do Timeu), na pasta {W}. O script já separou as câmeras do episódio e montou a folha
+work/eps/ep/cameras.jpg (um quadro por câmera, com grade). Abra SÓ essa imagem e, para cada câmera (C1, C2, …), grave o centro do
+enquadramento vertical pelo CORPO de quem aparece (cabeça e ombros inteiros, sem cortar ninguém; RE §5 em {ref}):
+  python -I tools/episodio_preparar.py --out work/eps/ep --definir-camera C1 <cx> <cy> --descricao "quem aparece"
+(cx/cy de 0 a 1; câmera aberta com duas pessoas: --dz 2.2 e cx de quem mais fala). Não faça mais nada.
+Responda APENAS com JSON: {{"ok": true, "cameras": "C1=..., C2=..."}}"""
+_PREP = threading.Lock()
+
+
+def preparar_episodio_estilo(ep, W, janelas, passo):
+    """Uma vez por lote: mapa de câmeras do episódio nos trechos do lote + cx/cy de cada câmera (o Claude olha a folha)."""
+    epj = W / "work" / "eps" / "ep" / "episodio.json"
+    marca = W / "work" / "eps" / "ep" / ".janelas"
+    with _PREP:
+        try:
+            e = json.loads(epj.read_text())
+        except (OSError, ValueError):
+            e = {}
+        ja = marca.read_text().strip() if marca.exists() else ""
+        definidas = lambda d: bool(d.get("cameras")) and all(c.get("cx") is not None for c in d["cameras"])
+        if e.get("src") and definidas(e) and (not janelas or ja == janelas):
+            return
+        passo("Mapa de câmeras do episódio")
+        bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
+        env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
+        args = [sys.executable, "-I", "tools/episodio_preparar.py", "--src", str(bruto), "--transcricao", str(BASE / str(ep["id"]) / "transcricao.txt"),
+                "--out", "work/eps/ep", "--refazer"] + (["--janelas", janelas] if janelas else [])
+        r = subprocess.run(args, cwd=str(W), env=env, capture_output=True, text=True, timeout=3600)
+        if r.returncode != 0 or not (W / "work" / "eps" / "ep" / "cameras.jpg").exists():
+            raise Falhou("mapa de câmeras: " + (r.stderr or r.stdout)[-300:])
+        claude(CAMERAS.format(W=W, ref=HOME / ".claude/skills/cw-estilo-cw-cast-timeu/references"), W, "sonnet", ao_passo=passo, limite=900)
+        e = json.loads(epj.read_text())
+        if not definidas(e):
+            raise Falhou("as câmeras não foram definidas")
+        marca.write_text(janelas or "")
+
+
 def mmss_t(seg):
     seg = max(0.0, float(seg))
     h, r = divmod(seg, 3600)
     return "{}:{:02d}:{:05.2f}".format(int(h), int(r // 60), r % 60) if h else "{}:{:05.2f}".format(int(r // 60), r % 60)
 
 
-def produzir_timeu(c, lote, ep, W, pasta, passo, higgs):
+def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
     """Roteiro do Timeu como programa. Devolve (final, previa). Levanta Falhou se um passo mecânico quebrar."""
     cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
     bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
     ref = HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references"
     env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
     epj = W / "work" / "eps" / "ep" / "episodio.json"
-    if not epj.exists():
-        raise Falhou("o episódio ainda não foi preparado no estilo (episodio.json)")
+    preparar_episodio_estilo(ep, W, janelas, passo)
 
     def rodar(nome, args, ok=(0,), tempo=900):
         passo(nome)
@@ -472,9 +595,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs):
     # a única chamada do Claude: as decisões editoriais
     foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
+    prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     passo("Plano do corte (gancho, legenda, B-roll)")
     claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto,
-                                ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso.\n") if c.get("ajuste") else ""),
+                                ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
+                                        "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala.\n" + texto_prints(prints))
+                                if c.get("ajuste") else ""),
            W, "sonnet", ao_passo=passo, limite=900, higgs=higgs)
     for ciclo in range(3):
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
@@ -494,6 +620,17 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs):
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
+    if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
+        r = conferir_ajuste(c, final, pasta, prints, passo)
+        if not r.get("atendido"):
+            passo("O ajuste não ficou bom: corrigindo de novo")
+            claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO: " + c["ajuste"]
+                   + "\nO que a conferência viu: " + (r.get("motivo") or "") + "\n" + texto_prints(prints), W, "sonnet", ao_passo=passo, limite=900)
+            rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+            rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
+            rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
+            r = conferir_ajuste(c, final, pasta, prints, passo)
+        registrar_conferencia(c, r, cid)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
     return final, (previa if previa.exists() else final)
@@ -541,9 +678,10 @@ def produzir(item):
             w = "\nNa pasta do corte: trecho.mp4 (com 1 s de folga) e palavras.json (tempos a partir do começo do trecho)."
         cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
         higgs = int(lote.get("higgs_orcamento") or 0)
+        prints = baixar_prints(c, pasta) if c.get("ajuste") else []
         if estilo and estilo.get("motor") == "timeu" and extra:
             try:
-                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs)
+                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, item.get("janelas") or "")
                 entregar_previa(c, final, previa, cid, "", pasta)
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
@@ -553,7 +691,7 @@ def produzir(item):
                                        transc=BASE / str(ep["id"]) / "transcricao.json", titulo=c["titulo"], gancho=c.get("gancho") or "",
                                        ajuste=("AJUSTE PEDIDO PELO EDITOR (este corte já foi produzido e revisado): " + c["ajuste"] + "\n"
                                                "Não refaça do zero: parta do plan.json e dos arquivos que já existem para este corte, mude SÓ o que foi pedido, "
-                                               "re-renderize e rode os gates de novo.\n") if c.get("ajuste") else "",
+                                               "re-renderize e rode os gates de novo.\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                        higgs="Higgsfield liberado: até {} geração(ões) neste lote (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                        pasta=pasta, w=w, receita=receita(estilo, "CORTE") if estilo else "Vertical 1080x1920 com legenda e gancho."),
                        pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs)
@@ -567,6 +705,8 @@ def produzir(item):
         previa = Path(r.get("previa") or final)
         if not previa.is_absolute():
             previa = (extra[0] if extra else pasta) / previa
+        if c.get("ajuste"):
+            registrar_conferencia(c, conferir_ajuste(c, final, pasta, prints, passo), cid)
         entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta)
     except Exception as e:
         log("corte", c["id"], "falhou:", traceback.format_exc()[-600:])
