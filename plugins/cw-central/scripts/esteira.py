@@ -1157,6 +1157,11 @@ def cmd_rodar():
     threading.Thread(target=operario, args=(OPERARIOS + 1, True), daemon=True).start()   # vaga reservada para ajustes
     threading.Thread(target=entregador, daemon=True).start()
     threading.Thread(target=estilista, daemon=True).start()
+    try:   # Oficina: skills do sistema (criar/melhorar com teste) e agentes que trabalham sozinhos
+        import oficina
+        oficina.ligar(sys.modules[__name__])
+    except Exception as e:
+        log("Oficina não ligou:", e)
     log("esteira ligada:", OPERARIOS, "operários; GPU:", tem_gpu())
     threading.Thread(target=sincronizar_estilos, daemon=True).start()
     ultimo_vigia = 0

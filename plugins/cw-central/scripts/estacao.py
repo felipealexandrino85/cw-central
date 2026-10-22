@@ -790,7 +790,27 @@ def cmd_rodar(_a):
             atual = Execucao(r["pedido"], nome)
         if SERVIDOR:
             conta_claude_no_servidor()
+            skills_da_oficina()
         time.sleep(2 if atual else pausa)
+
+
+_OFICINA = {"ts": 0, "nao": False}
+
+
+def skills_da_oficina():
+    """Robôs do servidor (editor interno): instalam as skills aprovadas na Oficina (cw-sk-*) a cada 10 min."""
+    if _OFICINA["nao"] or time.time() - _OFICINA["ts"] < 600:
+        return
+    _OFICINA["ts"] = time.time()
+    try:
+        import oficina
+        oficina.instalar_skills(forcar=True, log=lambda *a: None)
+        central.rpc("cw_skills_sistema", timeout=20)
+    except central.ErroCentral as e:
+        if "servidor" in str(e):   # estação de editor (não é robô): não insiste
+            _OFICINA["nao"] = True
+    except Exception as e:
+        log("skills da Oficina:", e)
 
 
 # ----------------------------------------------------------------------------------------------- conta Claude no servidor
@@ -936,6 +956,8 @@ def copiar_scripts():
     for origem, destino in [(AQUI / "estacao.py", CASA / "scripts" / "estacao.py"),
                             (AQUI / "central.py", CASA / "scripts" / "central.py"),
                             (AQUI / "capacidades.py", CASA / "scripts" / "capacidades.py"),
+                            (AQUI / "kit.py", CASA / "scripts" / "kit.py"),
+                            (AQUI / "oficina.py", CASA / "scripts" / "oficina.py"),
                             (AQUI.parent / "central.json", CASA / "central.json")]:
         if origem.resolve() == destino.resolve() or not origem.exists():
             continue
