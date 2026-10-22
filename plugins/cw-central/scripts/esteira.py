@@ -789,6 +789,10 @@ def entregador():
 def cmd_rodar():
     BASE.mkdir(parents=True, exist_ok=True)
     escrever_cerca()
+    try:
+        srv("orfaos")   # o que estava em produção quando o Titeu desligou volta para a fila
+    except Exception as e:
+        log("órfãos:", e)
     for n in range(OPERARIOS):
         threading.Thread(target=operario, args=(n + 1,), daemon=True).start()
     threading.Thread(target=operario, args=(OPERARIOS + 1, True), daemon=True).start()   # vaga reservada para ajustes
