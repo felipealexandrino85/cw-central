@@ -415,17 +415,30 @@ def cmd_porteiro():
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
 
 
-def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video"):
-    """Roda um Claude da esteira em 'pasta'. Devolve o texto final."""
-    if not TOKEN_CLAUDE.exists():
+def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video", trabalho=""):
+    """Roda um Claude Code da esteira em 'pasta'. Devolve o texto final.
+    modelo: "sonnet"/"opus"/"haiku" (ou "claude:sonnet"…) = conta Claude do CW Studios; "or:<id>" = modelo do OpenRouter pela
+    ponte "llm" da central (a chave do OpenRouter fica só na central; o uso fica registrado por trabalho)."""
+    modelo = (modelo or "sonnet").replace("claude:", "")
+    openrouter = modelo.startswith("or:")
+    if not openrouter and not TOKEN_CLAUDE.exists():
         raise RuntimeError("a conta Claude do CW Studios ainda não foi ligada na esteira (aba Esteira › ☁️)")
-    cmd = [str(HOME / ".local/bin/claude"), "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", modelo,
+    cmd = [str(HOME / ".local/bin/claude"), "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", modelo[3:] if openrouter else modelo,
            "--permission-mode", "default", "--settings", str(CERCA), "--add-dir", str(pasta)]
     for d in extra_dirs:
         cmd += ["--add-dir", str(d)]
-    env = dict(os.environ, CLAUDE_CODE_OAUTH_TOKEN=TOKEN_CLAUDE.read_text().strip(), CW_EST_PASTA=str(pasta),
+    env = dict(os.environ, CW_EST_PASTA=str(pasta),
                CW_ESC_PASTA=str(pasta), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1", CW_SERVIDOR="1",
                CW_ESTEIRA="1", CW_EST_HIGGS=str(higgs), CW_PAPEL=papel or "video")   # CW_ESTEIRA: abertura enxuta (só regras e lições do time)
+    if openrouter:
+        cfg, mid = central.config(), modelo[3:]
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        env.update(ANTHROPIC_BASE_URL=cfg["url"] + "/functions/v1/llm", ANTHROPIC_AUTH_TOKEN=cfg["token"], ANTHROPIC_API_KEY="",
+                   ANTHROPIC_DEFAULT_OPUS_MODEL=mid, ANTHROPIC_DEFAULT_SONNET_MODEL=mid, ANTHROPIC_DEFAULT_HAIKU_MODEL=mid,
+                   ANTHROPIC_SMALL_FAST_MODEL=mid, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
+                   ANTHROPIC_CUSTOM_HEADERS="x-cw-trabalho: " + re.sub(r"[^\w .:/-]", "", trabalho or "esteira")[:80])
+    else:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = TOKEN_CLAUDE.read_text().strip()
     proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
                             encoding="utf-8", errors="replace", start_new_session=True)
     fim, resultado = time.time() + limite, ""

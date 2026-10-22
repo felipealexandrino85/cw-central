@@ -196,7 +196,7 @@ def criar_skill(E, t):
             quem=(v.get("pedido_por") or "o time").split("@")[0], pedido=v.get("pedido") or "", nome=s["nome"],
             situacao="skill nova" if not s.get("versao_atual") else "melhorar a versão {}".format(s["versao_atual"]),
             refs=", ".join(str(x) for x in mostrar) or "nenhuma", skill=skill, nome_tecnico=nome_tecnico, biblioteca=E.BIBLIOTECA_CW),
-            pasta, "sonnet", limite=2400, extra_dirs=[E.BIBLIOTECA_CW])
+            pasta, v.get("modelo") or "sonnet", limite=2400, extra_dirs=[E.BIBLIOTECA_CW], trabalho="skill {} v{}".format(s["slug"], v["versao"]))
         if not (skill / "SKILL.md").exists():
             raise RuntimeError("o Criador não escreveu o SKILL.md")
         notas = (skill / "NOTAS.md").read_text(encoding="utf-8").strip() if (skill / "NOTAS.md").exists() else ""
@@ -218,7 +218,8 @@ def criar_skill(E, t):
         try:
             r = E.json_final(E.claude(TESTE.format(nome=s["nome"], nome_tecnico=teste_dir.name, exemplo=exemplo, saida=saida,
                                                    refs=("Arquivos de entrada: {}\n".format(", ".join(str(x) for x in refs)) if refs else "")),
-                                      pasta / "teste", "sonnet", limite=2400, extra_dirs=[teste_dir, pasta / "refs", E.BIBLIOTECA_CW]))
+                                      pasta / "teste", v.get("modelo") or "sonnet", limite=2400, extra_dirs=[teste_dir, pasta / "refs", E.BIBLIOTECA_CW],
+                                      trabalho="teste da skill {} v{}".format(s["slug"], v["versao"])))
         except Exception as e:
             r = {"resumo": "o teste não terminou: {}".format(e)}
         passo("guardando a versão")
@@ -407,8 +408,8 @@ def _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta
         estilo=("ESTILO DE EDIÇÃO deste trabalho: \"{}\" — o acabamento (visual, legenda, gancho, cores, sons, trilha) segue a skill {}. "
                 "O processo (o que selecionar, cortar, enquadrar) é o das etapas/instruções.\n".format(a["_estilo"]["titulo"], a["_estilo"]["nome"])
                 if a.get("_estilo") and a["_estilo"].get("nome") else ""),
-        etapa=etapa_txt, pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs,
-        papel=a.get("papel") or "video")
+        etapa=etapa_txt, pasta=pasta, saida=saida), pasta, (et or {}).get("modelo") or a.get("modelo") or "sonnet", ao_passo=passo, limite=3600,
+        extra_dirs=extra, higgs=higgs, papel=a.get("papel") or "video", trabalho="agente {} · trabalho {}".format(a["nome"], t["id"]))
     try:
         return E.json_final(texto)
     except Exception:
