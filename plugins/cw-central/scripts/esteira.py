@@ -120,7 +120,7 @@ def preparar_reel(ep):
             if bruto.exists():
                 shutil.rmtree(bruto)
             try:
-                shutil.copytree(DRIVE / ep["arquivo"], bruto)
+                shutil.copytree(DRIVE / ep["arquivo"], bruto, copy_function=shutil.copyfile)   # o Drive montado não aceita copiar atributos (dá erro 5)
                 break
             except (OSError, shutil.Error) as e:
                 if tentativa == 3:
