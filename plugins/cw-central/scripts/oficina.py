@@ -312,7 +312,7 @@ Skills que você usa (já instaladas; use-as pelo nome): {skills}
 Valem as regras e lições do time. Nada é publicado sem aprovação: você só prepara o resultado.
 TRABALHO: {texto}
 {entrada}{refs}{ajuste}{higgs}
-{etapa}Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} (vídeo final .mp4 em 1080x1920 quando for vídeo vertical,
+{estilo}{etapa}Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} (vídeo final .mp4 em 1080x1920 quando for vídeo vertical,
 imagens, e textos em .md).
 Responda APENAS com JSON: {{"ok": true, "resumo": "o que fez, em até 4 linhas", "titulo": "título curto do resultado",
 "legenda": "legenda do post, se for vídeo para as redes", "arquivos": ["saida/..."]}}"""
@@ -325,7 +325,8 @@ def executar(E, item):
     try:
         if not a:
             raise RuntimeError("o agente foi desligado")
-        faltam = [k["nome"] for k in a.get("skills") or [] if k["nome"].startswith(PREFIXO) and not (SKILLS / k["nome"] / "SKILL.md").exists()]
+        faltam = [k["nome"] for k in (a.get("skills") or []) + (a.get("estilos") or []) if (k.get("nome") or "").startswith(PREFIXO)
+                  and not (SKILLS / k["nome"] / "SKILL.md").exists()]
         instalar_skills(forcar=bool(faltam), log=E.log)   # skill aprovada há pouco: instala na hora
         pasta = E.BASE / "agentes" / "t{}".format(t["id"])
         if not t.get("ajuste") and not int(t.get("etapa_idx") or 0):   # começo do trabalho (não ajuste nem etapa seguinte): pasta limpa
@@ -345,7 +346,12 @@ def executar(E, item):
         if refs:
             extra.append(pasta / "refs")
         higgs = int(a.get("higgs") or 0)
-        etapas = a.get("etapas") or []
+        # estilo de edição: o escolhido no pedido ou o padrão do agente (o processo das etapas é o mesmo)
+        estilos = a.get("estilos") or []
+        escolhido = (ent.get("estilo") or {}).get("nome")
+        estilo = next((x for x in estilos if x.get("titulo") == escolhido), None) or (estilos[int(a.get("estilo_padrao") or 0)] if estilos else None)
+        a = dict(a, _estilo=estilo)
+        etapas = [dict(e, skill=(estilo or {}).get("nome") if e.get("skill") == "estilo" else e.get("skill")) for e in a.get("etapas") or []]
         i = min(int(t.get("etapa_idx") or 0), max(len(etapas) - 1, 0))
         while True:   # sem etapas: uma rodada só; com etapas: segue em ordem até uma que pare para aprovar (a última sempre para)
             et = etapas[i] if etapas else None
@@ -359,6 +365,8 @@ def executar(E, item):
         passo("guardando o resultado")
         arquivos = _resultados(saida, "tarefa-{}".format(t["id"]))
         rotulo = "Etapa {} de {}: {} · esperando aprovação".format(i + 1, len(etapas), et["nome"]) if etapas else "esperando aprovação"
+        if estilo:
+            rotulo += " · estilo " + estilo.get("titulo", "")
         E.srv("tarefa", id=t["id"], estado="previa", etapa=rotulo, etapa_idx=i, etapas_total=len(etapas),
               resultado={"texto": (r.get("resumo") or "")[:3000], "titulo": (r.get("titulo") or "")[:200], "legenda": (r.get("legenda") or "")[:2200],
                          "etapa": et["nome"] if etapas else "", "arquivos": arquivos})
@@ -389,6 +397,9 @@ def _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta
         ajuste=("AJUSTE PEDIDO PELO TIME (você já fez este trabalho; parta do que está na pasta e mude SÓ isto): {}\n{}".format(
             t["ajuste"], E.texto_prints(prints)) if t.get("ajuste") else ""),
         higgs=("Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use."),
+        estilo=("ESTILO DE EDIÇÃO deste trabalho: \"{}\" — o acabamento (visual, legenda, gancho, cores, sons, trilha) segue a skill {}. "
+                "O processo (o que selecionar, cortar, enquadrar) é o das etapas/instruções.\n".format(a["_estilo"]["titulo"], a["_estilo"]["nome"])
+                if a.get("_estilo") and a["_estilo"].get("nome") else ""),
         etapa=etapa_txt, pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs)
     try:
         return E.json_final(texto)
