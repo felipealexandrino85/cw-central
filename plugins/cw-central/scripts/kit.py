@@ -270,10 +270,12 @@ def _baixar_anexos(pasta, anexos):
     CACHE_ANEXOS.mkdir(parents=True, exist_ok=True)
     faltam = [a["sha256"] for a in anexos if not (CACHE_ANEXOS / a["sha256"]).exists()]
     if faltam:
-        try:
-            links = _funcao({"acao": "baixar", "sha256s": faltam}, timeout=30).get("links") or {}
-        except central.ErroCentral:
-            links = {}
+        links = {}
+        for i in range(0, len(faltam), 100):   # a central entrega no máximo 200 links por pedido
+            try:
+                links.update(_funcao({"acao": "baixar", "sha256s": faltam[i:i + 100]}, timeout=60).get("links") or {})
+            except central.ErroCentral:
+                pass
         for sha, url in links.items():
             tmp = CACHE_ANEXOS / (sha + ".parcial")
             try:

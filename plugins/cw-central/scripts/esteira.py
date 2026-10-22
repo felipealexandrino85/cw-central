@@ -229,9 +229,13 @@ def sincronizar_estilos():
         kit._instalar(itens, "cw-", manifesto)
         for it in itens:
             pasta = kit.CLAUDE / "skills" / ("cw-" + re.sub(r"[^a-z0-9-]+", "-", it["nome"].lower()).strip("-"))
-            if it.get("anexos") and (antes.get("skill:" + pasta.name) != it.get("versao") or not any(pasta.joinpath(a["caminho"]).exists() for a in it["anexos"][:3])):
-                log("baixando os arquivos do estilo", pasta.name, len(it["anexos"]))
-                kit._baixar_anexos(pasta, it["anexos"])
+            faltando = [a for a in it.get("anexos") or [] if not pasta.joinpath(a["caminho"]).exists()]
+            if faltando:   # confere todos os arquivos do estilo, não só alguns
+                log("baixando os arquivos do estilo", pasta.name, len(faltando), "faltando")
+                kit._baixar_anexos(pasta, faltando)
+                ainda = [a["caminho"] for a in faltando if not pasta.joinpath(a["caminho"]).exists()]
+                if ainda:
+                    log("estilo", pasta.name, "ainda sem", len(ainda), "arquivos:", ", ".join(ainda[:8]))
     except Exception as e:
         log("estilos:", e)
 
