@@ -478,6 +478,8 @@ CONFERE = """Conferência de um AJUSTE pedido pelo editor no corte "{titulo}" (C
 Pedido do editor: {pedido}
 {prints}Quadros do corte já refeito (com o tempo no nome do arquivo): {quadros}
 Abra os prints (se houver) e os quadros e responda com honestidade se o pedido foi ATENDIDO no corte novo.
+Se o pedido era mostrar quem fala e essa pessoa não aparece em nenhuma câmera do vídeo original naquele momento, cobrir o trecho
+com B-roll ou foto (ou tirar a fala) conta como atendido; diga isso no motivo.
 Se foi, escreva também uma LIÇÃO curta e geral (imperativo, vale para os próximos cortes, sem citar este corte) para o erro não se repetir.
 Responda APENAS com JSON: {{"atendido": true|false, "motivo": "uma linha do que você viu", "licao": "regra geral ou vazio",
 "categoria": "corte|legenda|visual|audio|conteudo|marca|outro"}}"""
@@ -513,15 +515,39 @@ def texto_prints(prints):
     return ("Prints que o editor mandou mostrando o problema (abra e veja): {}\n".format(", ".join(str(x) for x in prints))) if prints else ""
 
 
-def quadros_do_ajuste(video, pedido, pasta):
-    """Quadros do trecho citado no pedido (ex.: "0:18 até 0:29"); sem tempo citado, 5 quadros espalhados."""
+def _tempo_da_frase(pedido, transcript):
+    """Segundo do corte em que começa a frase citada entre aspas no pedido (ou None)."""
+    try:
+        words = json.loads(Path(transcript).read_text(encoding="utf-8"))["words"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    limpa = lambda x: re.sub(r"[^\w]", "", x.lower())
+    for m in re.finditer(r"[\"'“‘]([^\"'”’]{6,})[\"'”’]", pedido or ""):
+        alvo = [limpa(x) for x in m.group(1).split() if limpa(x)]
+        if not alvo:
+            continue
+        ws = [limpa(w["w"]) for w in words]
+        n = min(len(alvo), 4)
+        for i in range(len(ws) - n + 1):
+            if sum(ws[i + k] == alvo[k] for k in range(n)) >= n - 1:
+                return float(words[i]["start"])
+    return None
+
+
+def quadros_do_ajuste(video, pedido, pasta, transcript=None):
+    """Quadros do trecho citado no pedido (ex.: "0:18 até 0:29" ou uma frase entre aspas); sem nada citado, 5 quadros espalhados."""
     dur = ffprobe_dur(video) or 60
     tempos = []
+    t_frase = _tempo_da_frase(pedido, transcript) if transcript else None
+    if t_frase is not None:
+        tempos = [max(0, t_frase - 0.5), t_frase + 0.3, t_frase + 1.0, min(dur - 0.1, t_frase + 2.0)]
     for m in re.finditer(r"(\d{1,2}):(\d{2})|(?:segundo|seg|s)\s*(\d{1,3})", pedido or "", re.I):
         t = int(m.group(1)) * 60 + int(m.group(2)) if m.group(1) else int(m.group(3))
         if 0 <= t <= dur:
             tempos.append(t)
-    if len(tempos) >= 2:
+    if t_frase is not None:
+        pass
+    elif len(tempos) >= 2:
         a, b = min(tempos), max(tempos)
         tempos = [a + (b - a) * k / 4 for k in range(5)]
     elif tempos:
@@ -541,10 +567,10 @@ def quadros_do_ajuste(video, pedido, pasta):
     return saida
 
 
-def conferir_ajuste(c, video, pasta, prints, passo):
+def conferir_ajuste(c, video, pasta, prints, passo, transcript=None):
     """O Claude olha os quadros do trecho e diz se o pedido foi atendido. Devolve o dict da resposta."""
     passo("Conferindo se o ajuste foi atendido")
-    quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta)
+    quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript)
     try:
         r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
                                              quadros=", ".join(str(q) for q in quadros)), pasta, "sonnet", ao_passo=passo, limite=600))
@@ -624,7 +650,22 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
     plan = work / "plan.json"
     ini, fim = float(c["inicio"]), float(c["fim"])
     if c.get("ajuste") and plan.exists():
-        pass   # ajuste: parte do plano que já existe (vai direto para a decisão com o pedido do editor)
+        # ajuste: parte do plano que já existe, mas refaz os planos de câmera pelo mapa ATUAL do episódio
+        # (cortes feitos antes do mapa ficaram com uma câmera só e o recorte errado nas trocas)
+        passo("Enquadramento pelo mapa de câmeras")
+        sys.path.insert(0, str(W / "tools"))
+        try:
+            import plano_rascunho
+            pl = json.loads(plan.read_text(encoding="utf-8"))
+            tr = json.loads((work / "transcript.json").read_text(encoding="utf-8"))
+            shots = plano_rascunho.montar_shots([(float(x), float(y)) for x, y in tr["ranges"]], json.loads(epj.read_text(encoding="utf-8")), [])
+            pl["_base_shots"], pl["shots"] = [dict(x) for x in shots], [dict(x) for x in shots]
+            plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:
+            (pasta / "motor.log").open("a").write("\nenquadramento do ajuste: {}\n".format(e))
+        finally:
+            sys.path.remove(str(W / "tools"))
+        rodar("Pontas e emendas", ["scripts/alinhar_frames.py", cid], ok=(0, 1))
     else:
         if work.exists():   # tentativa anterior: guarda e começa limpo
             shutil.move(str(work), str(W / "work" / "{}_antigo_{}".format(cid, int(time.time()))))
@@ -655,7 +696,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
     passo("Plano do corte (gancho, legenda, B-roll)")
     claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto,
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
-                                        "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala.\n" + texto_prints(prints))
+                                        "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala "
+                                        "(os planos já foram refeitos pelo mapa de câmeras). Se quem fala NÃO aparece em nenhuma câmera do bruto "
+                                        "naquele momento, reenquadrar não resolve: cubra o trecho com B-roll ou com a foto do gancho, ou tire a fala "
+                                        "se o corte continuar fazendo sentido, e diga isso nas notas.\n" + texto_prints(prints))
                                 if c.get("ajuste") else ""),
            W, "sonnet", ao_passo=passo, limite=900, higgs=higgs)
     for ciclo in range(3):
@@ -677,7 +721,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
-        r = conferir_ajuste(c, final, pasta, prints, passo)
+        r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO: " + c["ajuste"]
@@ -685,7 +729,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
             rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
-            r = conferir_ajuste(c, final, pasta, prints, passo)
+            r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         registrar_conferencia(c, r, cid)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
