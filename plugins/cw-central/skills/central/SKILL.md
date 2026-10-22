@@ -89,6 +89,11 @@ Pedido: "transfere meu jeito de editar para a IA" / "prepara meu estilo para o F
    Termine pedindo a resposta em JSON: `{"aprovado": true|false, "motivo": "...", "legenda_post": "...", "final": "caminho", "previa": "caminho"}`.
    Teste a receita a partir da cópia do pacote antes de enviar.
 3. **EXEMPLOS/**: 2 ou 3 vídeos aprovados de referência (até 50 MB cada) ou quadros deles, para a IA comparar o resultado.
+4. **Assets da Cardápio Web já ficam no Drive:** a pasta `CW Cast - Cortes/10. BIBLIOTECA - Cardápio Web` (telas do
+   sistema, logos e vinhetas, trilhas da casa, efeitos sonoros, fundos e formas) é a biblioteca oficial e o FabI.Ano já lê
+   dela. Não ponha no pacote o que já está lá: compare os arquivos de estilo do editor com essa pasta (pelo nome e pelo
+   conteúdo, `shasum -a 256`) e, na RECEITA.md, aponte para o caminho dentro da biblioteca. Só vai no pacote o que NÃO
+   existe lá; liste esses arquivos ao editor e sugira que ele também os coloque na subpasta certa da biblioteca.
 Depois envie com `kit.py compartilhar --pasta ~/CW-Kit/<kit> --kit <kit>` e diga ao editor que a gestão transforma o pacote
 num Estilo da IA (aba do Titeu/FabI.Ano › Estilos).
 
