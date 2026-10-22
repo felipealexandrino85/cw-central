@@ -31,6 +31,9 @@ SKILLS = kit.CLAUDE / "skills"
 PREFIXO = "cw-sk-"
 BRT = timezone(timedelta(hours=-3))
 LIMITE_UP = 50 * 1024 * 1024
+# chaves de verdade (longas); o nome técnico "cw-sk-..." das skills não conta
+SEGREDO = re.compile(r"(?<![\w-])(cw_[A-Za-z0-9]{24,}|sbp_[A-Za-z0-9]{20,}|ATATT[A-Za-z0-9_\-=]{20,}|sk-(?:ant-|or-)?[A-Za-z0-9_\-]{24,}"
+                     r"|ghp_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})")
 _SK = {"ts": 0}
 _lock_inst = threading.Lock()
 
@@ -72,13 +75,13 @@ def _empacotar(raiz):
             except UnicodeDecodeError:
                 texto = None
         if texto is not None and len(texto) <= 300_000:
-            if kit.SEGREDO.search(texto):
+            if SEGREDO.search(texto):
                 raise RuntimeError("{} parece ter uma senha ou chave: tire antes".format(rel))
             arquivos[rel] = texto
             total += len(texto)
         else:
             anexos.append({"caminho": rel, "sha256": kit._subir_anexo(f), "tamanho": f.stat().st_size})
-    if kit.SEGREDO.search(conteudo):
+    if SEGREDO.search(conteudo):
         raise RuntimeError("o SKILL.md parece ter uma senha ou chave")
     if total > 3_000_000:
         raise RuntimeError("a skill tem texto demais (mais de 3 MB)")
@@ -309,7 +312,7 @@ Skills que você usa (já instaladas; use-as pelo nome): {skills}
 Valem as regras e lições do time. Nada é publicado sem aprovação: você só prepara o resultado.
 TRABALHO: {texto}
 {entrada}{refs}{ajuste}{higgs}
-Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} (vídeo final .mp4 em 1080x1920 quando for vídeo vertical,
+{etapa}Pasta de trabalho: {pasta}. Ponha o que vai ser entregue em {saida} (vídeo final .mp4 em 1080x1920 quando for vídeo vertical,
 imagens, e textos em .md).
 Responda APENAS com JSON: {{"ok": true, "resumo": "o que fez, em até 4 linhas", "titulo": "título curto do resultado",
 "legenda": "legenda do post, se for vídeo para as redes", "arquivos": ["saida/..."]}}"""
@@ -324,7 +327,7 @@ def executar(E, item):
             raise RuntimeError("o agente foi desligado")
         instalar_skills(log=E.log)
         pasta = E.BASE / "agentes" / "t{}".format(t["id"])
-        if not t.get("ajuste"):
+        if not t.get("ajuste") and not int(t.get("etapa_idx") or 0):   # começo do trabalho (não ajuste nem etapa seguinte): pasta limpa
             shutil.rmtree(pasta, ignore_errors=True)
         saida = pasta / "saida"
         saida.mkdir(parents=True, exist_ok=True)
@@ -341,29 +344,55 @@ def executar(E, item):
         if refs:
             extra.append(pasta / "refs")
         higgs = int(a.get("higgs") or 0)
-        passo("trabalhando")
-        texto = E.claude(TRABALHO.format(
-            nome=a["nome"], missao=a.get("missao") or "", instrucoes=a.get("instrucoes") or "(sem instruções extras)",
-            skills=", ".join(s["nome"] for s in a.get("skills") or []) or "(nenhuma: use o que o Claude já sabe)",
-            texto=ent.get("texto") or ("processe o material recebido" if ent.get("arquivo") else ""),
-            entrada=entrada_txt, refs=("Referências: {}\n".format(", ".join(str(x) for x in refs)) if refs else ""),
-            ajuste=("AJUSTE PEDIDO PELO TIME (você já fez este trabalho; parta do que está na pasta e mude SÓ isto): {}\n{}".format(
-                t["ajuste"], E.texto_prints(prints)) if t.get("ajuste") else ""),
-            higgs=("Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use."),
-            pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs)
-        try:
-            r = E.json_final(texto)
-        except Exception:
-            r = {"resumo": texto[-1500:]}
+        etapas = a.get("etapas") or []
+        i = min(int(t.get("etapa_idx") or 0), max(len(etapas) - 1, 0))
+        while True:   # sem etapas: uma rodada só; com etapas: segue em ordem até uma que pare para aprovar (a última sempre para)
+            et = etapas[i] if etapas else None
+            r = _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta, saida, extra)
+            ultima = not etapas or i >= len(etapas) - 1
+            if ultima or et.get("aprovar"):
+                break
+            i += 1
+            t = dict(t, ajuste=None)
+            prints = []
         passo("guardando o resultado")
         arquivos = _resultados(saida, "tarefa-{}".format(t["id"]))
-        E.srv("tarefa", id=t["id"], estado="previa", etapa="esperando aprovação",
+        rotulo = "Etapa {} de {}: {} · esperando aprovação".format(i + 1, len(etapas), et["nome"]) if etapas else "esperando aprovação"
+        E.srv("tarefa", id=t["id"], estado="previa", etapa=rotulo, etapa_idx=i, etapas_total=len(etapas),
               resultado={"texto": (r.get("resumo") or "")[:3000], "titulo": (r.get("titulo") or "")[:200], "legenda": (r.get("legenda") or "")[:2200],
-                         "arquivos": arquivos})
-        E.log("agente", a["nome"], "trabalho", t["id"], "pronto para aprovar")
+                         "etapa": et["nome"] if etapas else "", "arquivos": arquivos})
+        E.log("agente", a["nome"], "trabalho", t["id"], "pronto para aprovar", rotulo)
     except Exception as ex:
         E.log("trabalho", t["id"], "falhou:", traceback.format_exc()[-600:])
         E.srv("tarefa", id=t["id"], estado="erro", erro=str(ex)[:900])
+
+
+def _rodada(E, a, t, et, i, etapas, ent, entrada_txt, refs, prints, higgs, pasta, saida, extra):
+    """Uma chamada do Claude: o trabalho inteiro (agente sem etapas) ou uma etapa."""
+    passo = lambda x: E.srv("tarefa", id=t["id"], etapa=x)
+    if et:
+        passo("Etapa {} de {}: {}".format(i + 1, len(etapas), et["nome"]))
+        plano = "\n".join("  {}. {}{}".format(n + 1, e["nome"], " (você está aqui)" if n == i else "") for n, e in enumerate(etapas))
+        etapa_txt = ("ETAPA {} de {}: {}. Faça SÓ esta etapa{}.\n{}\nPlano do trabalho:\n{}\nAs etapas anteriores já foram feitas: o que elas "
+                     "produziram está na pasta de trabalho.\n").format(
+            i + 1, len(etapas), et["nome"], (" usando a skill " + et["skill"]) if et.get("skill") else "",
+            et.get("instrucao") or "", plano)
+    else:
+        passo("trabalhando")
+        etapa_txt = ""
+    texto = E.claude(TRABALHO.format(
+        nome=a["nome"], missao=a.get("missao") or "", instrucoes=a.get("instrucoes") or "(sem instruções extras)",
+        skills=", ".join(s["nome"] for s in a.get("skills") or []) or "(nenhuma: use o que o Claude já sabe)",
+        texto=ent.get("texto") or ("processe o material recebido" if ent.get("arquivo") else ""),
+        entrada=entrada_txt, refs=("Referências: {}\n".format(", ".join(str(x) for x in refs)) if refs else ""),
+        ajuste=("AJUSTE PEDIDO PELO TIME (você já fez este trabalho; parta do que está na pasta e mude SÓ isto): {}\n{}".format(
+            t["ajuste"], E.texto_prints(prints)) if t.get("ajuste") else ""),
+        higgs=("Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use."),
+        etapa=etapa_txt, pasta=pasta, saida=saida), pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=extra, higgs=higgs)
+    try:
+        return E.json_final(texto)
+    except Exception:
+        return {"resumo": texto[-1500:]}
 
 
 def operario(E):
