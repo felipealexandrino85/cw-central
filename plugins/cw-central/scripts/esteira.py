@@ -831,6 +831,9 @@ def subir_previa(arq, corte):
 
 BIBLIOTECA_CW = DRIVE / "CW Cast - Cortes" / "3. BIBLIOTECA" / "Cardápio Web"
 PREVIAS_DRIVE = DRIVE / "CW Cast - Cortes" / "2. PARA APROVAR" / "Prévias da IA (Titeu e FabI.Ano)"
+# scripts dos estilos (ex.: reel.py do Fabiano) acham o Drive e a biblioteca por estas variáveis
+os.environ.setdefault("CW_DRIVE", str(DRIVE))
+os.environ.setdefault("CW_BIBLIOTECA", str(BIBLIOTECA_CW))
 
 
 def produzir(item):
@@ -902,14 +905,19 @@ def produzir_reel(item, pasta, passo):
     higgs = int(lote.get("higgs_orcamento") or 0)
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     base = BASE / str(ep["id"])
+    # reel: a receita inteira vale (EPISÓDIO = análise do bruto + CORTE = o vídeo), com a pasta da skill do estilo
+    skill_est = HOME / ".claude" / "skills" / ("cw-estilo-" + (estilo or {}).get("slug", ""))
+    rec = ((estilo or {}).get("receita") or "").strip()
+    if rec and skill_est.is_dir():
+        rec = "A pasta desta skill (\"a pasta desta skill\" na receita) é {}. Use {} como TRAB.\n\n{}".format(skill_est, pasta, rec)
     texto = claude(PRODUCAO_REEL.format(cid=cid, titulo=c["titulo"], bruto=base / "bruto", material=base / "material.txt",
                                         transc=base / "transcricao.json", transc_txt=base / "transcricao.txt",
                                         ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito; parta do que existe na pasta de trabalho e mude SÓ isto): "
                                                 + c["ajuste"] + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                         pasta=pasta, biblioteca=BIBLIOTECA_CW,
-                                        receita=receita(estilo, "CORTE") if estilo else "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
-                   pasta, "sonnet", ao_passo=passo, limite=3000, extra_dirs=[base / "bruto", BIBLIOTECA_CW], higgs=higgs)
+                                        receita=rec or "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
+                   pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs)
     r = json_final(texto)
     final = Path(r.get("final") or "")
     if final and not final.is_absolute():
