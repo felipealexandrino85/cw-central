@@ -325,7 +325,8 @@ def executar(E, item):
     try:
         if not a:
             raise RuntimeError("o agente foi desligado")
-        instalar_skills(log=E.log)
+        faltam = [k["nome"] for k in a.get("skills") or [] if k["nome"].startswith(PREFIXO) and not (SKILLS / k["nome"] / "SKILL.md").exists()]
+        instalar_skills(forcar=bool(faltam), log=E.log)   # skill aprovada há pouco: instala na hora
         pasta = E.BASE / "agentes" / "t{}".format(t["id"])
         if not t.get("ajuste") and not int(t.get("etapa_idx") or 0):   # começo do trabalho (não ajuste nem etapa seguinte): pasta limpa
             shutil.rmtree(pasta, ignore_errors=True)
