@@ -951,7 +951,7 @@ def produzir_reel(item, pasta, passo):
     final = Path(r.get("final") or "")
     if final and not final.is_absolute():
         final = pasta / final
-    if not r.get("aprovado") or not final.is_file():
+    if not final.is_file():
         srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
         return
     previa = Path(r.get("previa") or final)
@@ -959,10 +959,12 @@ def produzir_reel(item, pasta, passo):
         previa = pasta / previa
     if c.get("ajuste"):
         registrar_conferencia(c, conferir_ajuste(c, final, pasta, prints, passo), cid)
-    entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta)
+    # o vídeo existe: vai para a prévia mesmo com avisos da conferência automática (quem decide é uma pessoa)
+    entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta,
+                    aviso=None if r.get("aprovado") else (r.get("motivo") or "a conferência automática apontou problemas"))
 
 
-def entregar_previa(c, final, previa, cid, legenda, pasta):
+def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
     """Prévia leve no bucket (player da página) + final no Drive "2. PARA APROVAR/Prévias da IA"; o corte vai para 'previa'."""
     srv("corte", id=c["id"], etapa="Prévia")
     caminho = subir_previa(previa, c)
@@ -981,7 +983,8 @@ def entregar_previa(c, final, previa, cid, legenda, pasta):
         except Exception:
             legenda = ""
     (pasta / "legenda_post.txt").write_text(legenda or c["titulo"], encoding="utf-8")
-    srv("corte", id=c["id"], estado="previa", etapa="esperando aprovação", arquivo=str(final), previa=caminho,
+    srv("corte", id=c["id"], estado="previa", etapa=("esperando aprovação · ⚠ conferência: " + aviso)[:480] if aviso else "esperando aprovação",
+        arquivo=str(final), previa=caminho,
         final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
     log("corte", c["id"], "em prévia")
 
