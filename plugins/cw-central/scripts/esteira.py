@@ -498,7 +498,13 @@ def operario(n, so_ajuste=False):
             continue
         if item:
             produzir(item)
-            continue
+        else:
+            time.sleep(10)
+
+
+def entregador():
+    """Manda para a Publicação cada corte aprovado, na hora (não espera operário livre)."""
+    while True:
         try:
             aprovado = srv("pegar_aprovado")
         except central.ErroCentral:
@@ -506,7 +512,7 @@ def operario(n, so_ajuste=False):
         if aprovado:
             entregar(aprovado)
         else:
-            time.sleep(10)
+            time.sleep(15)
 
 
 def cmd_rodar():
@@ -515,6 +521,7 @@ def cmd_rodar():
     for n in range(OPERARIOS):
         threading.Thread(target=operario, args=(n + 1,), daemon=True).start()
     threading.Thread(target=operario, args=(OPERARIOS + 1, True), daemon=True).start()   # vaga reservada para ajustes
+    threading.Thread(target=entregador, daemon=True).start()
     log("esteira ligada:", OPERARIOS, "operários; GPU:", tem_gpu())
     threading.Thread(target=sincronizar_estilos, daemon=True).start()
     ultimo_vigia = 0
