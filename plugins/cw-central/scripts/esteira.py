@@ -305,7 +305,68 @@ def receita(estilo, parte):
 
 
 def pasta_estilo(ep, estilo):
-    return BASE / str(ep["id"]) / ("estilo-" + ((estilo or {}).get("slug") or "generico"))
+    """Pasta de trabalho do episódio num estilo. Versão em teste usa uma pasta própria (estilo-<slug>-v<N>)."""
+    e = estilo or {}
+    return BASE / str(ep["id"]) / ("estilo-" + (e.get("pasta") or e.get("slug") or "generico"))
+
+
+def _ignorar_trabalho(raiz):
+    """Ao copiar a pasta de outro estilo/versão: leva os scripts e o mapa de câmeras (work/eps), não os cortes e os finais."""
+    raiz = str(raiz)
+
+    def ignora(d, nomes):
+        if d == raiz:
+            return [n for n in nomes if n in ("saida", ".originais")]
+        if d == os.path.join(raiz, "work"):
+            return [n for n in nomes if n != "eps"]
+        return []
+    return ignora
+
+
+def garantir_pasta_estilo(ep, estilo):
+    """Estilo novo ou versão em teste ainda sem pasta neste episódio: copia a do estilo de partida e aplica os arquivos da versão."""
+    W = pasta_estilo(ep, estilo)
+    base = (estilo or {}).get("base_pasta")
+    if not W.exists() and base:
+        origem = BASE / str(ep["id"]) / ("estilo-" + base)
+        if origem.is_dir():
+            shutil.copytree(origem, W, ignore=_ignorar_trabalho(origem), symlinks=True)
+    if W.exists():
+        aplicar_overrides(W, (estilo or {}).get("overrides") or {})
+    return W
+
+
+EDITAVEIS = re.compile(r"\.(md|json|txt|ya?ml|ass|css)$", re.I)
+
+
+def aplicar_overrides(W, overrides):
+    """Arquivos de texto do estilo trocados por uma versão ({caminho: conteúdo}). Guarda o original em .originais/ e
+    devolve o original quando a versão deixa de trocar aquele arquivo (voltar versão funciona)."""
+    W = Path(W)
+    manifesto = W / ".originais" / "trocados.json"
+    try:
+        antes = set(json.loads(manifesto.read_text()))
+    except (OSError, ValueError):
+        antes = set()
+    agora = set()
+    for cam, conteudo in (overrides or {}).items():
+        if not isinstance(conteudo, str) or ".." in Path(cam).parts or Path(cam).is_absolute() or not EDITAVEIS.search(cam):
+            continue
+        alvo, orig = W / cam, W / ".originais" / cam
+        if alvo.exists() and not orig.exists():
+            orig.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(alvo, orig)
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        if not alvo.exists() or alvo.read_text(encoding="utf-8", errors="replace") != conteudo:
+            alvo.write_text(conteudo, encoding="utf-8")
+        agora.add(cam)
+    for cam in antes - agora:   # a versão nova não troca mais este arquivo: volta o original
+        orig = W / ".originais" / cam
+        if orig.exists():
+            shutil.copy2(orig, W / cam)
+    if agora or antes:
+        manifesto.parent.mkdir(parents=True, exist_ok=True)
+        manifesto.write_text(json.dumps(sorted(agora)))
 
 
 # ------------------------------------------------------------------------------------------- Claude sem ninguém olhando
@@ -629,11 +690,13 @@ def mmss_t(seg):
     return "{}:{:02d}:{:05.2f}".format(int(h), int(r // 60), r % 60) if h else "{}:{:05.2f}".format(int(r // 60), r % 60)
 
 
-def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas=""):
+def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None):
     """Roteiro do Timeu como programa. Devolve (final, previa). Levanta Falhou se um passo mecânico quebrar."""
     cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
     bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
-    ref = HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references"
+    # referências do estilo: as da pasta de trabalho (com os arquivos trocados pela versão) ou as da skill instalada
+    ref = next((r for r in (W / "references", HOME / ".claude" / "skills" / ("cw-estilo-" + ((estilo or {}).get("slug") or "")) / "references")
+                if r.is_dir()), HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references")
     env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
     epj = W / "work" / "eps" / "ep" / "episodio.json"
     preparar_episodio_estilo(ep, W, janelas, passo)
@@ -788,7 +851,7 @@ def produzir(item):
         (pasta / "palavras.json").write_text(json.dumps(palavras, ensure_ascii=False))
         extra, w = [], ""
         if estilo and "## EPISÓDIO" in (estilo.get("receita") or ""):
-            W = pasta_estilo(ep, estilo)
+            W = garantir_pasta_estilo(ep, estilo)
             extra, w = [W], "\nPasta de trabalho do episódio neste estilo (W): {} (já preparada na seleção)".format(W)
         else:   # estilos simples trabalham num trecho já cortado
             passo("cortando o trecho do 4K")
@@ -800,7 +863,8 @@ def produzir(item):
         prints = baixar_prints(c, pasta) if c.get("ajuste") else []
         if estilo and estilo.get("motor") == "timeu" and extra:
             try:
-                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, item.get("janelas") or "")
+                janelas = "" if estilo.get("teste") else (item.get("janelas") or "")   # teste de estilo: usa o mapa de câmeras que já existe
+                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
                 entregar_previa(c, final, previa, cid, "", pasta)
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
@@ -935,6 +999,152 @@ def entregador():
             time.sleep(15)
 
 
+# ------------------------------------------------------------------------------------------- ⑤ estilos: versões a partir de referências
+ESTILISTA = """Você é o Titeu cuidando dos ESTILOS de edição do CW Studios ({linha_txt}), sem ninguém olhando: não pergunte nada, decida.
+Pedido de {quem}: {pedido}
+Estilo: "{nome}" (versão atual {versao}){base}.
+Referências enviadas: {refs}
+Na pasta {pasta}:
+- RECEITA.md: a receita atual do estilo (como produzir UM vídeo nele: seções ## EPISÓDIO, ## CORTE e ## APRENDIZADOS);
+- skill/: cópia EDITÁVEL dos arquivos de texto do pacote do estilo (regras editoriais, critérios, presets de legenda, configurações).
+{skill_txt}
+Faça a versão nova do estilo:
+1. Abra cada referência (são imagens: fotos, prints ou folhas de quadros dos vídeos, com o tempo no nome) e anote o que caracteriza
+   a edição: legenda (fonte, tamanho, cor, posição, palavras por vez, destaque), ritmo dos cortes, zoom/punch, gancho, B-roll,
+   transições, cores, trilha e sons, o que aparece na tela e quando.
+2. Mude RECEITA.md e os arquivos de skill/ para que o estilo produza isso, com valores concretos (tamanhos, cores em hex, tempos,
+   posições). Mude só o necessário para atender o pedido. Mantenha as seções e o jeito de produzir (comandos e scripts): não crie
+   script nem arquivo de código e use só recursos que o pacote já tem (fontes, sons, presets). Se a referência pede algo que não
+   existe aqui (ex.: uma fonte que não está no pacote), use o mais próximo e diga nas notas.
+3. As regras de processo do time não mudam (aprovação, entrega, onde salvar).
+4. Escreva NOTAS.md para o time, em até 10 linhas: o que mudou e o que não deu para fazer igual à referência.
+Não renderize nada: o corte de teste é automático.
+Responda APENAS com JSON: {{"ok": true, "notas": "o que mudou, em 2 linhas"}}"""
+
+
+def _baixar_referencias(v, destino):
+    """Referências do pedido → arquivos em destino/ (enviadas pela página e links de vídeo públicos)."""
+    import urllib.request
+    import kit
+    destino.mkdir(parents=True, exist_ok=True)
+    saida = []
+    if v.get("referencias"):
+        try:
+            links = kit._funcao({"acao": "referencia", "caminhos": v["referencias"]}).get("links") or {}
+        except Exception as e:
+            log("referências:", e)
+            links = {}
+        for i, (cam, url) in enumerate(links.items()):
+            arq = destino / "ref{}{}".format(i + 1, Path(cam).suffix.lower() or ".bin")
+            try:
+                with urllib.request.urlopen(url, timeout=300) as r, open(arq, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                saida.append(arq)
+            except OSError as e:
+                log("referência", cam, e)
+    for i, link in enumerate(v.get("links") or []):
+        if not re.match(r"^https?://", link or ""):
+            continue
+        r = subprocess.run([sys.executable, "-m", "yt_dlp", "-q", "--no-playlist", "--max-filesize", "200M", "-f", "mp4[height<=1080]/best[height<=1080]/best",
+                            "-o", str(destino / "link{}.%(ext)s".format(i + 1)), link], capture_output=True, text=True, timeout=600)
+        achados = sorted(destino.glob("link{}.*".format(i + 1)))
+        if achados:
+            saida.append(achados[0])
+        else:
+            log("link de referência", link, (r.stderr or r.stdout)[-200:])
+    return saida
+
+
+def _folhas(video, pasta):
+    """Vídeo de referência → 2 folhas de quadros: o começo (gancho, 2 por segundo) e o vídeo inteiro (20 quadros)."""
+    dur = ffprobe_dur(video) or 30
+    env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
+    folhas = []
+    for nome, filtro in (("inicio", "trim=0:5,fps=2,scale=360:-2,tile=5x2"),
+                         ("inteiro", "fps={:.4f},scale=300:-2,tile=5x4".format(20.0 / max(dur, 1)))):
+        arq = pasta / "{}_{}_{:.0f}s.jpg".format(video.stem, nome, dur)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(video), "-vf", filtro, "-frames:v", "1", str(arq)], env=env)
+        if arq.exists():
+            folhas.append(arq)
+    return folhas
+
+
+def _textos(raiz):
+    out = {}
+    for f in Path(raiz).rglob("*"):
+        rel = f.relative_to(raiz).as_posix()
+        if f.is_file() and EDITAVEIS.search(f.name) and f.stat().st_size <= 150_000 and not re.search(r"(^|/)(node_modules|\.git|work|saida|\.originais)/", rel):
+            out[rel] = f.read_text(encoding="utf-8", errors="replace")
+    return out
+
+
+def criar_versao(t):
+    v, e = t["versao"], t["estilo"]
+    pasta = BASE / "estilos" / "v{}".format(v["id"])
+    shutil.rmtree(pasta, ignore_errors=True)
+    pasta.mkdir(parents=True)
+    passo = lambda x: srv("estilo_versao", id=v["id"], etapa=x)
+    try:
+        sincronizar_estilos()
+        passo("baixando as referências")
+        refs = _baixar_referencias(v, pasta / "refs")
+        imagens = []
+        for r in refs:
+            if VIDEO.search(r.name) or r.suffix.lower() in (".webm",):
+                imagens += _folhas(r, pasta / "refs")
+            elif r.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                imagens.append(r)
+        # cópia editável dos textos da skill do estilo (ou do estilo de partida), já com os arquivos da versão atual
+        skills = HOME / ".claude" / "skills"
+        origem = next((d for d in (skills / ("cw-estilo-" + e["slug"]), skills / ("cw-estilo-" + ((t.get("base") or {}).get("slug") or "")))
+                       if e.get("tem_pacote") and d.is_dir()), None)
+        intocado = _textos(origem) if origem else {}
+        (pasta / "skill").mkdir()
+        for cam, txt in dict(intocado, **(e.get("overrides") or {})).items():
+            (pasta / "skill" / cam).parent.mkdir(parents=True, exist_ok=True)
+            (pasta / "skill" / cam).write_text(txt, encoding="utf-8")
+        (pasta / "RECEITA.md").write_text(e.get("receita") or "", encoding="utf-8")
+        passo("estudando as referências e escrevendo a versão {}".format(v["versao"]))
+        texto = claude(ESTILISTA.format(
+            linha_txt="reels da Cardápio Web" if e.get("linha") == "reels" else "cortes do CW Cast",
+            quem=(v.get("pedido_por") or "o time").split("@")[0], pedido=v.get("pedido") or "(sem texto: siga as referências)",
+            nome=e["nome"], versao=e.get("versao_atual") or 0,
+            base=(" — estilo novo, criado a partir de \"{}\"".format(t["base"]["nome"]) if t.get("base") and not e.get("versao_atual") else ""),
+            refs=", ".join(str(x) for x in imagens) or "nenhuma (só o pedido em texto)", pasta=pasta,
+            skill_txt=("A skill completa do estilo (com scripts e arquivos, só para consulta) está em {}.".format(origem) if origem
+                       else "Este estilo não tem pacote próprio: a mudança é só na receita.")),
+            pasta, "sonnet", ao_passo=passo, limite=1500, extra_dirs=[origem] if origem else [])
+        try:
+            r = json_final(texto)
+        except Exception:
+            r = {}   # o que vale é o que ficou escrito em RECEITA.md e skill/
+        nova = _textos(pasta / "skill")
+        overrides = {k: txt for k, txt in nova.items() if intocado.get(k) != txt}
+        if len(json.dumps(overrides)) > 900_000:
+            raise RuntimeError("a versão mudou arquivos demais (mais de 900 KB de texto)")
+        notas = (pasta / "NOTAS.md").read_text(encoding="utf-8") if (pasta / "NOTAS.md").exists() else (r.get("notas") or "")
+        srv("estilo_versao", id=v["id"], receita=(pasta / "RECEITA.md").read_text(encoding="utf-8"), overrides=overrides,
+            notas=notas.strip()[:3000], etapa="preparando o corte de teste")
+        srv("estilo_teste", id=v["id"])
+        log("estilo", e["slug"], "versão", v["versao"], "escrita;", len(overrides), "arquivo(s) trocado(s); corte de teste na fila")
+    except Exception as ex:
+        log("versão de estilo", v["id"], "falhou:", traceback.format_exc()[-600:])
+        srv("estilo_versao", id=v["id"], estado="erro", erro=str(ex)[:900])
+
+
+def estilista():
+    """Pedidos de estilo novo/melhoria, um por vez (não atrasa os cortes)."""
+    while True:
+        try:
+            t = srv("estilo_pegar")
+            if t:
+                criar_versao(t)
+                continue
+        except Exception as e:
+            log("estilista:", e)
+        time.sleep(30)
+
+
 def cmd_rodar():
     BASE.mkdir(parents=True, exist_ok=True)
     escrever_cerca()
@@ -946,6 +1156,7 @@ def cmd_rodar():
         threading.Thread(target=operario, args=(n + 1,), daemon=True).start()
     threading.Thread(target=operario, args=(OPERARIOS + 1, True), daemon=True).start()   # vaga reservada para ajustes
     threading.Thread(target=entregador, daemon=True).start()
+    threading.Thread(target=estilista, daemon=True).start()
     log("esteira ligada:", OPERARIOS, "operários; GPU:", tem_gpu())
     threading.Thread(target=sincronizar_estilos, daemon=True).start()
     ultimo_vigia = 0
