@@ -437,7 +437,9 @@ def produzir(item):
         higgs = int(lote.get("higgs_orcamento") or 0)
         texto = claude(PRODUCAO.format(cid=cid, inicio=float(c["inicio"]), fim=float(c["fim"]), bruto=bruto,
                                        transc=BASE / str(ep["id"]) / "transcricao.json", titulo=c["titulo"], gancho=c.get("gancho") or "",
-                                       ajuste="Pedido de melhoria do editor (aplique na versão anterior, se existir): " + c["ajuste"] + "\n" if c.get("ajuste") else "",
+                                       ajuste=("AJUSTE PEDIDO PELO EDITOR (este corte já foi produzido e revisado): " + c["ajuste"] + "\n"
+                                               "Não refaça do zero: parta do plan.json e dos arquivos que já existem para este corte, mude SÓ o que foi pedido, "
+                                               "re-renderize e rode os gates de novo.\n") if c.get("ajuste") else "",
                                        higgs="Higgsfield liberado: até {} geração(ões) neste lote (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                        pasta=pasta, w=w, receita=receita(estilo, "CORTE") if estilo else "Vertical 1080x1920 com legenda e gancho."),
                        pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs)
@@ -485,10 +487,11 @@ def entregar(item):
         srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
 
 
-def operario(n):
+def operario(n, so_ajuste=False):
+    """Pega o próximo corte (ajustes primeiro). O operário reservado só pega ajuste, para ele voltar na hora."""
     while True:
         try:
-            item = srv("pegar_corte")
+            item = srv("pegar_corte", so_ajuste=so_ajuste)
         except central.ErroCentral as e:
             log("operário", n, "central:", e)
             time.sleep(20)
@@ -511,6 +514,7 @@ def cmd_rodar():
     escrever_cerca()
     for n in range(OPERARIOS):
         threading.Thread(target=operario, args=(n + 1,), daemon=True).start()
+    threading.Thread(target=operario, args=(OPERARIOS + 1, True), daemon=True).start()   # vaga reservada para ajustes
     log("esteira ligada:", OPERARIOS, "operários; GPU:", tem_gpu())
     threading.Thread(target=sincronizar_estilos, daemon=True).start()
     ultimo_vigia = 0
