@@ -126,7 +126,9 @@ def _resultados(pasta_saida, prefixo, limite=8):
         if f.suffix.lower() in (".md", ".txt", ".json", ".csv", ".srt") and f.stat().st_size <= 60_000:
             item["texto"] = f.read_text(encoding="utf-8", errors="replace")
         try:
-            item["caminho"] = _subir_resultado(f, "{}/{}".format(prefixo, _nome_seguro(f.name)))
+            rel = f.relative_to(pasta_saida).as_posix()   # capa_barras/capa.png e capa_pilulas/capa.png não podem virar o mesmo arquivo
+            item["nome"] = rel
+            item["caminho"] = _subir_resultado(f, "{}/{}".format(prefixo, _nome_seguro(rel.replace("/", "__"))))
         except Exception as e:
             item["erro"] = str(e)[:200]
         out.append(item)
@@ -348,8 +350,14 @@ def executar(E, item):
             entrada_txt = "Material recebido na pasta do Drive: {}\n".format(alvo)
             extra.append(alvo if alvo.is_dir() else alvo.parent)
         if ent.get("local") and Path(ent["local"]).exists():   # vídeo que acabou de ficar pronto no servidor
-            entrada_txt += "Vídeo: {}\n".format(ent["local"])
+            entrada_txt += "Vídeo pronto (editado): {}\n".format(ent["local"])
             extra.append(Path(ent["local"]).parent)
+        if ent.get("bruto") and Path(ent["bruto"]).exists():   # o bruto original (melhor para tirar fotos: sem legenda nem logo)
+            entrada_txt += ("Vídeo bruto original (horizontal, sem legenda nem logo): {}; trechos usados no corte (segundos do bruto): {}\n"
+                            .format(ent["bruto"], ent.get("trechos_do_bruto") or "?"))
+            extra.append(Path(ent["bruto"]).parent)
+        if ent.get("headline"):
+            entrada_txt += "Headline do vídeo: {}\n".format(ent["headline"])
         passo("baixando o material")
         refs = E._baixar_referencias({"referencias": ent.get("referencias") or [], "links": ent.get("links") or []}, pasta / "refs")
         prints = E.baixar_prints({"ajuste_imagens": t.get("ajuste_imagens") or []}, pasta) if t.get("ajuste") else []
