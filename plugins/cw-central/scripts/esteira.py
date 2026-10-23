@@ -773,6 +773,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         rodar("Pontas e emendas", ["scripts/encaixar_voz.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Pontas e emendas", ["scripts/alinhar_frames.py", cid], ok=(0, 1))
         rodar("Enquadramento", base + ["--atualizar-shots"], ok=(0, 1))
+        # revisor de legendas (padrão em todo corte): dicionário do time + IA barata conferem marcas, nomes e termos
+        rodar("Revisão das legendas", [AQUI / "legendas.py", "revisar", "work/{}/transcript.json".format(cid),
+                                       "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"])], ok=(0, 1), tempo=300)
     # a única chamada do Claude: as decisões editoriais
     foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
@@ -833,6 +836,9 @@ ESTILO DE EDIÇÃO:
 
 PARA SER RÁPIDO (vale por cima da receita):
 - Rode os scripts do estilo com "python3 script.py ..." (sem -I): a transcrição deles vai para a Groq, como no podcast.
+- Revisão das legendas (obrigatória): assim que a transcrição palavra por palavra do estilo estiver pronta (ex.: palavras.json depois
+  do "analisar") e ANTES do plano/montagem, rode: python3 {legendas} revisar <arquivo de palavras> --contexto "{titulo}"
+  (corrige marcas, nomes e termos pelo dicionário do time; o tempo das palavras não muda).
 - Rascunho primeiro: enquanto ajusta (plano, montagem, conferência e correções), monte na resolução menor (ex.: --res 1080x1920).
   Só quando a conferência aprovar, renderize UMA vez na qualidade final da receita (ex.: 2160x3840) e entregue esse arquivo.
 
@@ -944,7 +950,7 @@ def produzir_reel(item, pasta, passo):
                                         ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito; parta do que existe na pasta de trabalho e mude SÓ isto): "
                                                 + c["ajuste"] + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
-                                        pasta=pasta, biblioteca=BIBLIOTECA_CW,
+                                        pasta=pasta, biblioteca=BIBLIOTECA_CW, legendas=AQUI / "legendas.py",
                                         receita=rec or "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
                    pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs)
     r = json_final(texto)

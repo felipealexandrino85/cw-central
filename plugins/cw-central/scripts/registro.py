@@ -1190,6 +1190,29 @@ def regras_do_time():
         return []
 
 
+def dicionario_do_time():
+    """Dicionário do time (marcas, nomes e termos: como escrever), com cópia local para quando estiver sem rede."""
+    cache = LOCAL / "glossario.json"
+    try:
+        import central
+        if central.configurada():
+            itens = central.rpc("cw_glossario", timeout=3) or []
+            LOCAL.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(itens, ensure_ascii=False))
+            return itens
+    except Exception:
+        pass
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def texto_dicionario(itens):
+    return ("Dicionário do time (em legenda, título, post e texto, escreva sempre assim): "
+            + "; ".join(i["certo"] + (" (não " + ", ".join(i["errados"][:3]) + ")" if i.get("errados") else "") for i in itens[:80]))
+
+
 def licoes_aprendidas():
     """Lições que a Lia aprendeu com as correções do time e estão ativas para o kit deste editor (cópia local sem rede)."""
     cache = LOCAL / "licoes.json"
@@ -1262,6 +1285,9 @@ def cmd_abertura(_a):
             partes.append("Regras do sistema CW Studios (valem em todo trabalho):\n" + "\n".join("- " + r["texto"] for r in sistema))
         if video:
             partes.append("Regras do time CW Studios para edição de vídeo:\n" + "\n".join("- " + r["texto"] for r in video))
+        dic = dicionario_do_time()
+        if dic:
+            partes.append(texto_dicionario(dic))
         licoes = licoes_aprendidas()[:40]
         if licoes:
             partes.append("Lições aprendidas com as correções do time (siga sempre):\n" + "\n".join("- " + l["texto"] for l in licoes))
@@ -1323,6 +1349,9 @@ def cmd_abertura(_a):
                   for r in regras]
         contexto.append("Regras do time CW Studios para edição de vídeo (definidas pela gestão; siga em toda edição desta sessão, "
                         "as marcadas com tipo só valem para aquele tipo de vídeo):\n" + "\n".join(linhas))
+    dic = dicionario_do_time()
+    if dic:
+        contexto.append(texto_dicionario(dic))
     rotas = roteamento()
     if rotas:
         contexto.append(texto_roteamento(rotas))
