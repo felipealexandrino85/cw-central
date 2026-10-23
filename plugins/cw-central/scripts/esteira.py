@@ -822,6 +822,94 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo):
         log("motion do Timeu no", cid, "ficou de fora:", str(e)[-300:])
 
 
+# ------------------------------------------------------------------------------------------- motion CW-Fluido (23/10/2026)
+# Referências do Felipe: câmera em cima e cena ilustrada embaixo + tipografia cinética fluida, na marca da CW.
+# O corte é renderizado também SEM legenda; o motor (motion-vox/lib/cwfluido) alterna câmera / tela dividida / motion em
+# tela cheia, desenha a legenda do Titeu em todos os momentos e anima as palavras no instante em que são ditas.
+def _motor_fluido():
+    for r in sorted(HOME.glob(".claude/plugins/marketplaces/*/plugins/cw-cortes/skills/motion-vox/lib/cwfluido/render.py")):
+        return r
+    return None
+
+
+PLANO_FLUIDO = """Você é o diretor de motion do corte {cid} (CW Cast), sem ninguém olhando. O corte está PRONTO; você planeja só o motion
+design por cima, no estilo CW-Fluido (referências do Felipe: rosto grande em cima e cena ilustrada embaixo; tipografia cinética
+fluida em que cada palavra entra no instante em que é dita; tudo na marca da Cardápio Web — o motor já cuida de cores e fontes).
+Arquivos: {pal} (cada palavra com o instante em segundos), {fala} (as legendas: início-fim | texto), vídeo {video} ({dur:.1f} s).
+Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com:
+- "tag": o assunto do corte em 2 a 3 palavras (fica pequeno no canto de cima).
+- "cenas": de 6 a 9 cenas depois de {evitar:.1f} s, cobrindo uns 45% do corte, cada uma de 2 a 5 s, começando no início da frase:
+  {{"t0", "t1", "layout": "split" | "full", "tipo": "texto" | "objetos" | "lista" | "numero", ...}}
+  · ALTERNE: a maioria "split" (rosto em cima, cena embaixo) e 2 ou 3 "full" (cena na tela inteira) nas frases de maior impacto.
+    Entre cenas, pelo menos 2 s só de câmera, a não ser que uma cena emende direto na outra (t1 de uma = t0 da outra).
+  · "texto": as palavras EXATAMENTE como foram ditas naquele trecho, na ordem (pode ser só a frase-chave de 2 a 7 palavras),
+    com "destaque": [1 ou 2 palavras do texto] (saem em amarelo). Nunca invente palavra que não foi dita.
+  · "objetos": "texto" (frase-chave dita) + "objetos": [{{"img": "broll/objetos/<slug>.png", "x": 0.5, "y": 0.62, "w": 0.5,
+    "entra": <instante em que a palavra do objeto é dita>}}]; para coisa que se move (avião, moto, caixa, entregador)
+    use "de": [x, y] de onde ela vem (pode começar fora da tela, ex. [-0.2, 0.8]) e "dur": 1.2.
+    O objeto é um ícone 3D na cor da marca: antes procure em broll/objetos/ (ls); se não houver, gere com
+      python3 {objeto3d} "<objeto em inglês, curto>" --slug <slug> --banco broll/objetos
+    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 3 por corte; nada de pessoas nem marcas/logos).
+  · "lista": quando a fala enumerar: "titulo" curto + "itens": [{{"texto", "t": instante em que o item é dito}}].
+  · "numero": quando a fala trouxer um número: "de", "ate", "formato" ("{{:.0f}}%"), "conta_em", "rotulo".
+Depois confira: rode
+  python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena, separados por vírgula>
+e abra {quadros}/folha.jpg. Ajuste o que estiver ruim (texto estourando, objeto cortado, cena vazia) e confira de novo (no máximo 2 voltas).
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
+
+
+def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0):
+    motor = _motor_fluido()
+    if not motor or not final.exists() or not (work / "captions.ass").exists():
+        return
+    lib = motor.parent
+    try:
+        passo("Motion (versão sem legenda)")
+        r = subprocess.run([sys.executable, str(lib / "sem_legenda.py"), cid], cwd=str(W), capture_output=True, text=True, timeout=2400)
+        (pasta / "motor.log").open("a").write("\n$ sem legenda\n{}\n{}\n".format(r.stdout[-1500:], r.stderr[-1500:]))
+        sem = W / "saida" / "{}_sem_legenda.mov".format(cid)
+        if r.returncode or not sem.exists():
+            raise RuntimeError("render sem legenda: " + (r.stderr or r.stdout)[-300:])
+        passo("Motion (tempo de cada palavra)")
+        r = subprocess.run([sys.executable, str(lib / "palavras.py"), str(sem), str(work / "palavras_final.json")],
+                           cwd=str(work), capture_output=True, text=True, timeout=900)
+        if r.returncode:
+            raise RuntimeError("palavras: " + (r.stderr or r.stdout)[-300:])
+        fala = fala_do_ass(work / "captions_final.ass")
+        (work / "fala_final.txt").write_text("\n".join("{:.2f}-{:.2f} | {}".format(*x) for x in fala), encoding="utf-8")
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(sem)],
+                                   capture_output=True, text=True).stdout.strip() or 0)
+        evitar = max(4.0, float(plan_hook or 0) + 0.5)
+        cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
+        cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "tag": "", "cenas": []}
+        cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        (W / "broll" / "objetos").mkdir(parents=True, exist_ok=True)
+        passo("Motion (planejando as cenas)")
+        higgs = int(lote.get("higgs_orcamento") or 0)
+        claude(PLANO_FLUIDO.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
+                                   saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros),
+               W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
+        doc = json.loads(cenas.read_text(encoding="utf-8"))
+        doc.update({k: v for k, v in cfg.items() if k not in ("tag", "cenas")})
+        doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
+        if not doc["cenas"]:
+            return
+        cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        passo("Motion (render)")
+        saida = work / "{}_fluido.mov".format(cid)
+        r = subprocess.run([sys.executable, str(motor), str(cenas), str(sem), str(saida)], cwd=str(work), capture_output=True, text=True, timeout=3600)
+        (pasta / "motor.log").open("a").write("\n$ motion cw-fluido\n{}\n{}\n".format(r.stdout[-2000:], r.stderr[-2000:]))
+        if r.returncode or not saida.exists() or saida.stat().st_size < 100000:
+            raise RuntimeError((r.stderr or r.stdout)[-300:])
+        shutil.move(str(final), str(final.with_name(final.stem + "_sem_motion" + final.suffix)))
+        shutil.move(str(saida), str(final))
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                        "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+        log("motion CW-Fluido no", cid + ":", len(doc["cenas"]), "cena(s)")
+    except Exception as e:
+        log("motion CW-Fluido no", cid, "ficou de fora:", str(e)[-300:])
+
+
 def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None):
     """Roteiro do Timeu como programa. Devolve (final, previa). Levanta Falhou se um passo mecânico quebrar."""
     cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
@@ -893,7 +981,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     broll = ("B-roll ao longo do corte (não só no gancho): planeje 2 a 4 inserts de 1,5–2,5 s espalhados, nas falas que citam algo visual "
              "(produto, loja, cozinha, delivery, celular, marca, lugar). Primeiro procure arquivo bom em broll/ e em {bib}; se não houver, gere no "
-             "Higgsfield (cw-studios › gerar): uma imagem realista 9:16 sem texto e depois anime com /kling-video/v2.6/pro/image-to-video (3–5 s). "
+             "Higgsfield (cw-studios › gerar): uma imagem realista 9:16 sem texto e depois anime com /kling-video/v2.6/pro/image-to-video (\"duration\": 5, número inteiro: só aceita 5 ou 10). "
              "Salve em broll/ e ponha em plan.json \"broll\": [{{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}}] "
              "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho. "
              "Se uma geração falhar (erro de envio), tente de novo uma vez antes de desistir daquele b-roll."
@@ -927,7 +1015,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
-    motion_timeu(cid, W, work, final, previa, pasta, passo)
+    try:
+        hook_dur = float((json.loads(plan.read_text(encoding="utf-8")).get("hook") or {}).get("duration") or 0)
+    except (OSError, ValueError):
+        hook_dur = 0.0
+    motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
