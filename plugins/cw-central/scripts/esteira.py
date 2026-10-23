@@ -400,7 +400,9 @@ def cmd_porteiro():
     except Exception as e:
         decisao, motivo, duro = "ask", "não consegui avaliar ({})".format(e), True
     if decisao != "allow" and "cw-studios__gerar" in ferramenta:   # Higgsfield: liberado até o orçamento do lote
-        orc, cont = int(os.environ.get("CW_EST_HIGGS") or 0), Path(pasta or "/tmp") / ".higgs_usados"
+        # conta por lote (CW_EST_HIGGS_ARQ); a pasta do episódio é reaproveitada entre lotes e não serve de contador
+        orc, cont = int(os.environ.get("CW_EST_HIGGS") or 0), Path(os.environ.get("CW_EST_HIGGS_ARQ") or Path(pasta or "/tmp") / ".higgs_usados")
+        cont.parent.mkdir(parents=True, exist_ok=True)
         usados = int(cont.read_text()) if cont.exists() else 0
         if usados < orc:
             cont.write_text(str(usados + 1))
@@ -415,7 +417,7 @@ def cmd_porteiro():
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
 
 
-def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video", trabalho=""):
+def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video", trabalho="", higgs_lote=None):
     """Roda um Claude Code da esteira em 'pasta'. Devolve o texto final.
     modelo: "sonnet"/"opus"/"haiku" (ou "claude:sonnet"…) = conta Claude do CW Studios; "or:<id>" = modelo do OpenRouter pela
     ponte "llm" da central (a chave do OpenRouter fica só na central; o uso fica registrado por trabalho)."""
@@ -430,6 +432,8 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
     env = dict(os.environ, CW_EST_PASTA=str(pasta),
                CW_ESC_PASTA=str(pasta), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="1", CW_SERVIDOR="1",
                CW_ESTEIRA="1", CW_EST_HIGGS=str(higgs), CW_PAPEL=papel or "video")   # CW_ESTEIRA: abertura enxuta (só regras e lições do time)
+    if higgs_lote:
+        env["CW_EST_HIGGS_ARQ"] = str(BASE / ".higgs" / "lote-{}".format(higgs_lote))
     if openrouter:
         cfg, mid = central.config(), modelo[3:]
         env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
@@ -797,7 +801,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                                         "naquele momento, reenquadrar não resolve: cubra o trecho com B-roll ou com a foto do gancho, ou tire a fala "
                                         "se o corte continuar fazendo sentido, e diga isso nas notas.\n" + texto_prints(prints))
                                 if c.get("ajuste") else ""),
-           W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs)
+           W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
     for ciclo in range(3):
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
@@ -927,7 +931,7 @@ def produzir(item):
                                                "re-renderize e rode os gates de novo.\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                        higgs="Higgsfield liberado: até {} geração(ões) neste lote (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                        pasta=pasta, w=w, receita=receita(estilo, "CORTE") if estilo else "Vertical 1080x1920 com legenda e gancho."),
-                       pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs)
+                       pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs, higgs_lote=lote["id"])
         r = json_final(texto)
         final = Path(r.get("final") or "")
         if final and not final.is_absolute():
@@ -973,7 +977,7 @@ def produzir_reel(item, pasta, passo):
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                         pasta=pasta, biblioteca=BIBLIOTECA_CW, legendas=AQUI / "legendas.py",
                                         receita=rec or "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
-                   pasta, "sonnet", ao_passo=passo, limite=5400, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs)
+                   pasta, "sonnet", ao_passo=passo, limite=5400, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs, higgs_lote=lote["id"])
     r = json_final(texto)
     final = Path(r.get("final") or "")
     if final and not final.is_absolute():
