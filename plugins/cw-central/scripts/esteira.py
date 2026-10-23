@@ -344,7 +344,7 @@ def garantir_pasta_estilo(ep, estilo):
     return W
 
 
-EDITAVEIS = re.compile(r"\.(md|json|txt|ya?ml|ass|css)$", re.I)
+EDITAVEIS = re.compile(r"\.(md|json|txt|ya?ml|ass|css|py|sh)$", re.I)   # textos e scripts do pacote (a versão só vale depois do teste aprovado)
 
 
 def aplicar_overrides(W, overrides):
@@ -942,6 +942,12 @@ def produzir_reel(item, pasta, passo):
     base = BASE / str(ep["id"])
     # reel: a receita inteira vale (EPISÓDIO = análise do bruto + CORTE = o vídeo), com a pasta da skill do estilo
     skill_est = HOME / ".claude" / "skills" / ("cw-estilo-" + (estilo or {}).get("slug", ""))
+    if skill_est.is_dir() and (estilo or {}).get("overrides"):   # versão do estilo com arquivos trocados: cópia própria da skill
+        copia = BASE / "estilos" / "skill-{}-v{}".format(estilo["slug"], estilo.get("versao") or 0)
+        if not copia.exists():
+            shutil.copytree(skill_est, copia, symlinks=True)
+        aplicar_overrides(copia, estilo["overrides"])
+        skill_est = copia
     rec = ((estilo or {}).get("receita") or "").strip()
     if rec and skill_est.is_dir():
         rec = "A pasta desta skill (\"a pasta desta skill\" na receita) é {}. Use {} como TRAB.\n\n{}".format(skill_est, pasta, rec)
@@ -1080,9 +1086,12 @@ Faça a versão nova do estilo:
    a edição: legenda (fonte, tamanho, cor, posição, palavras por vez, destaque), ritmo dos cortes, zoom/punch, gancho, B-roll,
    transições, cores, trilha e sons, o que aparece na tela e quando.
 2. Mude RECEITA.md e os arquivos de skill/ para que o estilo produza isso, com valores concretos (tamanhos, cores em hex, tempos,
-   posições). Mude só o necessário para atender o pedido. Mantenha as seções e o jeito de produzir (comandos e scripts): não crie
-   script nem arquivo de código e use só recursos que o pacote já tem (fontes, sons, presets). Se a referência pede algo que não
-   existe aqui (ex.: uma fonte que não está no pacote), use o mais próximo e diga nas notas.
+   posições). Mude só o necessário para atender o pedido. Mantenha as seções e o jeito de produzir (comandos e scripts).
+   Se o pedido é sobre COMO o vídeo é cortado ou montado (pausas, repetições, ritmo), ajuste os scripts que já existem em skill/
+   (ex.: limites de pausa, detecção de repetição), mantendo os mesmos comandos e saídas; confira com "python3 -m py_compile" e,
+   se der, rode o script num material de teste. Não crie scripts novos nem dependa de programa que não está instalado.
+   Use só recursos que o pacote já tem (fontes, sons, presets); se a referência pede algo que não existe aqui, use o mais
+   próximo e diga nas notas.
 3. As regras de processo do time não mudam (aprovação, entrega, onde salvar).
 4. Escreva NOTAS.md para o time, em até 10 linhas: o que mudou e o que não deu para fazer igual à referência.
 Não renderize nada: o corte de teste é automático.
