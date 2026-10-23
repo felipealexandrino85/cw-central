@@ -716,6 +716,104 @@ def mmss_t(seg):
     return "{}:{:02d}:{:05.2f}".format(int(h), int(r // 60), r % 60) if h else "{}:{:05.2f}".format(int(r // 60), r % 60)
 
 
+# ------------------------------------------------------------------------------------------- motion design do Timeu-CW-01
+# Camada de motion (pílulas, notificação, telas cheias na cor da marca, CTA) por cima do corte pronto do Titeu, com o motor
+# timeu01 da skill motion-vox (cw-cortes). Se qualquer passo falhar, o corte segue sem a camada (nunca quebra a entrega).
+def _motor_timeu():
+    for r in sorted(HOME.glob(".claude/plugins/marketplaces/*/plugins/cw-cortes/skills/motion-vox/lib/timeu01/render.py")):
+        return r
+    return None
+
+
+PLANO_MOTION = """Você é o diretor de motion do corte {cid} (CW Cast, estilo Timeu-CW-01), sem ninguém olhando. O corte já está PRONTO
+(câmera, legenda queimada, b-roll, trilha): {final} ({dur:.1f} s). Você só acrescenta MOTION DESIGN por cima, sem refazer nada.
+A fala com os tempos do vídeo final está em {fala} (uma linha por legenda: início-fim | texto).
+Leia o catálogo de peças e telas em {telas} e um plano aprovado de exemplo em {exemplo} (copie o jeito, nunca os textos/tempos).
+
+Escreva {saida} (JSON) com SÓ estas chaves: "motion": [...], "telas": [...], "destaques": [] .
+- 4 a 7 peças de "motion" espalhadas pelo corte INTEIRO (uma a cada 8–12 s, nenhuma nos 3 primeiros segundos):
+  pilula (texto curto em MAIÚSCULAS de 1–4 palavras com o conceito que a pessoa acabou de dizer, icone e cor da paleta),
+  notificacao (quando falar de pedido/cliente/venda), lista (quando a fala enumerar), contador (quando falar um número),
+  balao no fim se a fala pedir comentário. Cada peça de 1,5 a 3 s, começando no instante em que a fala diz aquilo.
+  Posição: x 0.5, y entre 0.58 e 0.64 (abaixo do queixo e ACIMA da legenda queimada, que fica perto de 0.74–0.84). Nunca tape o rosto.
+- 0 a 2 "telas" cheias (2,5–4 s) só onde a fala traz número, comparação, lista ou conta clara; nunca no momento emocional.
+- Textos fiéis à fala, sem inventar dado. Nada de logo/cartão final.
+Depois confira: rode
+  python3 {motor} {saida} {final} {quadros} --quadros <tempos separados por vírgula: o meio de cada peça e de cada tela>
+e abra {quadros}/folha.jpg. Se alguma peça tapar o rosto, brigar com a legenda ou sair cortada, ajuste x/y/size e confira de novo (no máximo 2 voltas).
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
+
+
+def _ass_t(x):
+    h, m, s = x.strip().split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def fala_do_ass(ass):
+    """Legendas do corte pronto (tempo do vídeo final): [(t0, t1, texto)]."""
+    out = []
+    for l in ass.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not l.startswith("Dialogue:"):
+            continue
+        p = l.split(",", 9)
+        if len(p) < 10:
+            continue
+        txt = re.sub(r"\{[^}]*\}", "", p[9]).replace("\\N", " ").replace("\\n", " ").strip()
+        try:
+            t0, t1 = _ass_t(p[1]), _ass_t(p[2])
+        except ValueError:
+            continue
+        if txt and t1 > t0:
+            out.append((t0, t1, txt))
+    return sorted(out)
+
+
+def motion_timeu(cid, W, work, final, previa, pasta, passo):
+    motor = _motor_timeu()
+    ass = work / "captions.ass"
+    if not motor or not final.exists() or not ass.exists():
+        return
+    try:
+        fala = fala_do_ass(ass)
+        if not fala:
+            return
+        pal = []
+        for t0, t1, txt in fala:
+            ws = txt.split()
+            d = (t1 - t0) / len(ws)
+            pal += [{"w": w, "t": round(t0 + i * d, 3), "e": round(t0 + (i + 1) * d, 3)} for i, w in enumerate(ws)]
+        (work / "palavras_final.json").write_text(json.dumps(pal, ensure_ascii=False), encoding="utf-8")
+        (work / "fala_final.txt").write_text("\n".join("{:.2f}-{:.2f} | {}".format(*x) for x in fala), encoding="utf-8")
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(final)],
+                                   capture_output=True, text=True).stdout.strip() or 0)
+        cenas, quadros = work / "cenas_motion.json", work / "quadros_motion"
+        passo("Motion design (planejando as peças)")
+        claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
+                                   exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros),
+               W, "sonnet", ao_passo=passo, limite=900)
+        doc = json.loads(cenas.read_text(encoding="utf-8"))
+        doc = {"motion": doc.get("motion") or [], "telas": doc.get("telas") or [], "destaques": [],
+               "so_motion": True, "sfx": True, "limpa_audio": False, "palavras": "palavras_final.json"}
+        if not doc["motion"] and not doc["telas"]:
+            return
+        cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        passo("Motion design (render)")
+        saida = work / "{}_motion.mov".format(cid)
+        env = dict(os.environ, TIMEU_SFX_BANCO=str(motor.parents[2] / "assets" / "sfx_banco"))
+        r = subprocess.run([sys.executable, str(motor), str(cenas), str(final), str(saida)], cwd=str(work), env=env,
+                           capture_output=True, text=True, timeout=3600)
+        (pasta / "motor.log").open("a").write("\n$ motion timeu01\n{}\n{}\n".format(r.stdout[-2000:], r.stderr[-2000:]))
+        if r.returncode or not saida.exists() or saida.stat().st_size < 100000:
+            raise RuntimeError((r.stderr or r.stdout)[-300:])
+        shutil.move(str(final), str(final.with_name(final.stem + "_sem_motion" + final.suffix)))
+        shutil.move(str(saida), str(final))
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                        "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+        log("motion do Timeu no", cid + ":", len(doc["motion"]), "peça(s),", len(doc["telas"]), "tela(s)")
+    except Exception as e:
+        log("motion do Timeu no", cid, "ficou de fora:", str(e)[-300:])
+
+
 def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None):
     """Roteiro do Timeu como programa. Devolve (final, previa). Levanta Falhou se um passo mecânico quebrar."""
     cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
@@ -820,6 +918,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
+    motion_timeu(cid, W, work, final, previa, pasta, passo)
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
