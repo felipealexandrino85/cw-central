@@ -725,23 +725,27 @@ def _motor_timeu():
     return None
 
 
-PLANO_MOTION = """Você é o diretor de motion do corte {cid} (CW Cast, estilo Timeu-CW-01), sem ninguém olhando. O corte já está PRONTO
-(câmera, legenda queimada, b-roll, trilha): {final} ({dur:.1f} s). Você só acrescenta MOTION DESIGN por cima, sem refazer nada.
+PLANO_MOTION = """Você é o diretor de motion do corte {cid} (CW Cast, estilo Timeu-CW-01, motion da skill motion-vox), sem ninguém olhando.
+O corte já está PRONTO (câmera, legenda queimada, b-roll, trilha): {final} ({dur:.1f} s). Você só acrescenta MOTION DESIGN por cima.
 A fala com os tempos do vídeo final está em {fala} (uma linha por legenda: início-fim | texto).
 Leia o catálogo de peças e telas em {telas} e um plano aprovado de exemplo em {exemplo} (copie o jeito, nunca os textos/tempos).
 
-Escreva {saida} (JSON) com SÓ estas chaves: "motion": [...], "telas": [...], "destaques": [] .
-- 4 a 7 peças de "motion" espalhadas pelo corte INTEIRO (uma a cada 8–12 s, nenhuma nos 3 primeiros segundos):
-  pilula (texto curto em MAIÚSCULAS de 1–4 palavras com o conceito que a pessoa acabou de dizer, icone e cor da paleta),
-  notificacao (quando falar de pedido/cliente/venda), lista (quando a fala enumerar), contador (quando falar um número),
-  balao no fim se a fala pedir comentário. Cada peça de 1,5 a 3 s, começando no instante em que a fala diz aquilo.
-  Posição: x 0.5, y entre 0.58 e 0.64 (abaixo do queixo e ACIMA da legenda queimada, que fica perto de 0.74–0.84). Nunca tape o rosto.
-- 0 a 2 "telas" cheias (2,5–4 s) só onde a fala traz número, comparação, lista ou conta clara; nunca no momento emocional.
+Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "motion": [...] e "telas": [...].
+O corte tem que ficar BEM animado (Felipe: "poderia ter mais motion, animação estilo do motion vox"):
+- Uma peça a cada 5–7 s no corte INTEIRO (nenhuma nos 3 primeiros segundos; ~{n_pecas} peças neste corte), cada uma de 1,5 a 3 s,
+  começando no instante em que a fala diz aquilo. VARIE os tipos, não só pílula:
+  pilula (conceito em 1–4 palavras MAIÚSCULAS, icone e cor da paleta), notificacao (pedido/cliente/venda), lista (quando enumerar,
+  itens entrando um a um), contador (quando falar número), etiqueta (preço, com risca_em/troca_em), balao no fim se pedir comentário.
+- 1 a 2 "telas" cheias de motion (2,5–4 s) por corte: use as do catálogo que encaixem na fala (destaque para uma ideia forte sem número,
+  comparacao para errado × certo, checklist, numero, barras, ranking, chat…). Nunca no momento emocional nem nos 3 primeiros segundos.
+- POSIÇÃO (Felipe: "as tags estão bem no rosto"): o rosto ocupa de 0.15 a 0.62 da altura e a legenda queimada fica perto de 0.66.
+  Toda peça fica ABAIXO da legenda: x 0.5, y entre 0.78 e 0.84 (faixa do peito). Peça grande (lista, notificação) use y 0.80–0.86
+  e size menor. Nada acima de 0.72.
 - Textos fiéis à fala, sem inventar dado. Nada de logo/cartão final.
 Depois confira: rode
   python3 {motor} {saida} {final} {quadros} --quadros <tempos separados por vírgula: o meio de cada peça e de cada tela>
-e abra {quadros}/folha.jpg. Se alguma peça tapar o rosto, brigar com a legenda ou sair cortada, ajuste x/y/size e confira de novo (no máximo 2 voltas).
-NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
+e abra {quadros}/folha.jpg. Se alguma peça tapar o rosto, encostar na legenda ou sair cortada, ajuste y/size e confira de novo
+(no máximo 2 voltas). NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
 
 
 def _ass_t(x):
@@ -788,10 +792,16 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo):
                                    capture_output=True, text=True).stdout.strip() or 0)
         cenas, quadros = work / "cenas_motion.json", work / "quadros_motion"
         passo("Motion design (planejando as peças)")
+        doc0 = {"so_motion": True, "sfx": True, "limpa_audio": False, "palavras": "palavras_final.json", "motion": [], "telas": [], "destaques": []}
+        cenas.write_text(json.dumps(doc0, ensure_ascii=False), encoding="utf-8")   # a conferência com --quadros já sai sem legenda duplicada
         claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
-                                   exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros),
-               W, "sonnet", ao_passo=passo, limite=900)
+                                   exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
+                                   n_pecas=max(4, int((dur - 3) / 6))),
+               W, "sonnet", ao_passo=passo, limite=1200)
         doc = json.loads(cenas.read_text(encoding="utf-8"))
+        for m in doc.get("motion") or []:   # nunca no rosto: tudo na faixa do peito, abaixo da legenda queimada
+            if m.get("tipo") != "balao" and float(m.get("y", 0.74)) < 0.76:
+                m["y"] = 0.80
         doc = {"motion": doc.get("motion") or [], "telas": doc.get("telas") or [], "destaques": [],
                "so_motion": True, "sfx": True, "limpa_audio": False, "palavras": "palavras_final.json"}
         if not doc["motion"] and not doc["telas"]:
@@ -887,7 +897,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
              "(produto, loja, cozinha, delivery, celular, marca, lugar). Primeiro procure arquivo bom em broll/ e em {bib}; se não houver, gere no "
              "Higgsfield (cw-studios › gerar): uma imagem realista 9:16 sem texto e depois anime com /kling-video/v2.6/pro/image-to-video (3–5 s). "
              "Salve em broll/ e ponha em plan.json \"broll\": [{{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}}] "
-             "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho."
+             "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho. "
+             "Se uma geração falhar (erro de envio), tente de novo uma vez antes de desistir daquele b-roll."
              ).format(bib=BIBLIOTECA_CW, n=higgs) if higgs else "b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico)."
     rec = receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
     instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
