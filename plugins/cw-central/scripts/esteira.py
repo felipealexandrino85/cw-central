@@ -755,20 +755,18 @@ def _ass_t(x):
 
 def fala_do_ass(ass):
     """Legendas do corte pronto (tempo do vídeo final): [(t0, t1, texto)]."""
-    out = []
-    for l in ass.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if not l.startswith("Dialogue:"):
-            continue
-        p = l.split(",", 9)
-        if len(p) < 10:
-            continue
+    out, linhas = set(), [l.split(",", 9) for l in ass.read_text(encoding="utf-8", errors="ignore").splitlines() if l.startswith("Dialogue:")]
+    linhas = [p for p in linhas if len(p) >= 10 and "\\p1" not in p[9]]   # desenhos (caixa do título) não são fala
+    if any(p[3].strip() == "Cap" for p in linhas):   # só a legenda (a headline do gancho tem estilo próprio)
+        linhas = [p for p in linhas if p[3].strip() == "Cap"]
+    for p in linhas:
         txt = re.sub(r"\{[^}]*\}", "", p[9]).replace("\\N", " ").replace("\\n", " ").strip()
         try:
             t0, t1 = _ass_t(p[1]), _ass_t(p[2])
         except ValueError:
             continue
         if txt and t1 > t0:
-            out.append((t0, t1, txt))
+            out.add((t0, t1, txt))   # cada frase vem em duas camadas (sombra e texto): uma só
     return sorted(out)
 
 
