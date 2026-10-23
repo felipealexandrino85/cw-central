@@ -834,6 +834,8 @@ Pasta de trabalho: {pasta}. Arquivos da marca (telas do sistema, logos e vinheta
 ESTILO DE EDIÇÃO:
 {receita}
 
+NÃO altere os arquivos do estilo (scripts, receita): use como estão. Se algo do estilo estiver errado, diga no "motivo";
+quem muda o estilo é o time, pela Oficina (✨ Melhorar).
 PARA SER RÁPIDO (vale por cima da receita):
 - Rode os scripts do estilo com "python3 script.py ..." (sem -I): a transcrição deles vai para a Groq, como no podcast.
 - Revisão das legendas (obrigatória): assim que a transcrição palavra por palavra do estilo estiver pronta (ex.: palavras.json depois
@@ -841,6 +843,7 @@ PARA SER RÁPIDO (vale por cima da receita):
   (corrige marcas, nomes e termos pelo dicionário do time; o tempo das palavras não muda).
 - Rascunho primeiro: enquanto ajusta (plano, montagem, conferência e correções), monte na resolução menor (ex.: --res 1080x1920).
   Só quando a conferência aprovar, renderize UMA vez na qualidade final da receita (ex.: 2160x3840) e entregue esse arquivo.
+  Nunca monte em 4K mais de uma vez.
 
 Responda APENAS com JSON: {{"aprovado": true|false, "motivo": "uma linha", "legenda_post": "legenda curta para o post",
 "final": "caminho do vídeo final", "previa": "caminho de uma prévia leve (pode ser o próprio final)"}}"""
@@ -944,9 +947,12 @@ def produzir_reel(item, pasta, passo):
     skill_est = HOME / ".claude" / "skills" / ("cw-estilo-" + (estilo or {}).get("slug", ""))
     if skill_est.is_dir() and (estilo or {}).get("overrides"):   # versão do estilo com arquivos trocados: cópia própria da skill
         copia = BASE / "estilos" / "skill-{}-v{}".format(estilo["slug"], estilo.get("versao") or 0)
-        if not copia.exists():
+        if copia.exists():
+            subprocess.run(["chmod", "-R", "u+w", str(copia)])
+        else:
             shutil.copytree(skill_est, copia, symlinks=True)
         aplicar_overrides(copia, estilo["overrides"])
+        subprocess.run(["chmod", "-R", "a-w", str(copia)])   # quem produz usa o estilo como está: mudar o estilo é pela Oficina
         skill_est = copia
     rec = ((estilo or {}).get("receita") or "").strip()
     if rec and skill_est.is_dir():
@@ -958,7 +964,7 @@ def produzir_reel(item, pasta, passo):
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                         pasta=pasta, biblioteca=BIBLIOTECA_CW, legendas=AQUI / "legendas.py",
                                         receita=rec or "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
-                   pasta, "sonnet", ao_passo=passo, limite=3600, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs)
+                   pasta, "sonnet", ao_passo=passo, limite=5400, extra_dirs=[base / "bruto", BIBLIOTECA_CW] + ([skill_est] if skill_est.is_dir() else []), higgs=higgs)
     r = json_final(texto)
     final = Path(r.get("final") or "")
     if final and not final.is_absolute():
