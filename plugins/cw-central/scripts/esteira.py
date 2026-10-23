@@ -540,8 +540,9 @@ Sua tarefa é SÓ a parte editorial, editando work/{cid}/plan.json:
 - highlights (amarelos) e enfase: leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref};
 - gancho: confira hook.duration e headline (no máximo 2 linhas de ~32 letras, quebra com |);
 - foto do gancho (hook.media): {foto}
-- b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico); P&B, punch, sfx e trilha conforme §6–§10 se fizer sentido.
-{ajuste}Valem as regras e lições do time. NÃO rode render, gates nem ferramentas de tempo (isso é automático). Seja direto: poucas leituras.
+- {broll}
+- P&B, punch, sfx e trilha conforme §6–§10 se fizer sentido.
+{instrucoes}{ajuste}Valem as regras e lições do time. NÃO rode render, gates nem ferramentas de tempo (isso é automático). Seja direto: poucas leituras.
 Responda APENAS com JSON: {{"ok": true, "notas": "uma linha do que decidiu"}}"""
 
 CORRIGE_TIMEU = """O corte {cid} (CW Cast, estilo do Timeu) foi renderizado e os gates técnicos reprovaram. Pasta {W}:
@@ -780,15 +781,23 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
+    broll = ("B-roll ao longo do corte (não só no gancho): planeje 2 a 4 inserts de 1,5–2,5 s espalhados, nas falas que citam algo visual "
+             "(produto, loja, cozinha, delivery, celular, marca, lugar). Primeiro procure arquivo bom em broll/ e em {bib}; se não houver, gere no "
+             "Higgsfield (cw-studios › gerar): uma imagem realista 9:16 sem texto e depois anime com /kling-video/v2.6/pro/image-to-video (3–5 s). "
+             "Salve em broll/ e ponha em plan.json \"broll\": [{{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}}] "
+             "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho."
+             ).format(bib=BIBLIOTECA_CW, n=higgs) if higgs else "b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico)."
+    rec = receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
+    instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
     passo("Plano do corte (gancho, legenda, B-roll)")
-    claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto,
+    claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
                                         "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala "
                                         "(os planos já foram refeitos pelo mapa de câmeras). Se quem fala NÃO aparece em nenhuma câmera do bruto "
                                         "naquele momento, reenquadrar não resolve: cubra o trecho com B-roll ou com a foto do gancho, ou tire a fala "
                                         "se o corte continuar fazendo sentido, e diga isso nas notas.\n" + texto_prints(prints))
                                 if c.get("ajuste") else ""),
-           W, "sonnet", ao_passo=passo, limite=900, higgs=higgs)
+           W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs)
     for ciclo in range(3):
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
