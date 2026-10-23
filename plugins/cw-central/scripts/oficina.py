@@ -160,7 +160,9 @@ Responda APENAS com JSON: {{"ok": true, "notas": "uma linha"}}"""
 
 TESTE = """Teste da skill "{nome}" ({nome_tecnico}, instalada agora), sem ninguém olhando: não pergunte nada.
 Use a skill para fazer isto: {exemplo}
-{refs}Grave TUDO o que for resultado em {saida} (vídeo, imagem, texto em .md). Se faltar algo para o teste, faça o melhor exemplo possível
+{refs}Material já no servidor, se o teste precisar (só leitura): os episódios em {base}/<id>/ (bruto.* = vídeo original,
+transcricao.txt) e os cortes já feitos em {base}/<id>/estilo-*/saida e work/<corte>/ (plan.json com "source" e "headline").
+Grave TUDO o que for resultado em {saida} (vídeo, imagem, texto em .md). Se faltar algo para o teste, faça o melhor exemplo possível
 e diga o que faltou. Não publique nada nem mande para fora.
 Responda APENAS com JSON: {{"ok": true, "resumo": "o que fez e como ficou, em até 4 linhas", "arquivos": ["..."]}}"""
 
@@ -198,7 +200,7 @@ def criar_skill(E, t):
             quem=(v.get("pedido_por") or "o time").split("@")[0], pedido=v.get("pedido") or "", nome=s["nome"],
             situacao="skill nova" if not s.get("versao_atual") else "melhorar a versão {}".format(s["versao_atual"]),
             refs=", ".join(str(x) for x in mostrar) or "nenhuma", skill=skill, nome_tecnico=nome_tecnico, biblioteca=E.BIBLIOTECA_CW),
-            pasta, v.get("modelo") or "sonnet", limite=2400, extra_dirs=[E.BIBLIOTECA_CW], trabalho="skill {} v{}".format(s["slug"], v["versao"]))
+            pasta, v.get("modelo") or "sonnet", limite=2400, extra_dirs=[E.BIBLIOTECA_CW, E.BASE], trabalho="skill {} v{}".format(s["slug"], v["versao"]))
         if not (skill / "SKILL.md").exists():
             raise RuntimeError("o Criador não escreveu o SKILL.md")
         notas = (skill / "NOTAS.md").read_text(encoding="utf-8").strip() if (skill / "NOTAS.md").exists() else ""
@@ -218,9 +220,9 @@ def criar_skill(E, t):
         exemplo = v.get("exemplo") or "um exemplo realista do que ela faz, com os arquivos de referência se houver"
         r = {}
         try:
-            r = E.json_final(E.claude(TESTE.format(nome=s["nome"], nome_tecnico=teste_dir.name, exemplo=exemplo, saida=saida,
+            r = E.json_final(E.claude(TESTE.format(nome=s["nome"], nome_tecnico=teste_dir.name, exemplo=exemplo, saida=saida, base=E.BASE,
                                                    refs=("Arquivos de entrada: {}\n".format(", ".join(str(x) for x in refs)) if refs else "")),
-                                      pasta / "teste", v.get("modelo") or "sonnet", limite=2400, extra_dirs=[teste_dir, pasta / "refs", E.BIBLIOTECA_CW],
+                                      pasta / "teste", v.get("modelo") or "sonnet", limite=2400, extra_dirs=[teste_dir, pasta / "refs", E.BIBLIOTECA_CW, E.BASE],
                                       trabalho="teste da skill {} v{}".format(s["slug"], v["versao"])))
         except Exception as e:
             r = {"resumo": "o teste não terminou: {}".format(e)}
