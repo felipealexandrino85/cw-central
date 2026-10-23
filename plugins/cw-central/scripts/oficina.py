@@ -347,6 +347,9 @@ def executar(E, item):
             alvo = E.DRIVE / ent["arquivo"]
             entrada_txt = "Material recebido na pasta do Drive: {}\n".format(alvo)
             extra.append(alvo if alvo.is_dir() else alvo.parent)
+        if ent.get("local") and Path(ent["local"]).exists():   # vídeo que acabou de ficar pronto no servidor
+            entrada_txt += "Vídeo: {}\n".format(ent["local"])
+            extra.append(Path(ent["local"]).parent)
         passo("baixando o material")
         refs = E._baixar_referencias({"referencias": ent.get("referencias") or [], "links": ent.get("links") or []}, pasta / "refs")
         prints = E.baixar_prints({"ajuste_imagens": t.get("ajuste_imagens") or []}, pasta) if t.get("ajuste") else []

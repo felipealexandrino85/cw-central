@@ -993,6 +993,23 @@ def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
         arquivo=str(final), previa=caminho,
         final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
     log("corte", c["id"], "em prévia")
+    avisar_video_pronto(c, final, cid)
+
+
+def avisar_video_pronto(c, final, cid):
+    """Agentes com gatilho "quando um vídeo fica pronto" (ex.: a Capitu, das capas) recebem o vídeo, o título e a headline."""
+    headline = ""
+    try:
+        plano = json.loads((Path(final).parent.parent / "work" / cid / "plan.json").read_text(encoding="utf-8"))
+        headline = (plano.get("headline") or "").replace("|", " ").strip()
+    except (OSError, ValueError):
+        pass
+    try:
+        srv("tarefas_video", chave="{}:{}".format(c["id"], Path(final).name + str(int(Path(final).stat().st_mtime))), entrada={
+            "texto": "Vídeo pronto: \"{}\"{}.".format(c["titulo"], " (headline do vídeo: \"{}\")".format(headline) if headline else ""),
+            "local": str(final), "titulo": c["titulo"], "headline": headline, "corte_id": c["id"]})
+    except Exception as e:
+        log("aviso de vídeo pronto:", e)
 
 
 def entregar(item):
