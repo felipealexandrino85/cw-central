@@ -833,32 +833,30 @@ def _motor_fluido():
 
 
 PLANO_FLUIDO = """Você é o diretor de motion do corte {cid} (CW Cast), sem ninguém olhando. O corte está PRONTO; você planeja só o motion
-design por cima, no estilo CW-Fluido (referências do Felipe: rosto grande em cima e cena ilustrada embaixo; tipografia cinética
-fluida em que cada palavra entra no instante em que é dita; tudo na marca da Cardápio Web — o motor já cuida de cores e fontes).
-Arquivos: {pal} (cada palavra com o instante em segundos), {fala} (as legendas: início-fim | texto), vídeo {video} ({dur:.1f} s).
+por cima, no formato da referência do Felipe (reels do Clube DeliveryAds): a tela divide (rosto em cima) e embaixo, num painel
+escuro, um INFOGRÁFICO se monta conforme a fala — cada elemento entra no instante em que a pessoa cita aquilo e eles se somam
+até formar a explicação (ex.: loja → estrada → casa → caixa andando → etiqueta "- R$ 8,90" → balões "Cadê o motoboy?").
+O motor já cuida de cores, fontes, painel e animação. Leia o catálogo de elementos em {catalogo}.
+Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (as legendas), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com:
-- "cenas": de 3 a 5 cenas depois de {evitar:.1f} s (Felipe: "diminuir a quantidade de vezes que aparece"), cada uma de 2,5 a 4,5 s,
-  só nos momentos mais fortes do corte, começando no início da frase:
-  {{"t0", "t1", "layout": "split" | "full", "tipo": "texto" | "objetos" | "lista" | "numero", ...}}
-  · ALTERNE: a maioria "split" (rosto em cima, cena embaixo) e no máximo 1 "full" (cena na tela inteira) na frase de maior impacto.
-    Entre cenas, pelo menos 5 s só de câmera.
-  · O visual segue a referência: fundo claro, poucas palavras, a palavra-chave GRANDE. Por isso o texto da cena é curto
-    (2 a 5 palavras ditas) e tem 1 palavra em "destaque".
-  · "texto": as palavras EXATAMENTE como foram ditas naquele trecho, na ordem (pode ser só a frase-chave de 2 a 7 palavras),
-    com "destaque": [1 ou 2 palavras do texto] (saem em amarelo). Nunca invente palavra que não foi dita.
-  · "objetos": "texto" (frase-chave dita) + "objetos": [{{"img": "broll/objetos/<slug>.png", "x": 0.5, "y": 0.62, "w": 0.5,
-    "entra": <instante em que a palavra do objeto é dita>}}]; para coisa que se move (avião, moto, caixa, entregador)
-    use "de": [x, y] de onde ela vem (pode começar fora da tela, ex. [-0.2, 0.8]) e "dur": 1.2.
-    O objeto é um 3D REALISTA (como o cérebro da referência do Felipe), recortado: antes procure em broll/objetos_reais/ (ls);
-    se não houver, gere com
-      python3 {objeto3d} "<objeto em inglês, curto e concreto>" --slug <slug> --banco broll/objetos_reais
-    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 2 por corte; nada de pessoas nem marcas/logos).
-    Use objeto em 1 ou 2 cenas do corte, quando a fala citar uma coisa concreta.
-  · "lista": quando a fala enumerar: "titulo" curto + "itens": [{{"texto", "t": instante em que o item é dito}}].
-  · "numero": quando a fala trouxer um número: "de", "ate", "formato" ("{{:.0f}}%"), "conta_em", "rotulo".
+- "cenas": 2 a 4 cenas depois de {evitar:.1f} s, cada uma de 5 a 12 s, nos trechos em que a fala EXPLICA algo (processo, conta,
+  comparação, lista, problema → solução). Entre cenas, pelo menos 4 s só de câmera.
+  {{"t0", "t1", "layout": "split", "tipo": "info", "elementos": [ ... ]}}
+  · 1 "rotulo" no início (o assunto da cena em 1 a 3 palavras) e mais 3 a 6 elementos que entram ao longo da cena, cada um
+    com "entra" = instante em que a palavra correspondente é dita (pegue em {pal}).
+  · Posições x, y de 0 a 1 dentro do painel; não sobreponha elementos (o painel é largo e baixo: use a largura toda,
+    y entre 0.2 e 0.9; o "rotulo" fica no canto de cima, x 0.27, y 0.1).
+  · Textos curtos e FIÉIS à fala. Número ou preço SÓ se a pessoa disse aquele número; nunca invente dado.
+  · Ícones ("icone"): coisas concretas citadas (loja, casa, moto, caixa, celular, pizza, hambúrguer, sacola, avião...), em estilo
+    ícone 3D. Antes procure em broll/icones/ (ls); se não houver, gere com
+      python3 {objeto3d} "<objeto em inglês, curto>" --icone --slug <slug> --banco broll/icones
+    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 3 por corte; nada de pessoas nem marcas/logos).
+    Use "img": "broll/icones/<slug>.png".
+- "cartelas": 1 cartela sobre a câmera no começo do corpo (depois do gancho), com o tema do corte:
+  [{{"t0", "t1" (3 a 4 s), "icone": "R$" ou outro símbolo curto, "sub": "No delivery" (contexto curto), "titulo": "Ticket médio"}}].
 Depois confira: rode
-  python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena, separados por vírgula>
-e abra {quadros}/folha.jpg. Ajuste o que estiver ruim (texto estourando, objeto cortado, cena vazia) e confira de novo (no máximo 2 voltas).
+  python3 {motor} {saida} {video} {quadros} --quadros <2 ou 3 instantes por cena, depois que os elementos entraram>
+e abra {quadros}/folha.jpg. Ajuste o que estiver sobreposto, cortado na borda ou vazio, e confira de novo (no máximo 2 voltas).
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
 
 
@@ -885,16 +883,17 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    capture_output=True, text=True).stdout.strip() or 0)
         evitar = max(4.0, float(plan_hook or 0) + 0.5)
         cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
-        cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": []}
+        cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": [], "cartelas": []}
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-        (W / "broll" / "objetos_reais").mkdir(parents=True, exist_ok=True)
+        (W / "broll" / "icones").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
         higgs = int(lote.get("higgs_orcamento") or 0)
         claude(PLANO_FLUIDO.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
-                                   saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros),
+                                   saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
+                                   catalogo=lib / "infografico.py"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
-        doc.update({k: v for k, v in cfg.items() if k != "cenas"})
+        doc.update({k: v for k, v in cfg.items() if k not in ("cenas", "cartelas")})
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         if not doc["cenas"]:
