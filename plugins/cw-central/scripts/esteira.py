@@ -832,37 +832,25 @@ def _motor_fluido():
     return None
 
 
-PLANO_FLUIDO = """Você é o diretor de motion do corte {cid} (CW Cast), sem ninguém olhando. O corte está PRONTO; você planeja só o motion
-por cima, no formato da referência do Felipe (reels do Clube DeliveryAds): a tela divide (rosto em cima) e embaixo, num painel
-escuro, um INFOGRÁFICO se monta conforme a fala — cada elemento entra no instante em que a pessoa cita aquilo e eles se somam
-até formar a explicação (ex.: loja → estrada → casa → caixa andando → etiqueta "- R$ 8,90" → balões "Cadê o motoboy?").
-O motor já cuida de cores, fontes, painel e animação. Leia o catálogo de elementos em {catalogo}.
+PLANO_FLUIDO = """Você é o editor de inserts do corte {cid} (CW Cast), sem ninguém olhando. O corte está PRONTO; você só acrescenta
+INSERTS DE CONTEXTO no formato dos cortes do ROI Hunters (referência do Felipe, 24/10/2026): o corpo fica em câmera limpa e,
+quando a fala cita uma empresa, marca, pessoa, lugar ou produto ESPECÍFICO, a tela divide (rosto em cima) e embaixo entra uma
+FOTO REAL daquilo, com zoom lento. Comparações rápidas entre 2 a 4 empresas viram uma grade com as fotos/logos entrando uma a uma.
 Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (as legendas), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com:
-- "cenas": 2 a 4 cenas depois de {evitar:.1f} s, cada uma de 5 a 12 s, nos trechos em que a fala EXPLICA algo (processo, conta,
-  comparação, lista, problema → solução). Entre cenas, pelo menos 4 s só de câmera.
-  {{"t0", "t1", "layout": "split", "tipo": "info", "elementos": [ ... ]}}
-  · 1 "rotulo" no início (o assunto da cena em 1 a 3 palavras) e mais 3 a 6 elementos que entram ao longo da cena, cada um
-    com "entra" = instante em que a palavra correspondente é dita (pegue em {pal}).
-  · Posições x, y de 0 a 1 dentro do painel; não sobreponha elementos (o painel é largo e baixo: use a largura toda,
-    y entre 0.2 e 0.9; o "rotulo" fica no canto de cima, x 0.27, y 0.1).
-  · Monte um INFOGRÁFICO de verdade, não uma lista de balões: cada cena tem uma estrutura visual principal que ocupa o painel
-    — "icone"+"estrada"+"icone" andando (processo, entrega, de A para B), "barras" (crescimento, comparação no tempo),
-    "pilha" (composição de preço/custo), "grade" (quantidade: pedidos, entregas), "papeis" (muitos pedidos, operação cheia),
-    "numero" (um valor dito) ou 1–2 "card" grandes (produto, oferta) — e no máximo 2 "balao"/"preco"/"alerta" de apoio.
-    Varie a estrutura entre as cenas do corte. Elementos GRANDES (ícone w 0.28–0.4; card w 0.45–0.55) e bem distribuídos.
-  · Textos curtos e FIÉIS à fala. Número ou preço SÓ se a pessoa disse aquele número; nunca invente dado.
-  · Ícones ("icone"): coisas concretas citadas (loja, casa, moto, caixa, celular, pizza, hambúrguer, sacola, avião...), em estilo
-    ícone 3D. Antes procure em broll/icones/ (ls); se não houver, gere com
-      python3 {objeto3d} "<objeto em inglês, curto>" --icone --slug <slug> --banco broll/icones
-    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 3 por corte; nada de pessoas nem marcas/logos).
-    Use "img": "broll/icones/<slug>.png".
-- "cartelas": 1 cartela sobre a câmera no começo do corpo (depois do gancho), com o tema do corte:
-  [{{"t0", "t1" (3 a 4 s), "icone": "R$" ou outro símbolo curto, "sub": "No delivery" (contexto curto), "titulo": "Ticket médio"}}].
+- "cenas": 2 a 4 inserts depois de {evitar:.1f} s, cada um de 2 a 4 s, começando no instante em que o nome é dito; entre um e
+  outro, pelo menos 4 s de câmera. Só para coisa ESPECÍFICA citada (iFood, Domino's, Chanel, Nubank, um bairro, uma pessoa).
+  · foto:  {{"t0", "t1", "layout": "split", "tipo": "foto", "imagem": "broll/fotos_reais/<arquivo>", "credito": "...", "foco": 0.5}}
+  · grade: {{"t0", "t1", "layout": "split", "tipo": "grade", "imagens": [{{"imagem", "t", "credito"}}, ...]}}  (2 a 4)
+  A foto vem SÓ da Wikipedia/Wikimedia com licença livre (foto de Google, banco de imagem ou Instagram dá strike):
+      python3 {foto_real} "<nome>" --saida broll/fotos_reais [--pessoa]
+  Ele devolve JSON com "arquivo", "credito" e "foco" (copie os três). Se não houver foto livre, NÃO faça o insert
+  (nunca gere pessoa ou marca real com IA). Antes, veja se já existe em broll/fotos_reais/ (ls).
+- Nada de motion, ilustração, cartela, tag ou balão: o formato é jornalístico e limpo.
 Depois confira: rode
-  python3 {motor} {saida} {video} {quadros} --quadros <2 ou 3 instantes por cena, depois que os elementos entraram>
-e abra {quadros}/folha.jpg. Ajuste o que estiver sobreposto, cortado na borda ou vazio, e confira de novo (no máximo 2 voltas).
-NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
+  python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada insert>
+e abra {quadros}/folha.jpg (foto certa? enquadramento bom? nada cortado?). Ajuste e confira de novo (no máximo 2 voltas).
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "inserts": n, "notas": "uma linha"}}"""
 
 
 def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0):
@@ -890,15 +878,15 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
         cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": [], "cartelas": []}
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-        (W / "broll" / "icones").mkdir(parents=True, exist_ok=True)
+        (W / "broll" / "fotos_reais").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
         higgs = int(lote.get("higgs_orcamento") or 0)
         claude(PLANO_FLUIDO.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
-                                   catalogo=lib / "infografico.py"),
+                                   catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
-        doc.update({k: v for k, v in cfg.items() if k not in ("cenas", "cartelas")})
+        doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         if not doc["cenas"]:
