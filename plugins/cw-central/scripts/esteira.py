@@ -541,8 +541,7 @@ DECISAO_TIMEU = """Você é o editor do corte {cid} (CW Cast, estilo do Timeu), 
 {W} existem work/{cid}/plan.json (rascunho com fonte, headline, gancho, câmeras, trilha), work/{cid}/transcript.txt,
 work/{cid}/transcript.json e work/{cid}/sugestoes.json (candidatos e a lista "revisar").
 Sua tarefa é SÓ a parte editorial, editando work/{cid}/plan.json:
-- highlights (amarelos): leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref}. NÃO use "enfase" (a tela branca com a frase):
-  o Felipe não gosta (24/10/2026); deixe "enfase": [];
+- highlights (amarelos): leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref}. {enfase}
 - gancho: confira hook.duration e headline (no máximo 2 linhas de ~32 letras, quebra com |);
 - foto do gancho (hook.media): {foto}
 - {broll}
@@ -858,6 +857,11 @@ e abra {quadros}/folha.jpg (foto certa? enquadramento bom? nada cortado?). Ajust
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "inserts": n, "notas": "uma linha"}}"""
 
 
+def formato_02(estilo):
+    """O estilo escolhido no pedido é o "Padrão #02"? (marca na receita: "FORMATO: PADRÃO #02")."""
+    return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
+
+
 def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0):
     motor = _motor_fluido()
     if not motor or not final.exists() or not (work / "captions.ass").exists():
@@ -995,6 +999,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
     passo("Plano do corte (gancho, legenda, B-roll)")
     claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
+                                enfase=('NÃO use "enfase" (a tela branca com a frase): o formato Padrão #02 não tem; deixe "enfase": [].'
+                                        if formato_02(estilo) else "Ênfase (frase de impacto) conforme as regras do estilo, se fizer sentido."),
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
                                         "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala "
                                         "(os planos já foram refeitos pelo mapa de câmeras). Se quem fala NÃO aparece em nenhuma câmera do bruto "
@@ -1024,7 +1030,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         hook_dur = float((json.loads(plan.read_text(encoding="utf-8")).get("hook") or {}).get("duration") or 0)
     except (OSError, ValueError):
         hook_dur = 0.0
-    motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
+    if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
+        motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
