@@ -329,6 +329,21 @@ Responda APENAS com JSON: {{"ok": true, "resumo": "o que fez, em até 4 linhas",
 "legenda": "legenda do post, se for vídeo para as redes", "arquivos": ["saida/..."]}}"""
 
 
+def dados_do_corte(local):
+    """headline, vídeo bruto e trechos usados, a partir do plano do corte do Titeu (saida/<cid>.mov → work/<cid>/plan.json)."""
+    final = Path(local); cid = final.stem.split("_")[0]
+    out = {}
+    try:
+        plano = json.loads((final.parent.parent / "work" / cid / "plan.json").read_text(encoding="utf-8"))
+        out["headline"] = (plano.get("headline") or "").replace("|", " ").strip()
+        out["bruto"] = plano.get("source") or ""
+        tr = json.loads((final.parent.parent / "work" / cid / "transcript.json").read_text(encoding="utf-8"))
+        out["trechos_do_bruto"] = [[round(float(a), 2), round(float(b), 2)] for a, b in tr.get("ranges") or []]
+    except (OSError, ValueError, TypeError):
+        pass
+    return out
+
+
 def executar(E, item):
     t = item["tarefa"]
     a = agentes(E).get(item["agente"]) or agentes(E, forcar=True).get(item["agente"])
@@ -344,7 +359,9 @@ def executar(E, item):
             shutil.rmtree(pasta, ignore_errors=True)
         saida = pasta / "saida"
         saida.mkdir(parents=True, exist_ok=True)
-        ent = t.get("entrada") or {}
+        ent = dict(t.get("entrada") or {})
+        if ent.get("local") and not ent.get("headline"):   # pedido feito na Publicação: completa com a headline, o bruto e os trechos do corte
+            ent.update(dados_do_corte(ent["local"]))
         extra = [E.BIBLIOTECA_CW]
         entrada_txt = ""
         if ent.get("arquivo"):
