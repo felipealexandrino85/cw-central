@@ -846,6 +846,10 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
       python3 {foto_real} "<nome>" --saida broll/fotos_reais [--pessoa]
   Ele devolve JSON com "arquivo", "credito" e "foco" (copie os três). Se não houver foto livre, NÃO faça o insert
   (nunca gere pessoa ou marca real com IA). Antes, veja se já existe em broll/fotos_reais/ (ls).
+  A FOTO TEM QUE REPRESENTAR O QUE A FALA QUER DIZER (Felipe: "falou do Mercado Livre e botou o escritório do Mercado Livre").
+  Abra cada foto (Read) antes de usar. Prédio, sede ou escritório só se a fala for sobre o lugar; para marca, procure o que
+  a pessoa reconhece (o logo, a loja, o produto, o app): tente nomes mais específicos ("Mercado Livre logo", "iFood",
+  "Domino's Pizza loja", "pizza", "aeroporto de Guarulhos"). Se nenhuma servir, sem insert.
 - Nada de motion, ilustração, cartela, tag ou balão: o formato é jornalístico e limpo.
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada insert>
