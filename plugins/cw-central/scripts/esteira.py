@@ -846,6 +846,11 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
     com "entra" = instante em que a palavra correspondente é dita (pegue em {pal}).
   · Posições x, y de 0 a 1 dentro do painel; não sobreponha elementos (o painel é largo e baixo: use a largura toda,
     y entre 0.2 e 0.9; o "rotulo" fica no canto de cima, x 0.27, y 0.1).
+  · Monte um INFOGRÁFICO de verdade, não uma lista de balões: cada cena tem uma estrutura visual principal que ocupa o painel
+    — "icone"+"estrada"+"icone" andando (processo, entrega, de A para B), "barras" (crescimento, comparação no tempo),
+    "pilha" (composição de preço/custo), "grade" (quantidade: pedidos, entregas), "papeis" (muitos pedidos, operação cheia),
+    "numero" (um valor dito) ou 1–2 "card" grandes (produto, oferta) — e no máximo 2 "balao"/"preco"/"alerta" de apoio.
+    Varie a estrutura entre as cenas do corte. Elementos GRANDES (ícone w 0.28–0.4; card w 0.45–0.55) e bem distribuídos.
   · Textos curtos e FIÉIS à fala. Número ou preço SÓ se a pessoa disse aquele número; nunca invente dado.
   · Ícones ("icone"): coisas concretas citadas (loja, casa, moto, caixa, celular, pizza, hambúrguer, sacola, avião...), em estilo
     ícone 3D. Antes procure em broll/icones/ (ls); se não houver, gere com
