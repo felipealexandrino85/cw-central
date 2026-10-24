@@ -895,7 +895,8 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         # sem insert o corte passa pelo motor do mesmo jeito: transições, SFX e sem a tela de ênfase (formato padrão)
-        creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or [])) if f.get("credito")})
+        creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or []))
+                           if f.get("credito") and not re.search(r"CC0|dom[ií]nio p[uú]blico|public domain", f["credito"], re.I)})   # CC0 não exige crédito
         (work / "creditos.txt").write_text(("Fotos: " + "; ".join(creditos) + " (Wikimedia Commons)") if creditos else "", encoding="utf-8")
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
         passo("Motion (render)")
