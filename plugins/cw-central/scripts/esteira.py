@@ -837,19 +837,23 @@ design por cima, no estilo CW-Fluido (referências do Felipe: rosto grande em ci
 fluida em que cada palavra entra no instante em que é dita; tudo na marca da Cardápio Web — o motor já cuida de cores e fontes).
 Arquivos: {pal} (cada palavra com o instante em segundos), {fala} (as legendas: início-fim | texto), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com:
-- "tag": o assunto do corte em 2 a 3 palavras (fica pequeno no canto de cima).
-- "cenas": de 6 a 9 cenas depois de {evitar:.1f} s, cobrindo uns 45% do corte, cada uma de 2 a 5 s, começando no início da frase:
+- "cenas": de 3 a 5 cenas depois de {evitar:.1f} s (Felipe: "diminuir a quantidade de vezes que aparece"), cada uma de 2,5 a 4,5 s,
+  só nos momentos mais fortes do corte, começando no início da frase:
   {{"t0", "t1", "layout": "split" | "full", "tipo": "texto" | "objetos" | "lista" | "numero", ...}}
-  · ALTERNE: a maioria "split" (rosto em cima, cena embaixo) e 2 ou 3 "full" (cena na tela inteira) nas frases de maior impacto.
-    Entre cenas, pelo menos 2 s só de câmera, a não ser que uma cena emende direto na outra (t1 de uma = t0 da outra).
+  · ALTERNE: a maioria "split" (rosto em cima, cena embaixo) e no máximo 1 "full" (cena na tela inteira) na frase de maior impacto.
+    Entre cenas, pelo menos 5 s só de câmera.
+  · O visual segue a referência: fundo claro, poucas palavras, a palavra-chave GRANDE. Por isso o texto da cena é curto
+    (2 a 5 palavras ditas) e tem 1 palavra em "destaque".
   · "texto": as palavras EXATAMENTE como foram ditas naquele trecho, na ordem (pode ser só a frase-chave de 2 a 7 palavras),
     com "destaque": [1 ou 2 palavras do texto] (saem em amarelo). Nunca invente palavra que não foi dita.
   · "objetos": "texto" (frase-chave dita) + "objetos": [{{"img": "broll/objetos/<slug>.png", "x": 0.5, "y": 0.62, "w": 0.5,
     "entra": <instante em que a palavra do objeto é dita>}}]; para coisa que se move (avião, moto, caixa, entregador)
     use "de": [x, y] de onde ela vem (pode começar fora da tela, ex. [-0.2, 0.8]) e "dur": 1.2.
-    O objeto é um ícone 3D na cor da marca: antes procure em broll/objetos/ (ls); se não houver, gere com
-      python3 {objeto3d} "<objeto em inglês, curto>" --slug <slug> --banco broll/objetos
-    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 3 por corte; nada de pessoas nem marcas/logos).
+    O objeto é um 3D REALISTA (como o cérebro da referência do Felipe), recortado: antes procure em broll/objetos_reais/ (ls);
+    se não houver, gere com
+      python3 {objeto3d} "<objeto em inglês, curto e concreto>" --slug <slug> --banco broll/objetos_reais
+    (cada geração gasta 1 do orçamento do Higgsfield do lote; no máximo 2 por corte; nada de pessoas nem marcas/logos).
+    Use objeto em 1 ou 2 cenas do corte, quando a fala citar uma coisa concreta.
   · "lista": quando a fala enumerar: "titulo" curto + "itens": [{{"texto", "t": instante em que o item é dito}}].
   · "numero": quando a fala trouxer um número: "de", "ate", "formato" ("{{:.0f}}%"), "conta_em", "rotulo".
 Depois confira: rode
@@ -881,16 +885,17 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    capture_output=True, text=True).stdout.strip() or 0)
         evitar = max(4.0, float(plan_hook or 0) + 0.5)
         cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
-        cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "tag": "", "cenas": []}
+        cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": []}
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-        (W / "broll" / "objetos").mkdir(parents=True, exist_ok=True)
+        (W / "broll" / "objetos_reais").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
         higgs = int(lote.get("higgs_orcamento") or 0)
         claude(PLANO_FLUIDO.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
-        doc.update({k: v for k, v in cfg.items() if k not in ("tag", "cenas")})
+        doc.update({k: v for k, v in cfg.items() if k != "cenas"})
+        doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         if not doc["cenas"]:
             return
