@@ -1,6 +1,6 @@
 {
   "name": "cw-central",
-  "version": "1.40.3",
+  "version": "1.40.4",
   "description": "Acompanhamento da edição de vídeo do CW Studios: manda para a Central (painel da gestão) quem está editando o quê, em que etapa, quanto tempo levou e quantos vídeos foram entregues. Funciona com qualquer agente de edição.",
   "author": {
     "name": "Cardápio Web"
