@@ -541,7 +541,8 @@ DECISAO_TIMEU = """Você é o editor do corte {cid} (CW Cast, estilo do Timeu), 
 {W} existem work/{cid}/plan.json (rascunho com fonte, headline, gancho, câmeras, trilha), work/{cid}/transcript.txt,
 work/{cid}/transcript.json e work/{cid}/sugestoes.json (candidatos e a lista "revisar").
 Sua tarefa é SÓ a parte editorial, editando work/{cid}/plan.json:
-- highlights (amarelos) e enfase: leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref};
+- highlights (amarelos): leia só REGRAS_EDITORIAIS §3 e CRITERIOS C-10 em {ref}. NÃO use "enfase" (a tela branca com a frase):
+  o Felipe não gosta (24/10/2026); deixe "enfase": [];
 - gancho: confira hook.duration e headline (no máximo 2 linhas de ~32 letras, quebra com |);
 - foto do gancho (hook.media): {foto}
 - {broll}
@@ -893,8 +894,9 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
-        if not doc["cenas"]:
-            return
+        # sem insert o corte passa pelo motor do mesmo jeito: transições, SFX e sem a tela de ênfase (formato padrão)
+        creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or [])) if f.get("credito")})
+        (work / "creditos.txt").write_text(("Fotos: " + "; ".join(creditos) + " (Wikimedia Commons)") if creditos else "", encoding="utf-8")
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
         passo("Motion (render)")
         saida = work / "{}_fluido.mov".format(cid)
@@ -1214,7 +1216,9 @@ def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
             legenda = (r.get("texto") or "").strip()
         except Exception:
             legenda = ""
-    (pasta / "legenda_post.txt").write_text(legenda or c["titulo"], encoding="utf-8")
+    cred = next(Path(final).parent.parent.glob("work/{}/creditos.txt".format(cid)), None)   # crédito das fotos livres (CC BY) vai no post
+    cred = cred.read_text(encoding="utf-8").strip() if cred else ""
+    (pasta / "legenda_post.txt").write_text((legenda or c["titulo"]) + ("\n\n" + cred if cred and cred not in (legenda or "") else ""), encoding="utf-8")
     srv("corte", id=c["id"], estado="previa", etapa=("esperando aprovação · ⚠ conferência: " + aviso)[:480] if aviso else "esperando aprovação",
         arquivo=str(final), previa=caminho,
         final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
