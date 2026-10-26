@@ -339,6 +339,14 @@ def garantir_pasta_estilo(ep, estilo):
         origem = BASE / str(ep["id"]) / ("estilo-" + base)
         if origem.is_dir():
             shutil.copytree(origem, W, ignore=_ignorar_trabalho(origem), symlinks=True)
+    if not (W / "tools").exists():   # pasta preparada em outro servidor (ou perdida): monta de novo a partir da skill do estilo
+        skills = HOME / ".claude" / "skills"
+        montar = next((p for p in (skills / ("cw-estilo-" + ((estilo or {}).get("slug") or "")) / "scripts" / "montar_pasta.py",
+                                   skills / "cw-estilo-cw-cast-timeu" / "scripts" / "montar_pasta.py") if p.exists()), None)
+        if montar:
+            W.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run([sys.executable, "-I", str(montar), str(W), "--sem-hooks"], capture_output=True, text=True, timeout=300)
+            log("pasta do estilo montada de novo:", W, (r.stderr or r.stdout)[-200:])
     if W.exists():
         aplicar_overrides(W, (estilo or {}).get("overrides") or {})
     return W
