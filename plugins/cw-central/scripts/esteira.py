@@ -507,6 +507,11 @@ def selecionar(lote, ep, estilo=None):
                        "transcrição = {}). Os cortes que você escolher vão ser produzidos nesse estilo:\n{}").format(
                 W, bruto, pasta / "transcricao.txt", receita(estilo, "EPISÓDIO"))
             extra = [W]
+        if formato_canal2(estilo):   # segundo canal: momentos que o CW Cast ainda não usou ("para não parecer que é nosso")
+            usados = srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []
+            if usados:
+                prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
+                           "(segundos do episódio): " + json.dumps(usados))
         texto = claude(prompt, pasta, "opus", limite=2400, extra_dirs=extra)
         r = json_final(texto)
         cortes = [c for c in r.get("cortes") or [] if float(c.get("fim", 0)) > float(c.get("inicio", 0))]
@@ -857,19 +862,47 @@ e abra {quadros}/folha.jpg (foto certa? enquadramento bom? nada cortado?). Ajust
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "inserts": n, "notas": "uma linha"}}"""
 
 
+PLANO_CANAL2 = """Você é o editor de motion do corte {cid} do SEGUNDO CANAL do CW Cast, sem ninguém olhando. O corte está PRONTO
+(enquadramento, cortes, b-roll); o motor desenha a legenda pequena, o gancho em caixas brancas e o que você planejar. É uma edição
+BÁSICA e diferente da oficial (referência do Felipe: Signal55): frases animadas por cima da câmera e imagens em tela cheia.
+Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (a fala por blocos), vídeo {video} ({dur:.1f} s).
+Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "cenas": [...] depois de {evitar:.1f} s:
+- 3 a 5 FRASES: {{"t0", "t1", "tipo": "frase", "texto": "<as palavras EXATAMENTE como ditas, 3 a 7>", "destaque": [1 a 2 palavras do texto],
+  "pos": "esq" | "dir" | "centro", "pb": false}}. Cada uma de 2 a 4 s, no começo da frase mais forte de cada trecho.
+  Uma delas (a de maior impacto) pode ter "pb": true (o momento fica em preto e branco). Entre frases, pelo menos 4 s.
+- 2 a 4 IMAGENS em tela cheia, de 1,5 a 3 s, quando a fala cita algo que dá para mostrar:
+  {{"t0", "t1", "layout": "full", "tipo": "foto", "imagem": "<caminho>", "credito": "<crédito>"}}
+  · coisa/marca/lugar/pessoa ESPECÍFICA citada: python3 {imagem_web} "<busca curta e específica>" --saida broll/web
+    (traz da internet, com o crédito; ABRA a imagem com Read antes de usar: se vier errada ou genérica, tente --origem wikipedia
+    ou --origem web, ou troque a busca. Logo, loja, produto ou app reconhecível > prédio/escritório.)
+  · cena genérica (cozinha cheia, motoboy, cliente no celular): python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
+    (Higgsfield; gasta 1 do orçamento do lote; nunca marca ou pessoa real).
+  Copie "arquivo" e "credito" do JSON que o comando devolve. Imagem e frase nunca ao mesmo tempo.
+Depois confira: rode
+  python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
+e abra {quadros}/folha.jpg (frase legível, sem tapar o rosto? imagem certa?). Ajuste e confira de novo (no máximo 2 voltas).
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
+
+
+def formato_canal2(estilo):
+    """Estilo do segundo canal (marca na receita: "FORMATO: CANAL 2")."""
+    return "formato: canal 2" in ((estilo or {}).get("receita") or "").lower()
+
+
 def formato_02(estilo):
     """O estilo escolhido no pedido é o "Padrão #02"? (marca na receita: "FORMATO: PADRÃO #02")."""
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
 
 
-def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0):
+def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi"):
     motor = _motor_fluido()
     if not motor or not final.exists() or not (work / "captions.ass").exists():
         return
     lib = motor.parent
     try:
         passo("Motion (versão sem legenda)")
-        r = subprocess.run([sys.executable, str(lib / "sem_legenda.py"), cid], cwd=str(W), capture_output=True, text=True, timeout=2400)
+        r = subprocess.run([sys.executable, str(lib / "sem_legenda.py"), cid], cwd=str(W), capture_output=True, text=True, timeout=2400,
+                           env=dict(os.environ, CW_SEM_TEXTO="1" if tema == "canal2" else "0"))
         (pasta / "motor.log").open("a").write("\n$ sem legenda\n{}\n{}\n".format(r.stdout[-1500:], r.stderr[-1500:]))
         sem = W / "saida" / "{}_sem_legenda.mov".format(cid)
         if r.returncode or not sem.exists():
@@ -886,13 +919,19 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         evitar = max(4.0, float(plan_hook or 0) + 0.5)
         cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
         cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": [], "cartelas": []}
+        if tema == "canal2":   # o motor desenha a legenda e o gancho do Canal 2 (o vídeo veio sem nenhum texto)
+            plano = json.loads((work / "plan.json").read_text(encoding="utf-8"))
+            cfg.update(tema="canal2", headline=(plano.get("headline") or ""), gancho_ate=max(3.0, float(plan_hook or 4.0)), legendas_ass="")
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         (W / "broll" / "fotos_reais").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
         higgs = int(lote.get("higgs_orcamento") or 0)
-        claude(PLANO_FLUIDO.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
+        (W / "broll" / "web").mkdir(parents=True, exist_ok=True); (W / "broll" / "ia").mkdir(parents=True, exist_ok=True)
+        modelo_prompt = PLANO_CANAL2 if tema == "canal2" else PLANO_FLUIDO
+        claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
-                                   catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py"),
+                                   catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
+                                   imagem_web=lib / "imagem_web.py"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
@@ -999,8 +1038,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
     passo("Plano do corte (gancho, legenda, B-roll)")
     claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
-                                enfase=('NÃO use "enfase" (a tela branca com a frase): o formato Padrão #02 não tem; deixe "enfase": [].'
-                                        if formato_02(estilo) else "Ênfase (frase de impacto) conforme as regras do estilo, se fizer sentido."),
+                                enfase=('NÃO use "enfase" (a tela branca com a frase): este formato não tem; deixe "enfase": [].'
+                                        if formato_02(estilo) or formato_canal2(estilo) else "Ênfase (frase de impacto) conforme as regras do estilo, se fizer sentido."),
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
                                         "ajuste cx/cy/stack dos shots daquele trecho conferindo o episodio.json (câmeras) e quem fala "
                                         "(os planos já foram refeitos pelo mapa de câmeras). Se quem fala NÃO aparece em nenhuma câmera do bruto "
@@ -1032,6 +1071,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         hook_dur = 0.0
     if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
         motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
+    elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
+        motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2")
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
