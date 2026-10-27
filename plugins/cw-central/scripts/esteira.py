@@ -415,6 +415,8 @@ def cmd_porteiro():
         if usados < orc:
             cont.write_text(str(usados + 1))
             decisao, duro = "allow", False
+        else:   # a mensagem diz a verdade: quem acabou foi o orçamento do lote, não a conta
+            motivo = "o orçamento de Higgsfield deste lote acabou ({}/{} gerações); siga sem gerar e diga isso nas notas".format(usados, orc)
     if decisao != "allow":
         # sem ninguém para aprovar: ler e rodar programas do fluxo (venv, vch, node) passa; gravar/apagar/mover fora da pasta
         # e tudo que é "duro" (mandar para fora, instalar, administrador, senha) é recusado
@@ -637,7 +639,17 @@ def _tempo_da_frase(pedido, transcript):
     return None
 
 
-def quadros_do_ajuste(video, pedido, pasta, transcript=None):
+def higgs_restante(lote):
+    """Gerações de Higgsfield que ainda cabem no orçamento do lote (o mesmo contador do gancho de permissão)."""
+    arq = BASE / ".higgs" / "lote-{}".format(lote["id"])
+    try:
+        usados = int(arq.read_text())
+    except (OSError, ValueError):
+        usados = 0
+    return int(lote.get("higgs_orcamento") or 0) - usados, usados
+
+
+def quadros_do_ajuste(video, pedido, pasta, transcript=None, extra=()):
     """Quadros do trecho citado no pedido (ex.: "0:18 até 0:29" ou uma frase entre aspas); sem nada citado, 5 quadros espalhados."""
     dur = ffprobe_dur(video) or 60
     tempos = []
@@ -657,7 +669,7 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None):
         tempos = [max(0, tempos[0] - 1), tempos[0], min(dur - 0.1, tempos[0] + 1.5)]
     else:
         tempos = [dur * k / 6 for k in range(1, 6)]
-    tempos = sorted(set([0.4, 1.5, 3.0] + [round(t, 1) for t in tempos]))   # o começo (gancho, headline, foto de capa) sempre entra
+    tempos = sorted(set([0.4, 1.5, 3.0] + [round(t, 1) for t in list(tempos) + [x for x in extra if 0 <= x <= dur]]))   # o começo (gancho, headline, foto de capa) sempre entra
     destino = pasta / "conferencia"
     shutil.rmtree(destino, ignore_errors=True)
     destino.mkdir()
@@ -671,10 +683,10 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None):
     return saida
 
 
-def conferir_ajuste(c, video, pasta, prints, passo, transcript=None):
+def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     """O Claude olha os quadros do trecho e diz se o pedido foi atendido. Devolve o dict da resposta."""
     passo("Conferindo se o ajuste foi atendido")
-    quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript)
+    quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript, extra)
     try:
         r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
                                              quadros=", ".join(str(q) for q in quadros)), pasta, "sonnet", ao_passo=passo, limite=600))
@@ -1091,8 +1103,13 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2")
     motion()
+    def meios_broll():   # a conferência também olha o meio de cada b-roll (inserts de 2 s somem entre quadros espalhados)
+        try:
+            return [float(b["start"]) + float(b.get("dur") or 0) / 2 for b in json.loads(plan.read_text(encoding="utf-8")).get("broll") or []][:6]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
-        r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
+        r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO: " + c["ajuste"]
@@ -1101,7 +1118,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
             motion()   # o render novo sai sem o motion do formato: aplica de novo antes de conferir
-            r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
+            r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
+        resta, usados = higgs_restante(lote)
+        if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
+            r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
         registrar_conferencia(c, r, cid)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
