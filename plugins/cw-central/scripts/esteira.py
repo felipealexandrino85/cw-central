@@ -574,13 +574,16 @@ class Falhou(Exception):
 
 
 # ------------------------------------------------------------------------------------------- ajuste garantido
-CONFERE = """Conferência de um AJUSTE pedido pelo editor no corte "{titulo}" (CW Cast).
+CONFERE = """Conferência de um AJUSTE pedido pelo editor no corte "{titulo}".
 Pedido do editor: {pedido}
-{prints}Quadros do corte já refeito (com o tempo no nome do arquivo): {quadros}
+{prints}Quadros do corte já refeito (com o tempo no nome do arquivo; os primeiros são o começo do vídeo, onde ficam gancho, headline e foto de capa): {quadros}
 Abra os prints (se houver) e os quadros e responda com honestidade se o pedido foi ATENDIDO no corte novo.
+Julgue cada parte do pedido no quadro em que ela aparece (o que é do gancho/headline/capa, julgue nos quadros do começo).
 Se o pedido era mostrar quem fala e essa pessoa não aparece em nenhuma câmera do vídeo original naquele momento, cobrir o trecho
 com B-roll ou foto (ou tirar a fala) conta como atendido; diga isso no motivo.
-Se foi, escreva também uma LIÇÃO curta e geral (imperativo, vale para os próximos cortes, sem citar este corte) para o erro não se repetir.
+SEMPRE (atendido ou não) escreva a LIÇÃO que o pedido ensina: regra curta e geral, no imperativo, que vale para os próximos cortes
+deste estilo, sem citar este corte (ex.: "Headline do gancho em Montserrat Bold, fundo branco e texto preto, com sombra fraca").
+Deixe vazio só se o pedido for algo que vale apenas para este corte (ex.: trocar uma palavra errada da fala).
 Responda APENAS com JSON: {{"atendido": true|false, "motivo": "uma linha do que você viu", "licao": "regra geral ou vazio",
 "categoria": "corte|legenda|visual|audio|conteudo|marca|outro"}}"""
 
@@ -654,6 +657,7 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None):
         tempos = [max(0, tempos[0] - 1), tempos[0], min(dur - 0.1, tempos[0] + 1.5)]
     else:
         tempos = [dur * k / 6 for k in range(1, 6)]
+    tempos = sorted(set([0.4, 1.5, 3.0] + [round(t, 1) for t in tempos]))   # o começo (gancho, headline, foto de capa) sempre entra
     destino = pasta / "conferencia"
     shutil.rmtree(destino, ignore_errors=True)
     destino.mkdir()
@@ -682,8 +686,9 @@ def conferir_ajuste(c, video, pasta, prints, passo, transcript=None):
 def registrar_conferencia(c, r, cid):
     ok = bool(r.get("atendido"))
     srv("corte", id=c["id"], ajuste_conferido="sim" if ok else "nao", ajuste_nota=(r.get("motivo") or "")[:500])
-    if ok and len(r.get("licao") or "") >= 5:
-        srv("licao", texto=r["licao"][:500], categoria=r.get("categoria") or "", kit="cw-cast", ref="corte " + cid, pedido=c.get("ajuste") or "")
+    if len(r.get("licao") or "") >= 5:   # todo pedido do editor vira regra: do time (Conhecimento) e do estilo (## APRENDIZADOS da receita)
+        srv("licao", texto=r["licao"][:500], categoria=r.get("categoria") or "", kit="cw-cast", ref="corte " + cid, pedido=c.get("ajuste") or "",
+            corte_id=c["id"])   # o banco acha o estilo pelo lote (lote de teste de estilo não mexe na receita)
 
 
 CAMERAS = """Mapa de câmeras do episódio (estilo do Timeu), na pasta {W}. O script já separou as câmeras do episódio e montou a folha
@@ -1080,10 +1085,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         hook_dur = float((json.loads(plan.read_text(encoding="utf-8")).get("hook") or {}).get("duration") or 0)
     except (OSError, ValueError):
         hook_dur = 0.0
-    if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
-        motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
-    elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
-        motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2")
+    def motion():
+        if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
+            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
+        elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
+            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2")
+    motion()
     if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         if not r.get("atendido"):
@@ -1093,6 +1100,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
+            motion()   # o render novo sai sem o motion do formato: aplica de novo antes de conferir
             r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json")
         registrar_conferencia(c, r, cid)
     if not final.exists():
