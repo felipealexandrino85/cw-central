@@ -1043,7 +1043,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
              "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho. "
              "Se uma geração falhar (erro de envio), tente de novo uma vez antes de desistir daquele b-roll."
              ).format(bib=BIBLIOTECA_CW, n=higgs) if higgs else "b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico)."
-    rec = receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
+    if formato_canal2(estilo):   # Canal 2: as imagens entram depois, no motion do Zeca (b-roll do Titeu aqui sai cortado no reenquadramento)
+        broll = 'SEM b-roll neste formato: deixe "broll": [] (as imagens entram depois, no motion do Zeca).'
+    rec =receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
     instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
     passo("Plano do corte (gancho, legenda, B-roll)")
     claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
