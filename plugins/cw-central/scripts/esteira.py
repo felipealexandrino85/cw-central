@@ -1527,7 +1527,7 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
     (traz da internet, com o crédito; ABRA a imagem com Read antes de usar: se vier errada ou genérica, tente --origem wikipedia
     ou --origem web, ou troque a busca. Logo, loja, produto ou app reconhecível > prédio/escritório.)
   · cena genérica (cozinha cheia, motoboy, cliente no celular): {banco}python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
-    (Higgsfield; nunca marca ou pessoa real).
+    (Higgsfield; nunca marca ou pessoa real; nunca tela de celular/notebook com texto, a IA escreve letras sem sentido).
   Copie "arquivo" e "credito" do JSON que o comando devolve. Imagem e frase nunca ao mesmo tempo.
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
@@ -1724,7 +1724,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         rodar("Revisão das legendas", [AQUI / "legendas.py", "revisar", "work/{}/transcript.json".format(cid),
                                        "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"])], ok=(0, 1), tempo=300)
     # a única chamada do Claude: as decisões editoriais
-    foto = ("se ainda não for arquivo, " + foto_banco() + "gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição; salve em work/{}/ com nome novo e use esse caminho.".format(cid)
+    foto = ("se ainda não for arquivo, " + foto_banco() + "gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição; salve em work/{}/ com nome novo e use esse caminho. "
+            "Nunca tela de celular/notebook com texto, número ou gráfico (a IA escreve letras sem sentido): mostre a pessoa e a reação, com a tela de costas.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     broll = ("B-roll ao longo do corte (não só no gancho): um insert a cada 8–12 s de fala, com pelo menos um no meio do corte, de 1,5–3 s cada, "
