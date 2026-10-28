@@ -640,6 +640,26 @@ def _broll_do_plano(arq, W):
     return saida
 
 
+def _imagens_do_motion(arq, W):
+    """(cena, caminho) de cada imagem do motion (cenas_fluido.json): foto e cada item de grade."""
+    try:
+        cenas = json.loads(Path(arq).read_text(encoding="utf-8")).get("cenas") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    saida = []
+    for c in cenas:
+        for f in [c] + list(c.get("imagens") or []):
+            nome = str((f or {}).get("imagem") or "")
+            if nome:
+                p = Path(nome) if os.path.isabs(nome) else next((x for x in (Path(arq).parent / nome, W / nome) if x.is_file()), W / nome)
+                saida.append((c, f, p))
+    return saida
+
+
+def _arquivos_do_corte(pasta_corte, W):
+    return [p for _, p in _broll_do_plano(pasta_corte / "plan.json", W)] + [p for _, _, p in _imagens_do_motion(pasta_corte / "cenas_fluido.json", W)]
+
+
 def broll_usados_fora(W, cid):
     """{sha: corte} dos b-rolls que já entraram em OUTROS cortes: o registro geral + os planos dos outros cortes desta pasta."""
     try:
@@ -651,7 +671,7 @@ def broll_usados_fora(W, cid):
         nome = outro.parent.name
         if nome == cid or "_antigo_" in nome:
             continue
-        for _, p in _broll_do_plano(outro, W):
+        for p in _arquivos_do_corte(outro.parent, W):
             if p.is_file():
                 usados.setdefault(_sha_arq(p), {"corte": nome, "arquivo": p.name})
     return usados
@@ -697,6 +717,38 @@ def problemas_broll(W, cid, plan):
     return probs
 
 
+def sem_imagem_repetida(cenas_arq, W, cid):
+    """Cenas do motion sem imagem repetida no corte nem já usada em outro corte (grade fica com as que sobram, mínimo 2).
+    Cena sem imagem (frase) passa como está."""
+    fora, vistos, tirou = broll_usados_fora(W, cid), set(), []
+    doc = json.loads(Path(cenas_arq).read_text(encoding="utf-8"))
+
+    def boa(f):
+        nome = str((f or {}).get("imagem") or "")
+        p = Path(nome) if os.path.isabs(nome) else next((x for x in (Path(cenas_arq).parent / nome, W / nome) if x.is_file()), None)
+        if not nome or not p:
+            return True
+        h = _sha_arq(p)
+        if h in vistos or h in fora:
+            tirou.append(p.name)
+            return False
+        vistos.add(h)
+        return True
+
+    saida = []
+    for c in doc.get("cenas") or []:
+        if c.get("imagens"):
+            c["imagens"] = [f for f in c["imagens"] if boa(f)]
+            if len(c["imagens"]) < 2:
+                continue
+        elif c.get("imagem") and not boa(c):
+            continue
+        saida.append(c)
+    if tirou:
+        log("motion do", cid, "sem imagem repetida:", ", ".join(tirou)[:400])
+    return saida
+
+
 def garantir_broll(W, cid, plan, passo, higgs, lote_id):
     """Troca (com o Claude) o b-roll repetido ou parado; o que ainda sobrar sai do plano: sem b-roll é melhor que repetido ou foto."""
     for _ in range(2 if higgs else 0):
@@ -731,7 +783,7 @@ def registrar_broll(W, cid, plan):
                 usados = json.loads(BROLL_REGISTRO.read_text())
             except (OSError, ValueError):
                 usados = {}
-            for _, p in _broll_do_plano(plan, W):
+            for p in _arquivos_do_corte(Path(plan).parent, W):
                 if p.is_file():
                     usados[_sha_arq(p)] = {"corte": cid, "arquivo": p.name}
             BROLL_REGISTRO.write_text(json.dumps(usados, ensure_ascii=False))
@@ -947,7 +999,9 @@ O corte tem que ficar BEM animado (Felipe: "poderia ter mais motion, animação 
 Depois confira: rode
   python3 {motor} {saida} {final} {quadros} --quadros <tempos separados por vírgula: o meio de cada peça e de cada tela>
 e abra {quadros}/folha.jpg. Se alguma peça tapar o rosto, encostar na legenda ou sair cortada, ajuste y/size e confira de novo
-(no máximo 2 voltas). NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
+(no máximo 2 voltas). NENHUMA IMAGEM SE REPETE (regra do time): cada insert com uma imagem diferente, e é proibido usar arquivo que já entrou em outro corte
+(proibidos: {proibidos}); imagem repetida é tirada automaticamente.
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
 
 
 def _ass_t(x):
@@ -1056,6 +1110,8 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada insert>
 e abra {quadros}/folha.jpg (foto certa? enquadramento bom? nada cortado?). Ajuste e confira de novo (no máximo 2 voltas).
+NENHUMA IMAGEM SE REPETE (regra do time): cada insert com uma imagem diferente, e é proibido usar arquivo que já entrou em outro corte
+(proibidos: {proibidos}); imagem repetida é tirada automaticamente.
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "inserts": n, "notas": "uma linha"}}"""
 
 
@@ -1078,6 +1134,8 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
 e abra {quadros}/folha.jpg (frase legível, sem tapar o rosto? imagem certa?). Ajuste e confira de novo (no máximo 2 voltas).
+NENHUMA IMAGEM SE REPETE (regra do time): cada insert com uma imagem diferente, e é proibido usar arquivo que já entrou em outro corte
+(proibidos: {proibidos}); imagem repetida é tirada automaticamente.
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
 
 
@@ -1128,12 +1186,14 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
-                                   imagem_web=lib / "imagem_web.py"),
+                                   imagem_web=lib / "imagem_web.py", proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
+        cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
         # sem insert o corte passa pelo motor do mesmo jeito: transições, SFX e sem a tela de ênfase (formato padrão)
         creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or []))
                            if f.get("credito") and not re.search(r"CC0|dom[ií]nio p[uú]blico|public domain", f["credito"], re.I)})   # CC0 não exige crédito
