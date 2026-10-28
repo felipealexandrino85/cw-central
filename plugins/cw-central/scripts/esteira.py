@@ -870,13 +870,32 @@ mantendo start e dur. Se a lista citar a FOTO DO GANCHO, gere outra foto (Higgsf
 salve com nome novo em work/{cid}/ e troque hook.media. {regras}
 Mexa só nesses itens de "broll". NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "trocou": "uma linha"}}"""
 
+def _bancos():
+    """Quais bancos grátis o servidor tem (só confere se a chave existe; o valor nunca passa por aqui)."""
+    return [n for n, k in (("Pexels", "PEXELS_API_KEY"), ("Pixabay", "PIXABAY_API_KEY")) if os.environ.get(k)]
+
+
 def _pexels():
-    """Filmagem real e grátis antes de gerar com IA, quando o servidor tem a chave (a chave em si nunca passa por aqui)."""
-    if not os.environ.get("PEXELS_API_KEY"):
+    """B-roll: filmagem real e grátis dos bancos ANTES de gerar com IA (pedido do Felipe, 28/10/2026)."""
+    b = _bancos()
+    if not b:
         return ""
-    return ("Antes de gerar, procure FILMAGEM REAL no Pexels: python3 -I S/pexels.py search \"<cena em inglês>\" --orient portrait --n 8 "
-            "(lista sem baixar), escolha pelo que a descrição mostra e baixe com python3 -I S/pexels.py get <id> --dest broll; confira um "
-            "quadro antes de usar. Se nada servir, ")
+    cmds = []
+    if "Pexels" in b:
+        cmds.append("python3 -I S/pexels.py search \"<cena em inglês>\" --orient portrait --n 8 (baixa com: python3 -I S/pexels.py get <id> --dest broll)")
+    if "Pixabay" in b:
+        cmds.append("python3 -I S/pixabay.py search \"<cena>\" --orient any --n 10 (baixa com: python3 -I S/pixabay.py get <id> --dest broll)")
+    return ("PRIMEIRO procure FILMAGEM REAL e grátis no " + " e no ".join(b) + ": " + "; ".join(cmds) + ". A busca só lista, sem baixar: escolha pela "
+            "descrição, baixe, confira um quadro antes de usar e prefira vertical. Só se nada servir, ")
+
+
+def foto_banco():
+    """Foto do gancho e imagens genéricas: banco grátis antes do Higgsfield (devolve o texto do passo, ou vazio sem chave)."""
+    if not _bancos():
+        return ""
+    return ("procure primeiro uma FOTO REAL e grátis ({}): python3 {} search \"<cena em inglês>\" --orient any --n 8 e baixe com "
+            "python3 {} get <fonte:id> --dest <pasta> (devolve arquivo e crédito); abra a foto antes de usar. Só se nada servir, ").format(
+                " e ".join(_bancos()), AQUI / "fotos_banco.py", AQUI / "fotos_banco.py")
 
 
 BROLL_REGISTRO = BASE / "broll_usados.json"   # sha256 do arquivo -> corte que usou (vale para todos os episódios)
@@ -1507,7 +1526,7 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
   · coisa/marca/lugar/pessoa ESPECÍFICA citada: python3 {imagem_web} "<busca curta e específica>" --saida broll/web
     (traz da internet, com o crédito; ABRA a imagem com Read antes de usar: se vier errada ou genérica, tente --origem wikipedia
     ou --origem web, ou troque a busca. Logo, loja, produto ou app reconhecível > prédio/escritório.)
-  · cena genérica (cozinha cheia, motoboy, cliente no celular): python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
+  · cena genérica (cozinha cheia, motoboy, cliente no celular): {banco}python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
     (Higgsfield; nunca marca ou pessoa real).
   Copie "arquivo" e "credito" do JSON que o comando devolve. Imagem e frase nunca ao mesmo tempo.
 Depois confira: rode
@@ -1577,7 +1596,7 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         if tema == "canal2":   # o motor desenha a legenda e o gancho do Canal 2 (o vídeo veio sem nenhum texto)
             plano = json.loads((work / "plan.json").read_text(encoding="utf-8"))
             cfg.update(tema="canal2", headline=(plano.get("headline") or ""), gancho_ate=max(3.0, float(plan_hook or 4.0)), legendas_ass="",
-                       arroba=arroba)
+                       arroba=arroba, _logo=[])   # o render já sai sem o logo do CW Cast: nada para borrar (o borrão aparecia na câmera)
             if not arroba:
                 log("motion do", cid, "sem @: falta a linha \"ARROBA: @perfil\" na receita do estilo")
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
@@ -1593,7 +1612,7 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         if not antigas: claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
-                                   imagem_web=lib / "imagem_web.py", proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
+                                   imagem_web=lib / "imagem_web.py", banco=foto_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
                                    brolls=", ".join("{:.1f}–{:.1f} s".format(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))
                                                     for b, _ in _broll_do_plano(work / "plan.json", W)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
@@ -1705,7 +1724,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         rodar("Revisão das legendas", [AQUI / "legendas.py", "revisar", "work/{}/transcript.json".format(cid),
                                        "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"])], ok=(0, 1), tempo=300)
     # a única chamada do Claude: as decisões editoriais
-    foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
+    foto = ("se ainda não for arquivo, " + foto_banco() + "gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição; salve em work/{}/ com nome novo e use esse caminho.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     broll = ("B-roll ao longo do corte (não só no gancho): um insert a cada 8–12 s de fala, com pelo menos um no meio do corte, de 1,5–3 s cada, "
@@ -1751,7 +1770,19 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if not formato_canal2(estilo) and (not trava or trava.livres is None or "broll" in trava.areas):
             garantir_broll(W, cid, plan, passo, higgs, lote["id"])
     broll_ok()
+    def sem_logo():   # Canal 2 não leva a marca do CW Cast: o render sai sem o logo (antes ele era borrado depois, e o borrão aparecia)
+        if not formato_canal2(estilo):
+            return
+        try:
+            pl = json.loads(plan.read_text(encoding="utf-8"))
+            so = pl.setdefault("style_overrides", {})
+            if (so.get("logo") or {}).get("file") != "":
+                so["logo"] = dict(so.get("logo") or {}, file="")
+                plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        except (OSError, ValueError) as e:
+            log("logo do", cid, "não saiu:", e)
     for ciclo in range(3):
+        sem_logo()
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
         rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
@@ -1774,6 +1805,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if (g.get("geral") == "FAIL" and falhas) or extra:
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + extra, W, "sonnet", ao_passo=passo, limite=900)
         broll_ok()
+    sem_logo()
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
@@ -1809,6 +1841,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                    W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
             broll_ok()
             rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+            sem_logo()
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
             motion()   # o render novo sai sem o motion do formato: aplica de novo antes de conferir
