@@ -1050,7 +1050,7 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo):
         cenas.write_text(json.dumps(doc0, ensure_ascii=False), encoding="utf-8")   # a conferência com --quadros já sai sem legenda duplicada
         claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
                                    exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
-                                   n_pecas=max(4, int((dur - 3) / 6))),
+                                   n_pecas=max(4, int((dur - 3) / 6)), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1200)
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         for m in doc.get("motion") or []:   # nunca no rosto: tudo na faixa do peito, abaixo da legenda queimada
