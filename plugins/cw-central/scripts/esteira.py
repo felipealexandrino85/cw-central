@@ -865,7 +865,8 @@ REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempr
 TROCA_BROLL = """No corte {cid} (pasta {W}), estes b-rolls de work/{cid}/plan.json não podem ficar:
 {lista}
 Troque cada um por um VÍDEO NOVO, diferente de todos os outros, ligado ao que é falado naquele trecho (veja work/{cid}/transcript.txt),
-mantendo start e dur. {regras}
+mantendo start e dur. Se a lista citar a FOTO DO GANCHO, gere outra foto (Higgsfield, realista, sem texto, combinando com a headline),
+salve com nome novo em work/{cid}/ e troque hook.media. {regras}
 Mexa só nesses itens de "broll". NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "trocou": "uma linha"}}"""
 
 BROLL_REGISTRO = BASE / "broll_usados.json"   # sha256 do arquivo -> corte que usou (vale para todos os episódios)
@@ -922,8 +923,18 @@ def _imagens_do_motion(arq, W):
     return saida
 
 
+def _foto_gancho(plan, W):
+    try:
+        m = str((json.loads(Path(plan).read_text(encoding="utf-8")).get("hook") or {}).get("media") or "")
+    except (OSError, ValueError):
+        return None
+    return (Path(m) if os.path.isabs(m) else W / m) if m else None
+
+
 def _arquivos_do_corte(pasta_corte, W):
-    return [p for _, p in _broll_do_plano(pasta_corte / "plan.json", W)] + [p for _, _, p in _imagens_do_motion(pasta_corte / "cenas_fluido.json", W)]
+    g = _foto_gancho(pasta_corte / "plan.json", W)
+    return ([p for _, p in _broll_do_plano(pasta_corte / "plan.json", W)] + [p for _, _, p in _imagens_do_motion(pasta_corte / "cenas_fluido.json", W)]
+            + ([g] if g else []))
 
 
 def broll_usados_fora(W, cid):
@@ -980,6 +991,9 @@ def problemas_broll(W, cid, plan):
         elif broll_parado(p):
             probs.append((b, rot + ": é imagem parada, não vídeo"))
         vistos.setdefault(h, str(b.get("file")))
+    g = _foto_gancho(plan, W)   # a foto do gancho também nunca repete a de outro corte (o time reclamou 3 vezes)
+    if g and g.is_file() and _sha_arq(g) in fora:
+        probs.append((None, "FOTO DO GANCHO ({}): já foi usada no corte {}".format(g.name, fora[_sha_arq(g)].get("corte"))))
     return probs
 
 
@@ -1031,7 +1045,9 @@ def garantir_broll(W, cid, plan, passo, higgs, lote_id):
             log("troca de b-roll do", cid, "falhou:", e)
     probs = problemas_broll(W, cid, plan)
     if probs:
-        ruins = {(str(b.get("file")), float(b.get("start") or 0)) for b, _ in probs}
+        if any(b is None for b, _ in probs):
+            log("foto do gancho do", cid, "continua repetida depois da troca")
+        ruins = {(str(b.get("file")), float(b.get("start") or 0)) for b, _ in probs if b is not None}
         pl = json.loads(plan.read_text(encoding="utf-8"))
         pl["broll"] = [b for b in pl.get("broll") or [] if (str(b.get("file")), float(b.get("start") or 0)) not in ruins]
         plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
