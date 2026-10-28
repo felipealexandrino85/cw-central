@@ -779,9 +779,12 @@ class Trava:
             novos = sorted(float(s or 0) for f, s in bd - ba)
             partes.append("b-roll: {} novo(s){}{}".format(len(novos), " em " + ", ".join(_mm(t) for t in novos[:6]) if novos else "",
                                                          ", {} saiu(ram)".format(len(ba - bd) - len(novos)) if len(ba - bd) > len(novos) else ""))
-        for k, nome in (("highlights", "destaques da legenda"), ("enfase", "ênfase"), ("music", "trilha"), ("shots", "enquadramento")):
+        for k, nome in (("highlights", "destaques da legenda"), ("enfase", "ênfase"), ("music", "trilha")):
             if antes.get(k) != depois.get(k):
                 partes.append(nome + " alterado")
+        pos = lambda pl: sorted({(s.get("camera"), s.get("cx"), s.get("cy"), json.dumps(s.get("stack"))) for s in pl.get("_base_shots") or pl.get("shots") or []})
+        if pos(antes) != pos(depois):   # zoom de ênfase (punch) é recalculado a cada render: não conta como mudança de enquadramento
+            partes.append("enquadramento alterado")
         ta, td = self.antes["transcript.json"] or {}, self._ler("transcript.json") or {}
         if ta.get("ranges") != td.get("ranges"):
             partes.append("trechos do corte (início/fim/falas) alterados")
@@ -1299,13 +1302,52 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None, extra=()):
     return saida
 
 
+def termos_citados(pedido, transcript):
+    """Momentos em que aparecem os termos que o editor citou (R$, nomes, "texto entre aspas"): a conferência olha esses quadros."""
+    try:
+        ws = json.loads(Path(transcript).read_text(encoding="utf-8")).get("words") or []
+    except (OSError, ValueError, TypeError):
+        return []
+    p = pedido or ""
+    termos = {a or b for a, b in re.findall(r'"([^"]{2,30})"|“([^”]{2,30})”', p)}           # texto entre aspas
+    termos |= set(re.findall(r"[A-Z]\$", p))                                                # R$, U$
+    termos |= set(re.findall(r"(?<![.!?]\s)(?<!^)\b[A-ZÁÉÍÓÚ][a-záéíóúãõç]{3,}\b", p))      # Nome próprio no meio da frase
+    termos = {t.lower() for t in termos if t}
+    ts = []
+    for t in sorted(termos):
+        ts += [float(w["start"]) + 0.15 for w in ws if t in (w.get("w") or "").lower()][:3]
+    return sorted(set(ts))[:6]
+
+
+def legendas_que_sairam(work):
+    """O texto real das legendas do corte (com o tempo), para conferir pedido de legenda sem depender de acertar o quadro."""
+    for nome in ("captions_final.ass", "captions.ass"):
+        f = Path(work) / nome
+        if f.exists():
+            linhas = []
+            for l in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.match(r"Dialogue: 1,(\d+):(\d+):(\d+\.\d+),[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(.*)", l) or \
+                    re.match(r"Dialogue: 0,(\d+):(\d+):(\d+\.\d+),[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(.*)", l)
+                if m:
+                    t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    txt = re.sub(r"\{[^}]*\}", "", m.group(4)).strip()
+                    if txt and (not linhas or linhas[-1][1] != txt):
+                        linhas.append((t, txt))
+            return "\n".join("{}:{:04.1f} {}".format(int(t) // 60, t % 60, x) for t, x in linhas)[:6000]
+    return ""
+
+
 def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     """O Claude olha os quadros do trecho e diz se o pedido foi atendido. Devolve o dict da resposta."""
     passo("Conferindo se o ajuste foi atendido")
+    extra = list(extra) + termos_citados(c.get("ajuste"), transcript)
     quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript, extra)
+    leg = legendas_que_sairam(Path(transcript).parent) if transcript and "legenda" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))) else ""
     try:
         r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
-                                             quadros=", ".join(str(q) for q in quadros)), pasta, "sonnet", ao_passo=passo, limite=600))
+                                             quadros=", ".join(str(q) for q in quadros))
+                              + ("\nTEXTO DAS LEGENDAS COMO SAÍRAM NO CORTE NOVO (tempo e texto de cada legenda; use isto para julgar pedido de "
+                                 "legenda em todo o corte, não só nos quadros):\n" + leg if leg else ""), pasta, "sonnet", ao_passo=passo, limite=600))
     except Exception as e:
         r = {"atendido": False, "motivo": "não consegui conferir ({})".format(e)}
     return r
