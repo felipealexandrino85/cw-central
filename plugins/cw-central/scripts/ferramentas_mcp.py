@@ -72,7 +72,10 @@ def chamar(corpo, timeout=60):
             j = json.loads(e.read())
         except ValueError:
             j = {}
-        raise RuntimeError(j.get("erro") or "central respondeu {}".format(e.code)) from None
+        msg = j.get("erro") or "central respondeu {}".format(e.code)
+        if j.get("detalhe"):   # o motivo da API (ex.: not_enough_credits) — sem ele a esteira não sabe que acabou o crédito
+            msg += ": " + json.dumps(j["detalhe"], ensure_ascii=False)[:300]
+        raise RuntimeError(msg) from None
 
 
 TEXTO_OK = re.compile(r"\.(txt|json|srt|vtt|md|csv|tsv|xml)$", re.I)
@@ -100,6 +103,11 @@ def executar(nome, args):
     if nome == "listar":
         return chamar({"acao": "listar"})
     if nome == "gerar":
+        par = dict(args.get("parametros") or {})
+        for k in ("duration", "seed", "num_images"):   # a API recusa número em texto ("duration: '5' is not one of [5, 10]")
+            if isinstance(par.get(k), str) and par[k].strip().isdigit():
+                par[k] = int(par[k].strip())
+        args = dict(args, parametros=par)
         return chamar({"acao": "gerar", "ferramenta": args.get("ferramenta"), "caminho": args.get("caminho"),
                        "corpo": args.get("parametros") or {}, "trabalho": args.get("trabalho")}, timeout=120)
     if nome == "status":
