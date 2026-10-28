@@ -412,7 +412,13 @@ def cmd_porteiro():
         orc, cont = int(os.environ.get("CW_EST_HIGGS") or 0), Path(os.environ.get("CW_EST_HIGGS_ARQ") or Path(pasta or "/tmp") / ".higgs_usados")
         cont.parent.mkdir(parents=True, exist_ok=True)
         usados = int(cont.read_text()) if cont.exists() else 0
-        if usados < orc:
+        try:
+            sem_credito = time.time() - float((cont.parent / SEM_CREDITO.name).read_text()) < 1800   # no gancho, BASE não vale (CW_ESTEIRA=1)
+        except (OSError, ValueError):
+            sem_credito = False
+        if sem_credito:
+            motivo = "a conta do Higgsfield está sem créditos; siga sem gerar e diga nas notas que faltou crédito"
+        elif usados < orc:
             cont.write_text(str(usados + 1))
             decisao, duro = "allow", False
         else:   # a mensagem diz a verdade: quem acabou foi o orçamento do lote, não a conta
@@ -425,6 +431,22 @@ def cmd_porteiro():
     razao = "na esteira não pode: {}".format(motivo) if decisao == "deny" else "liberado na esteira"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decisao,
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
+
+
+SEM_CREDITO = BASE / ".higgs" / "sem_credito"   # a conta do Higgsfield ficou sem crédito: pausa as gerações por 30 min
+
+
+def matar_grupo(proc):
+    """Mata o processo e todo o grupo dele (start_new_session): sem render órfão gastando CPU."""
+    import signal
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def devolver_higgs(arq):
@@ -465,11 +487,20 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
         env["CLAUDE_CODE_OAUTH_TOKEN"] = TOKEN_CLAUDE.read_text().strip()
     proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
                             encoding="utf-8", errors="replace", start_new_session=True)
+    estourou = threading.Event()
+
+    def relogio():   # o limite vale mesmo se o Claude ficar parado sem escrever nada (antes só era conferido a cada linha)
+        if proc.poll() is None:
+            estourou.set()
+            matar_grupo(proc)
+    timer = threading.Timer(limite, relogio)
+    timer.daemon = True
+    timer.start()
     fim, resultado, gerar_ids = time.time() + limite, "", set()
     try:
         for linha in proc.stdout:
             if time.time() > fim:
-                proc.kill()
+                matar_grupo(proc)
                 raise RuntimeError("passou do tempo ({} min)".format(limite // 60))
             try:
                 ev = json.loads(linha)
@@ -482,6 +513,10 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
                         txt = json.dumps(c.get("content"), ensure_ascii=False)
                         if c.get("is_error") or re.search(r"not_enough_credits|erro_envio|\"erro\"", txt):
                             devolver_higgs(env["CW_EST_HIGGS_ARQ"])
+                        if "not_enough_credits" in txt:
+                            SEM_CREDITO.parent.mkdir(parents=True, exist_ok=True)
+                            SEM_CREDITO.write_text(str(time.time()))
+                            log("Higgsfield SEM CRÉDITOS: gerações pausadas por 30 min")
             elif ev.get("type") == "assistant":
                 for c in (ev.get("message") or {}).get("content") or []:
                     if c.get("type") != "tool_use":
@@ -499,9 +534,11 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
                 if ev.get("is_error"):
                     raise RuntimeError("o Claude parou com erro: " + resultado[:300])
         proc.wait()
+        if estourou.is_set():
+            raise RuntimeError("passou do tempo ({} min)".format(limite // 60))
     finally:
-        if proc.poll() is None:
-            proc.kill()
+        timer.cancel()
+        matar_grupo(proc)   # leva junto o que o Claude deixou rodando (ffmpeg, render)
     return resultado
 
 
@@ -596,6 +633,223 @@ class Falhou(Exception):
     pass
 
 
+# ------------------------------------------------------------------------------------------- ajuste cirúrgico
+# Felipe, 28/10/2026: "sempre altera mais do que é pedido". O ajuste é dividido em itens, cada item ganha as ÁREAS que toca
+# (e o trecho, se o editor disse o momento); o resto do plano fica TRAVADO: o código desfaz o que o Claude mexer fora disso.
+AREAS = {   # área -> chaves do plan.json que ela pode mudar
+    "broll": {"broll"},
+    "gancho": {"headline", "hook"},
+    "legenda": {"highlights", "captions", "caption_style", "legenda"},
+    "enfase": {"enfase", "highlights", "pb", "punch"},
+    "audio": {"fixes", "music", "audio", "sfx", "loudness"},
+    "trilha": {"music"},
+    "enquadramento": {"shots", "_base_shots", "punch", "zoom"},
+    "fonte": {"font", "fonte", "caption_style"},
+    "motion": set(),
+}
+LIVRE = {"corte", "outro"}   # mexe no tempo do corte ou não deu para entender: sem trava (como antes)
+SEMPRE = {"fixes"}            # correções técnicas dos gates
+ROTULOS = {"b-roll": "broll", "broll": "broll", "imagens": "motion", "motion": "motion", "legenda": "legenda", "headline": "gancho",
+           "gancho": "gancho", "capa": "gancho", "áudio": "audio", "audio": "audio", "trilha": "trilha", "enquadramento": "enquadramento",
+           "câmera": "enquadramento", "corte": "corte", "início/fim": "corte", "fonte": "fonte", "ênfase": "enfase", "outro": "outro"}
+PALAVRAS_AREA = [
+    ("broll", r"b-?\s?rolls?|v[íi]deo de apoio|inserts?"),
+    ("motion", r"motion|anima[çc]|frases? na tela|texto na tela|tela cheia"),
+    ("broll", r"\bfotos?\b|imagens?"), ("motion", r"\bfotos?\b|imagens?"),
+    ("gancho", r"gancho|headline|t[íi]tulo|\bcapa\b"),
+    ("legenda", r"legenda|palavra|escrit|ortograf|amarel|destaque"),
+    ("enfase", r"[êe]nfase|preto e branco|p&b|\bpb\b"),
+    ("audio", r"[áa]udio|\bsom\b|volume|estour|chiad|ru[íi]do|\bvoz\b|efeito sonoro|sfx"),
+    ("trilha", r"trilha|m[úu]sica"),
+    ("enquadramento", r"enquadr|c[âa]mera|\bzoom|centraliz|rosto|cabe[çc]a|cortad[oa] na tela|aparece"),
+    ("fonte", r"\bfonte|montserrat|tipografia|\bletra|@|arroba|\bperfil\b"),
+    ("corte", r"come[çc]a|termina|\bfinal do|tir[ae]r? (a|essa|esta) fala|encurt|mais curto|dura[çc][ãa]o|corte seco|emenda"),
+]
+
+
+def _seg(m, s):
+    return int(m or 0) * 60 + int(s)
+
+
+def itens_ajuste(texto):
+    """[{pedido, areas, t0, t1}] a partir do texto do ajuste. Aceita a etiqueta da página "[área · 0:12] pedido"
+    e, sem etiqueta, acha as áreas pelas palavras (sem nenhuma: "outro", sem trava)."""
+    itens = []
+    for linha in re.split(r"\n+|;\s*|(?:^|\s)\d+\)\s", texto or ""):
+        linha = linha.strip(" -•\t")
+        if not linha:
+            continue
+        areas, t0, t1 = set(), None, None
+        m = re.match(r"\[([^\]]+)\]\s*(.*)", linha)
+        corpo = linha
+        if m:
+            corpo = m.group(2) or linha
+            for parte in re.split(r"[·,/]", m.group(1)):
+                a = ROTULOS.get(parte.strip().lower())
+                if a:
+                    areas.add(a)
+        tempos = ([_seg(a, b) for a, b in re.findall(r"\b(\d{1,2}):(\d{2})\b", linha)]
+                  + [int(x) for x in re.findall(r"\b(\d{1,3})\s?(?:s|seg|segundos?)\b", linha, re.I)])
+        if tempos:
+            t0, t1 = min(tempos), max(tempos)
+        if not areas:
+            areas = {a for a, rx in PALAVRAS_AREA if re.search(rx, corpo, re.I)} or {"outro"}
+        itens.append({"pedido": corpo, "areas": areas, "t0": t0, "t1": t1})
+    return itens or [{"pedido": texto or "", "areas": {"outro"}, "t0": None, "t1": None}]
+
+
+def areas_do_ajuste(itens):
+    return set().union(*[i["areas"] for i in itens]) if itens else {"outro"}
+
+
+def chaves_livres(areas):
+    if areas & LIVRE:
+        return None   # sem trava
+    return set(SEMPRE).union(*[AREAS.get(a, set()) for a in areas])
+
+
+class Trava:
+    """Fotografa plan.json / transcript.json / cenas_fluido.json antes do ajuste e desfaz o que mudar fora das áreas pedidas."""
+    def __init__(self, work, itens):
+        self.work, self.itens, self.areas = work, itens, areas_do_ajuste(itens)
+        self.livres = chaves_livres(self.areas)
+        self.antes = {n: self._ler(n) for n in ("plan.json", "transcript.json", "cenas_fluido.json")}
+
+    def _ler(self, nome):
+        try:
+            return json.loads((self.work / nome).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _janelas_broll(self):
+        js = [(i["t0"], i["t1"]) for i in self.itens if "broll" in i["areas"] and i["t0"] is not None]
+        sem_tempo = any("broll" in i["areas"] and i["t0"] is None for i in self.itens)
+        return None if sem_tempo or not js else js
+
+    def aplicar(self):
+        """Desfaz o que saiu da área. Devolve a lista do que foi desfeito (para o log)."""
+        desfeito = []
+        if self.livres is None:
+            return desfeito
+        antes, depois = self.antes["plan.json"], self._ler("plan.json")
+        if isinstance(antes, dict) and isinstance(depois, dict):
+            for k in set(antes) | set(depois):
+                if k in self.livres or antes.get(k) == depois.get(k):
+                    continue
+                if k in antes:
+                    depois[k] = antes[k]
+                else:
+                    depois.pop(k, None)
+                desfeito.append(k)
+            js = self._janelas_broll()
+            if "broll" in self.livres and js and depois.get("broll") != antes.get("broll"):   # b-roll pedido num momento: só ali muda
+                dentro = lambda b: any(a - 1.5 <= float(b.get("start") or 0) <= z + 1.5 for a, z in js)
+                novo = [b for b in depois.get("broll") or [] if dentro(b)] + [b for b in antes.get("broll") or [] if not dentro(b)]
+                novo.sort(key=lambda b: float(b.get("start") or 0))
+                if novo != depois.get("broll"):
+                    depois["broll"] = novo
+                    desfeito.append("broll fora do momento pedido")
+            (self.work / "plan.json").write_text(json.dumps(depois, ensure_ascii=False, indent=1), encoding="utf-8")
+        ta, td = self.antes["transcript.json"], self._ler("transcript.json")
+        if isinstance(ta, dict) and isinstance(td, dict) and ta != td:
+            if "legenda" not in self.areas:
+                (self.work / "transcript.json").write_text(json.dumps(ta, ensure_ascii=False), encoding="utf-8")
+                desfeito.append("transcript")
+            elif ta.get("ranges") != td.get("ranges"):
+                td["ranges"] = ta.get("ranges")
+                (self.work / "transcript.json").write_text(json.dumps(td, ensure_ascii=False), encoding="utf-8")
+                desfeito.append("trechos do corte")
+        return desfeito
+
+    def reaproveitar_motion(self):
+        """Motion (fotos/frases) fica como estava, a não ser que o pedido seja sobre ele ou mude o tempo do corte."""
+        return self.livres is not None and "motion" not in self.areas and bool((self.antes["cenas_fluido.json"] or {}).get("cenas"))
+
+    def resumo(self):
+        """O que mudou de verdade (comparando com antes), em português curto, para o time conferir."""
+        partes = []
+        antes, depois = self.antes["plan.json"] or {}, self._ler("plan.json") or {}
+        if antes.get("headline") != depois.get("headline"):
+            partes.append("headline: \"{}\" → \"{}\"".format((antes.get("headline") or "").replace("|", " "), (depois.get("headline") or "").replace("|", " ")))
+        if (antes.get("hook") or {}).get("media") != (depois.get("hook") or {}).get("media"):
+            partes.append("foto do gancho trocada")
+        ba = {(b.get("file"), b.get("start")) for b in antes.get("broll") or []}
+        bd = {(b.get("file"), b.get("start")) for b in depois.get("broll") or []}
+        if ba != bd:
+            novos = sorted(float(s or 0) for f, s in bd - ba)
+            partes.append("b-roll: {} novo(s){}{}".format(len(novos), " em " + ", ".join(_mm(t) for t in novos[:6]) if novos else "",
+                                                         ", {} saiu(ram)".format(len(ba - bd) - len(novos)) if len(ba - bd) > len(novos) else ""))
+        for k, nome in (("highlights", "destaques da legenda"), ("enfase", "ênfase"), ("music", "trilha"), ("shots", "enquadramento")):
+            if antes.get(k) != depois.get(k):
+                partes.append(nome + " alterado")
+        ta, td = self.antes["transcript.json"] or {}, self._ler("transcript.json") or {}
+        if ta.get("ranges") != td.get("ranges"):
+            partes.append("trechos do corte (início/fim/falas) alterados")
+        elif ta != td:
+            partes.append("texto da legenda corrigido")
+        ca, cd = (self.antes["cenas_fluido.json"] or {}).get("cenas"), (self._ler("cenas_fluido.json") or {}).get("cenas")
+        if ca is not None or cd is not None:
+            partes.append("imagens/frases do motion mantidas" if ca == cd else "imagens/frases do motion refeitas")
+        return "; ".join(partes) or "nada mudou no plano (mudança só no render ou no estilo)"
+
+
+def _mm(t):
+    return "{}:{:02d}".format(int(t) // 60, int(round(t)) % 60)
+
+
+def texto_itens(itens):
+    rot = {"broll": "b-roll", "gancho": "gancho/headline", "legenda": "legenda", "enfase": "ênfase", "audio": "áudio", "trilha": "trilha",
+           "enquadramento": "enquadramento", "fonte": "fonte", "motion": "imagens/frases do motion", "corte": "início/fim/falas", "outro": "geral"}
+    return "\n".join("{}. [{}{}] {}".format(n + 1, ", ".join(rot.get(a, a) for a in sorted(i["areas"])),
+                                           (" · " + _mm(i["t0"]) + ("–" + _mm(i["t1"]) if i["t1"] != i["t0"] else "")) if i["t0"] is not None else "", i["pedido"])
+                     for n, i in enumerate(itens))
+
+
+AJUSTE_TIMEU = """Você é o editor do corte {cid} (CW Cast), sem ninguém olhando. O corte JÁ ESTÁ PRONTO e aprovado pelo time em tudo,
+menos nos itens abaixo. Faça SÓ o que cada item pede, no trecho dito, e nada mais:
+{itens}
+Pasta {W}: work/{cid}/plan.json, work/{cid}/transcript.json/.txt; referências do estilo em {ref}.
+TRAVADO: tudo o que não é das áreas acima (headline, gancho, destaques, ênfase, b-roll, trilha, enquadramento, trechos do corte) fica
+exatamente como está; o código desfaz qualquer mudança fora das áreas pedidas, então não perca tempo com elas.
+{extra}{prints}
+NÃO renderize nem rode gates (é automático). Responda APENAS com JSON: {{"ok": true, "notas": "uma linha do que mudou em cada item"}}"""
+
+
+def guardar_versao(final, cid):
+    """Cópia do vídeo final e do plano desta versão (o time pode voltar para ela). Ficam só as 3 últimas do corte."""
+    try:
+        W = final.parent.parent
+        pasta_v = final.parent / "versoes"
+        pasta_v.mkdir(exist_ok=True)
+        nome = "{}_{}".format(cid, time.strftime("%Y%m%d-%H%M%S"))
+        copia = pasta_v / (nome + final.suffix)
+        shutil.copyfile(final, copia)
+        foto = pasta_v / nome
+        foto.mkdir(exist_ok=True)
+        for n in ("plan.json", "transcript.json", "cenas_fluido.json", "captions.ass", "captions_final.ass"):
+            if (W / "work" / cid / n).exists():
+                shutil.copyfile(W / "work" / cid / n, foto / n)
+        velhas = sorted(pasta_v.glob(cid + "_*" + final.suffix))[:-3]
+        for v in velhas:
+            v.unlink(missing_ok=True)
+            shutil.rmtree(pasta_v / v.stem, ignore_errors=True)
+        return copia
+    except Exception as e:
+        log("versão do", cid, "não foi guardada:", e)
+        return None
+
+
+def partir_da_versao(c, work):
+    """Ajuste começa do vídeo que o time está vendo (inclusive depois de "voltar à versão anterior")."""
+    arq = Path(c.get("arquivo") or "")
+    foto = arq.parent / arq.stem
+    if arq.parent.name == "versoes" and foto.is_dir():
+        for n in foto.iterdir():
+            shutil.copyfile(n, work / n.name)
+        return True
+    return False
+
+
 # ------------------------------------------------------------------------------------------- b-roll: vídeo e sem repetir
 REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempre VÍDEO com movimento de verdade (pessoas, mãos, vapor, "
     "câmera andando); nunca foto parada, nunca foto com zoom, nunca imagem convertida em mp4. (2) Nenhum b-roll se repete: cada insert "
@@ -618,7 +872,19 @@ BROLL_REGISTRO = BASE / "broll_usados.json"   # sha256 do arquivo -> corte que u
 IMAGEM = re.compile(r"\.(jpe?g|png|webp|gif|bmp|heic|tiff?)$", re.I)
 
 
+_SHA = {}
+
+
 def _sha_arq(p):
+    """sha256 do arquivo, guardado por (caminho, tamanho, data) para não reler vídeo a cada conferência."""
+    st = os.stat(p)
+    chave = (str(p), st.st_size, st.st_mtime_ns)
+    if chave not in _SHA:
+        _SHA[chave] = _sha_calc(p)
+    return _SHA[chave]
+
+
+def _sha_calc(p):
     import hashlib
     h = hashlib.sha256()
     with open(p, "rb") as f:
@@ -1129,7 +1395,7 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
     (traz da internet, com o crédito; ABRA a imagem com Read antes de usar: se vier errada ou genérica, tente --origem wikipedia
     ou --origem web, ou troque a busca. Logo, loja, produto ou app reconhecível > prédio/escritório.)
   · cena genérica (cozinha cheia, motoboy, cliente no celular): python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
-    (Higgsfield; gasta 1 do orçamento do lote; nunca marca ou pessoa real).
+    (Higgsfield; nunca marca ou pessoa real).
   Copie "arquivo" e "credito" do JSON que o comando devolve. Imagem e frase nunca ao mesmo tempo.
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
@@ -1149,13 +1415,24 @@ def formato_02(estilo):
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
 
 
+def cortar_receita(rec, n):
+    """Encurta a receita sem perder os APRENDIZADOS do time (ficam no fim e eram os primeiros a sumir no corte)."""
+    if len(rec) <= n:
+        return rec
+    i = rec.find("## APRENDIZADOS")
+    if i < 0:
+        return rec[:n]
+    apr = rec[i:i + 3500]
+    return rec[:max(0, n - len(apr) - 2)] + "\n\n" + apr
+
+
 def arroba_do_estilo(estilo):
     """@ do canal, da linha "ARROBA: @perfil" na receita do estilo (o motor desenha embaixo da legenda)."""
     m = re.search(r"(?im)^\s*ARROBA:\s*(@[\w.]+)", (estilo or {}).get("receita") or "")
     return m.group(1) if m else ""
 
 
-def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi", arroba=""):
+def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi", arroba="", reusar=False):
     motor = _motor_fluido()
     if not motor or not final.exists() or not (work / "captions.ass").exists():
         return
@@ -1179,6 +1456,10 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    capture_output=True, text=True).stdout.strip() or 0)
         evitar = max(4.0, float(plan_hook or 0) + 0.5)
         cenas, quadros = work / "cenas_fluido.json", work / "quadros_fluido"
+        try:   # ajuste que não é sobre o motion: as mesmas imagens e frases de antes (o time já aprovou)
+            antigas = json.loads(cenas.read_text(encoding="utf-8")).get("cenas") if reusar else None
+        except (OSError, ValueError):
+            antigas = None
         cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": [], "cartelas": []}
         if tema == "canal2":   # o motor desenha a legenda e o gancho do Canal 2 (o vídeo veio sem nenhum texto)
             plano = json.loads((work / "plan.json").read_text(encoding="utf-8"))
@@ -1188,11 +1469,15 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                 log("motion do", cid, "sem @: falta a linha \"ARROBA: @perfil\" na receita do estilo")
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         (W / "broll" / "fotos_reais").mkdir(parents=True, exist_ok=True)
-        passo("Motion (planejando as cenas)")
         higgs = higgs_do_lote(lote)
         (W / "broll" / "web").mkdir(parents=True, exist_ok=True); (W / "broll" / "ia").mkdir(parents=True, exist_ok=True)
         modelo_prompt = PLANO_CANAL2 if tema == "canal2" else PLANO_FLUIDO
-        claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
+        if antigas:
+            passo("Motion (mesmas cenas de antes)")
+            cenas.write_text(json.dumps(dict(cfg, cenas=antigas), ensure_ascii=False), encoding="utf-8")
+        else:
+            passo("Motion (planejando as cenas)")
+        if not antigas: claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
                                    imagem_web=lib / "imagem_web.py", proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
@@ -1202,7 +1487,8 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
+        if not antigas:
+            doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
         # sem insert o corte passa pelo motor do mesmo jeito: transições, SFX e sem a tela de ênfase (formato padrão)
         creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or []))
                            if f.get("credito") and not re.search(r"CC0|dom[ií]nio p[uú]blico|public domain", f["credito"], re.I)})   # CC0 não exige crédito
@@ -1247,7 +1533,15 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     work = W / "work" / cid
     plan = work / "plan.json"
     ini, fim = float(c["inicio"]), float(c["fim"])
+    trava = None
     if c.get("ajuste") and plan.exists():
+        itens = itens_ajuste(c["ajuste"])
+        partir_da_versao(c, work)
+        trava = Trava(work, itens)   # o que não foi pedido fica como está
+        log("ajuste do", cid, "áreas:", ",".join(sorted(trava.areas)))
+    if trava and trava.livres is not None and "enquadramento" not in trava.areas:
+        rodar("Pontas e emendas", ["scripts/alinhar_frames.py", cid], ok=(0, 1))
+    elif c.get("ajuste") and plan.exists():
         # ajuste: parte do plano que já existe, mas refaz os planos de câmera pelo mapa ATUAL do episódio
         # (cortes feitos antes do mapa ficaram com uma câmera só e o recorte errado nas trocas)
         passo("Enquadramento pelo mapa de câmeras")
@@ -1302,9 +1596,25 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     if formato_canal2(estilo):   # Canal 2: as imagens entram depois, no motion do Zeca (b-roll do Titeu aqui sai cortado no reenquadramento)
         broll = 'SEM b-roll neste formato: deixe "broll": [] (as imagens entram depois, no motion do Zeca).'
     rec =receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
-    instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + rec[:6000] + "\n") if rec else ""
-    passo("Plano do corte (gancho, legenda, B-roll)")
-    claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
+    instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + cortar_receita(rec, 6000) + "\n") if rec else ""
+    if trava:
+        passo("Ajuste: " + ", ".join(sorted(trava.areas)))
+        extra = ""
+        if "broll" in trava.areas:
+            extra += "B-ROLL: " + broll + "\n"
+        if "gancho" in trava.areas:
+            extra += "FOTO DO GANCHO (hook.media): " + foto + "\n"
+        if "fonte" in trava.areas:
+            extra += ("FONTE e @: são desenhadas pelo motor do estilo (Montserrat e o @ do canal já vêm do estilo); se o pedido for só isso, "
+                      "não há o que mudar no plan.json: responda ok e diga isso nas notas.\n")
+        claude(AJUSTE_TIMEU.format(cid=cid, W=W, ref=ref, itens=texto_itens(trava.itens), extra=extra + instrucoes, prints=texto_prints(prints)),
+               W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
+        desfeito = trava.aplicar()
+        if desfeito:
+            log("ajuste do", cid, "desfeito fora do pedido:", ", ".join(desfeito))
+    else:
+        passo("Plano do corte (gancho, legenda, B-roll)")
+        claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
                                 enfase=('NÃO use "enfase" (a tela branca com a frase): este formato não tem; deixe "enfase": [].'
                                         if formato_02(estilo) or formato_canal2(estilo) else "Ênfase (frase de impacto) conforme as regras do estilo, se fizer sentido."),
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
@@ -1315,7 +1625,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                                 if c.get("ajuste") else ""),
            W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
     def broll_ok():   # regra do time: b-roll é vídeo com movimento e nunca se repete (no corte nem entre cortes)
-        if not formato_canal2(estilo):
+        if trava:
+            trava.aplicar()
+        if not formato_canal2(estilo) and (not trava or trava.livres is None or "broll" in trava.areas):
             garantir_broll(W, cid, plan, passo, higgs, lote["id"])
     broll_ok()
     for ciclo in range(3):
@@ -1343,9 +1655,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         hook_dur = 0.0
     def motion():
         if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
-            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
+            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, reusar=bool(trava and trava.reaproveitar_motion()))
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
-            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo))
+            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
+                          reusar=bool(trava and trava.reaproveitar_motion()))
     motion()
     def meios_broll():   # a conferência também olha o meio de cada b-roll (inserts de 2 s somem entre quadros espalhados)
         try:
@@ -1356,7 +1669,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")
-            claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO: " + c["ajuste"]
+            claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO (mexa só nestes itens): "
+                   + (texto_itens(trava.itens) if trava else c["ajuste"])
                    + "\nO que a conferência viu: " + (r.get("motivo") or "") + "\n" + texto_prints(prints)
                    + ("\n" + REGRAS_BROLL.format(bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum") if higgs else ""),
                    W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
@@ -1370,6 +1684,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
             r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
         registrar_conferencia(c, r, cid)
+    if trava:   # o time vê na Central o que mudou de verdade
+        srv("corte", id=c["id"], ajuste_mudancas=trava.resumo()[:900])
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
     registrar_broll(W, cid, plan)
@@ -1431,7 +1747,11 @@ def produzir(item):
     c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
     pasta = BASE / str(ep["id"]) / "lote-{}".format(lote["id"]) / "corte-{:02d}".format(c["ordem"])
     pasta.mkdir(parents=True, exist_ok=True)
-    passo = lambda t: srv("corte", id=c["id"], etapa=t)
+    def passo(t):   # andamento na página; falha momentânea da central não derruba o corte
+        try:
+            srv("corte", id=c["id"], etapa=t)
+        except Exception as e:
+            log("andamento do corte", c["id"], "não foi:", e)
     try:
         sincronizar_estilos()
         if ep.get("linha") == "reels":
@@ -1466,9 +1786,11 @@ def produzir(item):
                 passo("modo Claude (o automático parou em: {})".format(str(e)[:80]))
         texto = claude(PRODUCAO.format(cid=cid, inicio=float(c["inicio"]), fim=float(c["fim"]), bruto=bruto,
                                        transc=BASE / str(ep["id"]) / "transcricao.json", titulo=c["titulo"], gancho=c.get("gancho") or "",
-                                       ajuste=("AJUSTE PEDIDO PELO EDITOR (este corte já foi produzido e revisado): " + c["ajuste"] + "\n"
-                                               "Não refaça do zero: parta do plan.json e dos arquivos que já existem para este corte, mude SÓ o que foi pedido, "
-                                               "re-renderize e rode os gates de novo.\n" + texto_prints(prints)) if c.get("ajuste") else "",
+                                       ajuste=("AJUSTE PEDIDO PELO EDITOR (este corte já foi produzido e aprovado em todo o resto):\n"
+                                               + texto_itens(itens_ajuste(c["ajuste"])) + "\n"
+                                               "Não refaça do zero: parta do plan.json e dos arquivos que já existem para este corte e mude SÓ esses itens, "
+                                               "no trecho dito. Headline, gancho, imagens, b-roll, enquadramento e trechos que não estão na lista ficam IGUAIS. "
+                                               "Re-renderize e rode os gates de novo.\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                        higgs="Higgsfield liberado: até {} geração(ões) neste lote (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                        pasta=pasta, w=w, receita=receita(estilo, "CORTE") if estilo else "Vertical 1080x1920 com legenda e gancho."),
                        pasta, "sonnet", ao_passo=passo, limite=2700, extra_dirs=extra, higgs=higgs, higgs_lote=lote["id"])
@@ -1512,8 +1834,9 @@ def produzir_reel(item, pasta, passo):
         rec = "A pasta desta skill (\"a pasta desta skill\" na receita) é {}. Use {} como TRAB.\n\n{}".format(skill_est, pasta, rec)
     texto = claude(PRODUCAO_REEL.format(cid=cid, titulo=c["titulo"], bruto=base / "bruto", material=base / "material.txt",
                                         transc=base / "transcricao.json", transc_txt=base / "transcricao.txt",
-                                        ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito; parta do que existe na pasta de trabalho e mude SÓ isto): "
-                                                + c["ajuste"] + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
+                                        ajuste=("AJUSTE PEDIDO PELO EDITOR (o reel já foi feito e aprovado em todo o resto; parta do que existe na pasta de "
+                                                "trabalho e mude SÓ estes itens, no trecho dito; o que não está na lista fica IGUAL):\n"
+                                                + texto_itens(itens_ajuste(c["ajuste"])) + "\n" + texto_prints(prints)) if c.get("ajuste") else "",
                                         higgs="Higgsfield liberado: até {} geração(ões) (ferramenta cw-studios › gerar).".format(higgs) if higgs else "Higgsfield: não use.",
                                         pasta=pasta, biblioteca=BIBLIOTECA_CW, legendas=AQUI / "legendas.py",
                                         receita=rec or "Reel vertical 1080x1920 no padrão Reels-CW-01 da Cardápio Web."),
@@ -1556,9 +1879,11 @@ def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
     cred = next(Path(final).parent.parent.glob("work/{}/creditos.txt".format(cid)), None)   # crédito das fotos livres (CC BY) vai no post
     cred = cred.read_text(encoding="utf-8").strip() if cred else ""
     (pasta / "legenda_post.txt").write_text((legenda or c["titulo"]) + ("\n\n" + cred if cred and cred not in (legenda or "") else ""), encoding="utf-8")
+    versao = guardar_versao(Path(final), cid) if Path(final).parent.name == "saida" else None   # o time pode voltar para esta versão
+    anterior = {"previa_anterior": c.get("previa"), "arquivo_anterior": c.get("arquivo")} if c.get("ajuste") and c.get("previa") else {}
     srv("corte", id=c["id"], estado="previa", etapa=("esperando aprovação · ⚠ conferência: " + aviso)[:480] if aviso else "esperando aprovação",
-        arquivo=str(final), previa=caminho,
-        final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)))
+        arquivo=str(versao or final), previa=caminho,
+        final_drive=str((PREVIAS_DRIVE / nome).relative_to(DRIVE)), **anterior)
     log("corte", c["id"], "em prévia")
     avisar_video_pronto(c, final, cid)
 
@@ -1615,7 +1940,11 @@ def operario(n, so_ajuste=False):
             time.sleep(20)
             continue
         if item:
-            produzir(item)
+            try:
+                produzir(item)
+            except Exception:   # nunca deixa o operário morrer calado (o corte voltaria só no próximo reinício)
+                log("operário", n, "pegou erro fora do corte:", traceback.format_exc()[-600:])
+                time.sleep(10)
         else:
             time.sleep(10)
 
@@ -1628,7 +1957,11 @@ def entregador():
         except central.ErroCentral:
             aprovado = None
         if aprovado:
-            entregar(aprovado)
+            try:
+                entregar(aprovado)
+            except Exception:
+                log("entregador pegou erro:", traceback.format_exc()[-600:])
+                time.sleep(15)
         else:
             time.sleep(15)
 
@@ -1808,6 +2141,7 @@ def cmd_rodar():
                 ultimo_vigia = time.time()
                 vigiar()
                 vigiar_reels()
+                srv("presos")   # corte parado há 2 h e meia volta para a fila (3 vezes = erro)
             t = srv("trabalho")
             if t and t.get("tipo") == "preparar":
                 (preparar_reel if (t["episodio"].get("linha") == "reels") else preparar)(t["episodio"])
