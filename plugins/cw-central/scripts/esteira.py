@@ -1149,7 +1149,13 @@ def formato_02(estilo):
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
 
 
-def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi"):
+def arroba_do_estilo(estilo):
+    """@ do canal, da linha "ARROBA: @perfil" na receita do estilo (o motor desenha embaixo da legenda)."""
+    m = re.search(r"(?im)^\s*ARROBA:\s*(@[\w.]+)", (estilo or {}).get("receita") or "")
+    return m.group(1) if m else ""
+
+
+def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi", arroba=""):
     motor = _motor_fluido()
     if not motor or not final.exists() or not (work / "captions.ass").exists():
         return
@@ -1176,7 +1182,10 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         cfg = {"palavras": "palavras_final.json", "legendas_ass": "captions_final.ass", "evitar_ate": evitar, "cenas": [], "cartelas": []}
         if tema == "canal2":   # o motor desenha a legenda e o gancho do Canal 2 (o vídeo veio sem nenhum texto)
             plano = json.loads((work / "plan.json").read_text(encoding="utf-8"))
-            cfg.update(tema="canal2", headline=(plano.get("headline") or ""), gancho_ate=max(3.0, float(plan_hook or 4.0)), legendas_ass="")
+            cfg.update(tema="canal2", headline=(plano.get("headline") or ""), gancho_ate=max(3.0, float(plan_hook or 4.0)), legendas_ass="",
+                       arroba=arroba)
+            if not arroba:
+                log("motion do", cid, "sem @: falta a linha \"ARROBA: @perfil\" na receita do estilo")
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         (W / "broll" / "fotos_reais").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
@@ -1336,7 +1345,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
-            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2")
+            motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo))
     motion()
     def meios_broll():   # a conferência também olha o meio de cada b-roll (inserts de 2 s somem entre quadros espalhados)
         try:
