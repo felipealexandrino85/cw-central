@@ -427,6 +427,16 @@ def cmd_porteiro():
                                              "permissionDecisionReason": razao}}, ensure_ascii=False))
 
 
+def devolver_higgs(arq):
+    """Desfaz a contagem de uma geração que a API recusou (o porteiro conta antes de saber se deu certo)."""
+    try:
+        p = Path(arq)
+        p.write_text(str(max(0, int(p.read_text()) - 1)))
+        log("geração do Higgsfield recusada pela API: não contou no orçamento do lote")
+    except (OSError, ValueError):
+        pass
+
+
 def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video", trabalho="", higgs_lote=None):
     """Roda um Claude Code da esteira em 'pasta'. Devolve o texto final.
     modelo: "sonnet"/"opus"/"haiku" (ou "claude:sonnet"…) = conta Claude do CW Studios; "or:<id>" = modelo do OpenRouter pela
@@ -455,7 +465,7 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
         env["CLAUDE_CODE_OAUTH_TOKEN"] = TOKEN_CLAUDE.read_text().strip()
     proc = subprocess.Popen(cmd, cwd=str(pasta), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
                             encoding="utf-8", errors="replace", start_new_session=True)
-    fim, resultado = time.time() + limite, ""
+    fim, resultado, gerar_ids = time.time() + limite, "", set()
     try:
         for linha in proc.stdout:
             if time.time() > fim:
@@ -465,9 +475,20 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
                 ev = json.loads(linha)
             except ValueError:
                 continue
-            if ev.get("type") == "assistant" and ao_passo:
+            if ev.get("type") == "user" and higgs_lote and gerar_ids:   # geração recusada pela API não gasta o orçamento do lote
                 for c in (ev.get("message") or {}).get("content") or []:
-                    if c.get("type") == "tool_use":
+                    if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in gerar_ids:
+                        gerar_ids.discard(c.get("tool_use_id"))
+                        txt = json.dumps(c.get("content"), ensure_ascii=False)
+                        if c.get("is_error") or re.search(r"not_enough_credits|erro_envio|\"erro\"", txt):
+                            devolver_higgs(env["CW_EST_HIGGS_ARQ"])
+            elif ev.get("type") == "assistant":
+                for c in (ev.get("message") or {}).get("content") or []:
+                    if c.get("type") != "tool_use":
+                        continue
+                    if "cw-studios__gerar" in (c.get("name") or ""):
+                        gerar_ids.add(c.get("id"))
+                    if ao_passo:
                         try:
                             import estacao
                             ao_passo(estacao.resumo_ferramenta(c.get("name", ""), c.get("input") or {})[:120])
