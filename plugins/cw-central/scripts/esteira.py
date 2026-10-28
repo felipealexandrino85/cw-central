@@ -596,6 +596,149 @@ class Falhou(Exception):
     pass
 
 
+# ------------------------------------------------------------------------------------------- b-roll: vídeo e sem repetir
+REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempre VÍDEO com movimento de verdade (pessoas, mãos, vapor, "
+    "câmera andando); nunca foto parada, nunca foto com zoom, nunca imagem convertida em mp4. (2) Nenhum b-roll se repete: cada insert "
+    "é um arquivo e uma cena diferentes, e é proibido usar arquivo que já entrou em outro corte. (3) A cena mostra exatamente o que está "
+    "sendo dito naquele trecho, num restaurante/delivery brasileiro real. (4) Sem tela de celular ou notebook com texto, número ou gráfico "
+    "(a IA escreve letras sem sentido): se precisar de celular, mostre a pessoa e a reação, com a tela de costas; sem logo, marca ou pessoa real. "
+    "Gere no Higgsfield (cw-studios › gerar; SEM limite de gerações): uma imagem realista 9:16 sem texto em /higgsfield-ai/soul/v2/standard "
+    "e anime com /kling-video/v2.6/pro/image-to-video (\"duration\": 5, número inteiro: só aceita 5 ou 10) com um prompt de AÇÃO (o que se "
+    "move na cena); ou direto em /kling-video/v2.5-turbo/pro/text-to-video. Acompanhe com status e baixe o mp4 em broll/ com um nome que diga "
+    "a cena. Se uma geração falhar, tente de novo (até 3 vezes). Só use arquivo pronto de broll/ ou de {bib} se for vídeo com movimento, "
+    "combinar com a fala e não estiver na lista de proibidos. Proibidos (já usados em outros cortes): {proibidos}.")
+
+TROCA_BROLL = """No corte {cid} (pasta {W}), estes b-rolls de work/{cid}/plan.json não podem ficar:
+{lista}
+Troque cada um por um VÍDEO NOVO, diferente de todos os outros, ligado ao que é falado naquele trecho (veja work/{cid}/transcript.txt),
+mantendo start e dur. {regras}
+Mexa só nesses itens de "broll". NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "trocou": "uma linha"}}"""
+
+BROLL_REGISTRO = BASE / "broll_usados.json"   # sha256 do arquivo -> corte que usou (vale para todos os episódios)
+IMAGEM = re.compile(r"\.(jpe?g|png|webp|gif|bmp|heic|tiff?)$", re.I)
+
+
+def _sha_arq(p):
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for bloco in iter(lambda: f.read(1 << 20), b""):
+            h.update(bloco)
+    return h.hexdigest()
+
+
+def _broll_do_plano(arq, W):
+    try:
+        itens = json.loads(Path(arq).read_text(encoding="utf-8")).get("broll") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    saida = []
+    for b in itens:
+        f = str((b or {}).get("file") or "")
+        if f:
+            saida.append((b, Path(f) if os.path.isabs(f) else W / f))
+    return saida
+
+
+def broll_usados_fora(W, cid):
+    """{sha: corte} dos b-rolls que já entraram em OUTROS cortes: o registro geral + os planos dos outros cortes desta pasta."""
+    try:
+        usados = json.loads(BROLL_REGISTRO.read_text())
+    except (OSError, ValueError):
+        usados = {}
+    usados = {h: v for h, v in usados.items() if v.get("corte") != cid}
+    for outro in (W / "work").glob("l*c*/plan.json"):
+        nome = outro.parent.name
+        if nome == cid or "_antigo_" in nome:
+            continue
+        for _, p in _broll_do_plano(outro, W):
+            if p.is_file():
+                usados.setdefault(_sha_arq(p), {"corte": nome, "arquivo": p.name})
+    return usados
+
+
+def nomes_broll_proibidos(W, cid):
+    try:
+        return sorted({v.get("arquivo") or "?" for v in broll_usados_fora(W, cid).values()})[:60]
+    except Exception:
+        return []
+
+
+def broll_parado(p):
+    """True quando o 'vídeo' é foto: imagem, ou um mp4 em que quase nada se mexe (freezedetect)."""
+    if IMAGEM.search(p.name):
+        return True
+    dur = ffprobe_dur(p) or 0
+    if dur <= 0:
+        return True
+    r = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(p), "-an", "-vf", "scale=320:-2,freezedetect=n=0.002:d=0.6",
+                        "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+    inicios = [float(x) for x in re.findall(r"freeze_start: ([\d.]+)", r.stderr)]
+    fins = [float(x) for x in re.findall(r"freeze_end: ([\d.]+)", r.stderr)]
+    parado = sum((fins[i] if i < len(fins) else dur) - t for i, t in enumerate(inicios))   # parado até o fim não tem freeze_end
+    return parado >= 0.8 * dur
+
+
+def problemas_broll(W, cid, plan):
+    fora, vistos, probs = broll_usados_fora(W, cid), {}, []
+    for b, p in _broll_do_plano(plan, W):
+        rot = "{} (em {:.1f} s)".format(b.get("file"), float(b.get("start") or 0))
+        if not p.is_file():
+            probs.append((b, rot + ": o arquivo não existe"))
+            continue
+        h = _sha_arq(p)
+        if h in vistos:
+            probs.append((b, rot + ": repete o b-roll " + vistos[h]))
+        elif h in fora:
+            probs.append((b, rot + ": já foi usado no corte " + str(fora[h].get("corte"))))
+        elif broll_parado(p):
+            probs.append((b, rot + ": é imagem parada, não vídeo"))
+        vistos.setdefault(h, str(b.get("file")))
+    return probs
+
+
+def garantir_broll(W, cid, plan, passo, higgs, lote_id):
+    """Troca (com o Claude) o b-roll repetido ou parado; o que ainda sobrar sai do plano: sem b-roll é melhor que repetido ou foto."""
+    for _ in range(2 if higgs else 0):
+        probs = problemas_broll(W, cid, plan)
+        if not probs:
+            return
+        passo("Trocando b-roll repetido ou parado")
+        log("b-roll do", cid + ":", "; ".join(x for _, x in probs)[:600])
+        try:
+            claude(TROCA_BROLL.format(cid=cid, W=W, lista="\n".join("- " + x for _, x in probs),
+                                      regras=REGRAS_BROLL.format(bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
+                   W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote_id)
+        except Exception as e:
+            log("troca de b-roll do", cid, "falhou:", e)
+    probs = problemas_broll(W, cid, plan)
+    if probs:
+        ruins = {(str(b.get("file")), float(b.get("start") or 0)) for b, _ in probs}
+        pl = json.loads(plan.read_text(encoding="utf-8"))
+        pl["broll"] = [b for b in pl.get("broll") or [] if (str(b.get("file")), float(b.get("start") or 0)) not in ruins]
+        plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("b-roll do", cid, "tirado do plano:", "; ".join(x for _, x in probs)[:600])
+
+
+def registrar_broll(W, cid, plan):
+    """Marca os b-rolls do corte entregue como usados (outro corte não pode repetir)."""
+    import fcntl
+    try:
+        BROLL_REGISTRO.parent.mkdir(parents=True, exist_ok=True)
+        with open(str(BROLL_REGISTRO) + ".trava", "w") as trava:
+            fcntl.flock(trava, fcntl.LOCK_EX)
+            try:
+                usados = json.loads(BROLL_REGISTRO.read_text())
+            except (OSError, ValueError):
+                usados = {}
+            for _, p in _broll_do_plano(plan, W):
+                if p.is_file():
+                    usados[_sha_arq(p)] = {"corte": cid, "arquivo": p.name}
+            BROLL_REGISTRO.write_text(json.dumps(usados, ensure_ascii=False))
+    except Exception as e:
+        log("registro de b-roll do", cid, "falhou:", e)
+
+
 # ------------------------------------------------------------------------------------------- ajuste garantido
 CONFERE = """Conferência de um AJUSTE pedido pelo editor no corte "{titulo}".
 Pedido do editor: {pedido}
@@ -660,6 +803,14 @@ def _tempo_da_frase(pedido, transcript):
     return None
 
 
+HIGGS_LIVRE = 100000   # 28/10/2026: o Felipe tirou o limite de Higgsfield da esteira (o orçamento do lote não trava mais)
+
+
+def higgs_do_lote(lote):
+    """Gerações de Higgsfield liberadas para o lote: sem limite desde 28/10/2026 (o campo do lote fica só como registro)."""
+    return HIGGS_LIVRE
+
+
 def higgs_restante(lote):
     """Gerações de Higgsfield que ainda cabem no orçamento do lote (o mesmo contador do gancho de permissão)."""
     arq = BASE / ".higgs" / "lote-{}".format(lote["id"])
@@ -667,7 +818,7 @@ def higgs_restante(lote):
         usados = int(arq.read_text())
     except (OSError, ValueError):
         usados = 0
-    return int(lote.get("higgs_orcamento") or 0) - usados, usados
+    return higgs_do_lote(lote) - usados, usados
 
 
 def quadros_do_ajuste(video, pedido, pasta, transcript=None, extra=()):
@@ -971,7 +1122,7 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         cenas.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         (W / "broll" / "fotos_reais").mkdir(parents=True, exist_ok=True)
         passo("Motion (planejando as cenas)")
-        higgs = int(lote.get("higgs_orcamento") or 0)
+        higgs = higgs_do_lote(lote)
         (W / "broll" / "web").mkdir(parents=True, exist_ok=True); (W / "broll" / "ia").mkdir(parents=True, exist_ok=True)
         modelo_prompt = PLANO_CANAL2 if tema == "canal2" else PLANO_FLUIDO
         claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
@@ -1074,13 +1225,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     foto = ("se ainda não for arquivo, gere UMA imagem no Higgsfield (cw-studios › gerar; foto realista, horizontal, sem texto) a partir da descrição e salve em work/{}/gancho.jpg; use esse caminho.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
-    broll = ("B-roll ao longo do corte (não só no gancho): planeje 2 a 4 inserts de 1,5–2,5 s espalhados, nas falas que citam algo visual "
-             "(produto, loja, cozinha, delivery, celular, marca, lugar). Primeiro procure arquivo bom em broll/ e em {bib}; se não houver, gere no "
-             "Higgsfield (cw-studios › gerar): uma imagem realista 9:16 sem texto e depois anime com /kling-video/v2.6/pro/image-to-video (\"duration\": 5, número inteiro: só aceita 5 ou 10). "
-             "Salve em broll/ e ponha em plan.json \"broll\": [{{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}}] "
-             "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção. Até {n} geração(ões) no lote, contando a foto do gancho. "
-             "Se uma geração falhar (erro de envio), tente de novo uma vez antes de desistir daquele b-roll."
-             ).format(bib=BIBLIOTECA_CW, n=higgs) if higgs else "b-roll só se houver arquivo bom em broll/ (sem b-roll é melhor que genérico)."
+    broll = ("B-roll ao longo do corte (não só no gancho): planeje 2 a 4 inserts de 1,5–2,5 s espalhados, nas falas que citam algo visual. "
+             + REGRAS_BROLL.format(bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")
+             + " Ponha em plan.json \"broll\": [{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}] "
+             "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção."
+             ) if higgs else "b-roll só se houver VÍDEO bom em broll/ que nunca foi usado em outro corte (sem b-roll é melhor que genérico ou repetido)."
     if formato_canal2(estilo):   # Canal 2: as imagens entram depois, no motion do Zeca (b-roll do Titeu aqui sai cortado no reenquadramento)
         broll = 'SEM b-roll neste formato: deixe "broll": [] (as imagens entram depois, no motion do Zeca).'
     rec =receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
@@ -1096,6 +1245,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                                         "se o corte continuar fazendo sentido, e diga isso nas notas.\n" + texto_prints(prints))
                                 if c.get("ajuste") else ""),
            W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
+    def broll_ok():   # regra do time: b-roll é vídeo com movimento e nunca se repete (no corte nem entre cortes)
+        if not formato_canal2(estilo):
+            garantir_broll(W, cid, plan, passo, higgs, lote["id"])
+    broll_ok()
     for ciclo in range(3):
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
@@ -1111,6 +1264,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             break
         passo("Corrigindo o que os gates reprovaram")
         claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref), W, "sonnet", ao_passo=passo, limite=900)
+        broll_ok()
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
@@ -1134,7 +1288,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO: " + c["ajuste"]
-                   + "\nO que a conferência viu: " + (r.get("motivo") or "") + "\n" + texto_prints(prints), W, "sonnet", ao_passo=passo, limite=900)
+                   + "\nO que a conferência viu: " + (r.get("motivo") or "") + "\n" + texto_prints(prints)
+                   + ("\n" + REGRAS_BROLL.format(bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum") if higgs else ""),
+                   W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
+            broll_ok()
             rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
@@ -1146,6 +1303,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         registrar_conferencia(c, r, cid)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
+    registrar_broll(W, cid, plan)
     return final, (previa if previa.exists() else final)
 
 
@@ -1226,7 +1384,7 @@ def produzir(item):
                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(pasta / "trecho.mp4")], check=True)
             w = "\nNa pasta do corte: trecho.mp4 (com 1 s de folga) e palavras.json (tempos a partir do começo do trecho)."
         cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
-        higgs = int(lote.get("higgs_orcamento") or 0)
+        higgs = higgs_do_lote(lote)
         prints = baixar_prints(c, pasta) if c.get("ajuste") else []
         if estilo and estilo.get("motor") == "timeu" and extra:
             try:
@@ -1266,7 +1424,7 @@ def produzir(item):
 def produzir_reel(item, pasta, passo):
     c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
     cid = "r{}".format(ep["id"])
-    higgs = int(lote.get("higgs_orcamento") or 0)
+    higgs = higgs_do_lote(lote)
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
     base = BASE / str(ep["id"])
     # reel: a receita inteira vale (EPISÓDIO = análise do bruto + CORTE = o vídeo), com a pasta da skill do estilo
