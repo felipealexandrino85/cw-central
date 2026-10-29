@@ -890,13 +890,11 @@ def _pexels():
     b = _bancos()
     if not b:
         return ""
-    cmds = []
-    if "Pexels" in b:
-        cmds.append("python3 -I S/pexels.py search \"<cena em inglês>\" --orient portrait --n 8 (baixa com: python3 -I S/pexels.py get <id> --dest broll)")
-    if "Pixabay" in b:
-        cmds.append("python3 -I S/pixabay.py search \"<cena>\" --orient any --n 10 (baixa com: python3 -I S/pixabay.py get <id> --dest broll)")
-    return ("PRIMEIRO procure FILMAGEM REAL e grátis no " + " e no ".join(b) + ": " + "; ".join(cmds) + ". A busca só lista, sem baixar: escolha pela "
-            "descrição, baixe, confira um quadro antes de usar e prefira vertical. Só se nada servir, ")
+    fb = AQUI / "fotos_banco.py"
+    return ("PRIMEIRO procure FILMAGEM REAL e grátis no " + " e no ".join(b) + ": python3 -I {} search \"<cena em inglês>\" --video --orient any --n 10 "
+            "(lista fonte:id, tamanho, duração e tags, sem baixar); baixe o escolhido com python3 -I {} get <fonte:id> --dest broll "
+            "(é grátis, sem limite). Escolha pelas tags o que mostra a cena da fala; prefira vertical (o horizontal é reenquadrado); confira "
+            "um quadro do mp4 antes de usar; o vídeo do banco também não pode repetir (vale a lista de proibidos). Só se nada servir, ").format(fb, fb)
 
 
 def foto_banco():
