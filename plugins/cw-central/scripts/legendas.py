@@ -6,7 +6,12 @@
    aponta só palavras erradas (marca, nome, termo técnico, palavra que não faz sentido). Troca palavra por palavra:
    o tempo das legendas não muda (quando duas palavras viram uma marca, o tempo das duas fica com a marca). Nunca reescreve a fala nem muda o sentido.
 
+Revisão FINAL (esteira, 28/10/2026): depois das emendas e do plano, sobre o texto que vai para a tela. Só troca palavra por palavra
+(os destaques do plano apontam para a posição das palavras), com modelo melhor, a fala do episódio no mesmo trecho para comparar
+e avisos mecânicos (R separado de $, número separado de mil/%/reais, palavra repetida em sequência).
+
 Uso:
+  legendas.py final <transcript.json> [--contexto "..."] [--referencia fala_do_episodio.txt] [--modelo anthropic/claude-sonnet-5.5]
   legendas.py revisar <arquivo.json> [--contexto "episódio, convidado, assunto"] [--campo w]
      arquivo = transcript.json do Titeu ({"words": [{"w": ...}]}) ou palavras.json dos reels ([{"w": ...}]).
      Grava as correções no próprio arquivo (guarda <arquivo>.antes_revisao.json) e lista o que mudou em <arquivo>.revisao.json.
@@ -124,6 +129,81 @@ def pela_ia(palavras, contexto, gloss, modelo):
     return mudou
 
 
+FINAL = """Você é o revisor FINAL da legenda de um corte de vídeo do CW Studios (Cardápio Web: podcast para donos de restaurante e
+delivery). Este texto é exatamente o que vai aparecer na tela. Contexto: {contexto}
+Dicionário do time (escreva sempre assim): {dicionario}
+Avisos automáticos (confira): {avisos}
+Fala do episódio no mesmo trecho, de OUTRA transcrição (use para comparar nomes, números e palavras mal ouvidas; ela também pode errar):
+{referencia}
+
+Legenda do corte (número de cada palavra entre colchetes):
+{texto}
+
+Aponte só o que está ERRADO na tela: nome ou marca com grafia errada, número ou valor errado ou mal escrito (ex.: "R" solto antes do
+valor, "20" e "mil" que deveriam ser "20 mil" juntos numa palavra só não é erro: deixe), palavra que não existe ou que não faz sentido
+e foi mal ouvida (compare com a outra transcrição). NÃO mude o jeito de falar (pra, tá, né, gírias, repetições), não corrija gramática.
+Cada correção troca UMA palavra por UMA palavra (pode ter espaço, apóstrofo, hífen ou símbolo, ex.: "R$40", "Domino's").
+Responda APENAS com JSON: {{"correcoes": [{{"i": 12, "de": "Glalton", "para": "Glauton", "por_que": "nome do convidado"}}]}}"""
+
+
+def avisos_mecanicos(palavras):
+    av = []
+    for i, p in enumerate(palavras[:-1]):
+        q = palavras[i + 1]
+        if re.fullmatch(r"[RU]", p.strip()) and q.strip().startswith("$"):
+            av.append("[{}] '{}' separado de '{}'".format(i, p, q))
+        if _norm(p) and _norm(p) == _norm(q) and len(_norm(p)) > 3:
+            av.append("[{}] '{}' repetido em seguida".format(i, p))
+    return "; ".join(av[:20]) or "nenhum"
+
+
+def revisar_final(arq, contexto="", referencia="", modelo="anthropic/claude-sonnet-5.5"):
+    """Revisão final, só trocas 1 por 1 (nunca apaga palavra). Grava <arquivo>.final.json com o que mudou."""
+    import ferramentas_mcp
+    arq = Path(arq)
+    dados = json.loads(arq.read_text(encoding="utf-8"))
+    lista = dados["words"]
+    palavras = [str(w.get("w") or "") for w in lista]
+    gloss = glossario()
+    copia = list(palavras)
+    mudou = [m for m in pelo_dicionario(copia, gloss) if "" not in copia[m["i"]:m["i"] + 3]]   # só o que não apaga palavra
+    for m in mudou:
+        palavras[m["i"]] = copia[m["i"]]
+    dic = "; ".join(g["certo"] + (" (não " + ", ".join(g["errados"][:3]) + ")" if g.get("errados") else "") for g in gloss)[:3000]
+    texto = " ".join("[{}]{}".format(i, p) for i, p in enumerate(palavras) if p)
+    try:
+        r = ferramentas_mcp.chamar({"acao": "texto", "ferramenta": "openrouter", "modelo": modelo, "etapa": "revisao_legenda",
+                                    "instrucao": "Responda só com JSON válido.", "trabalho": "revisao_legenda_final",
+                                    "texto": FINAL.format(contexto=contexto or "(sem contexto)", dicionario=dic or "(vazio)",
+                                                          avisos=avisos_mecanicos(palavras), referencia=(referencia or "(sem)")[:6000],
+                                                          texto=texto)}, timeout=180)
+        j = json.loads(re.search(r"\{.*\}", r.get("texto") or "", re.S).group(0))
+    except Exception as e:
+        print("revisão final: a IA não respondeu ({}); ficou só o dicionário".format(e), file=sys.stderr)
+        j = {}
+    for c in j.get("correcoes") or []:
+        try:
+            i = int(c.get("i"))
+        except (TypeError, ValueError):
+            continue
+        para = str(c.get("para") or "").strip()
+        if not (0 <= i < len(palavras)) or not palavras[i] or not para or len(para) > 40:
+            continue
+        if _norm(palavras[i]) != _norm(str(c.get("de") or palavras[i])) or para == palavras[i]:
+            continue   # a IA apontou outra palavra: ignora
+        pont = re.search(r"[.,!?;:…]+$", palavras[i])
+        novo = para if re.search(r"[.,!?;:…]$", para) or not pont else para + pont.group(0)
+        mudou.append({"i": i, "de": palavras[i], "para": novo, "por_que": c.get("por_que") or "revisão final"})
+        palavras[i] = novo
+    if mudou:
+        arq.with_name(arq.stem + ".antes_final.json").write_text(arq.read_text(encoding="utf-8"), encoding="utf-8")
+        for k, w in enumerate(lista):
+            w["w"] = palavras[k]
+        arq.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
+    arq.with_name(arq.stem + ".final.json").write_text(json.dumps(mudou, ensure_ascii=False, indent=1), encoding="utf-8")
+    return mudou
+
+
 def revisar_arquivo(arq, contexto="", campo="w"):
     arq = Path(arq)
     dados = json.loads(arq.read_text(encoding="utf-8"))
@@ -156,7 +236,19 @@ def main():
     r.add_argument("arquivo")
     r.add_argument("--contexto", default="")
     r.add_argument("--campo", default="w")
+    f = sp.add_parser("final")
+    f.add_argument("arquivo")
+    f.add_argument("--contexto", default="")
+    f.add_argument("--referencia", default="")
+    f.add_argument("--modelo", default="anthropic/claude-sonnet-5.5")
     a = ap.parse_args()
+    if a.cmd == "final":
+        ref = Path(a.referencia).read_text(encoding="utf-8") if a.referencia and Path(a.referencia).exists() else ""
+        mudou = revisar_final(a.arquivo, a.contexto, ref, a.modelo)
+        print("revisão final da legenda: {} correção(ões)".format(len(mudou)))
+        for m in mudou:
+            print("  [{}] {} → {} ({})".format(m["i"], m["de"], m["para"], m["por_que"]))
+        return
     mudou = revisar_arquivo(a.arquivo, a.contexto, a.campo)
     print("legenda revisada: {} correção(ões)".format(len(mudou)))
     for m in mudou:

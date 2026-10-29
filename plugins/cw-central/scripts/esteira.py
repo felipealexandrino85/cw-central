@@ -1091,6 +1091,156 @@ def fim_da_frase(ep_id, fim, teto=8.0):
     return fim   # a frase não fecha dentro do teto: não inventa um fim
 
 
+def fala_do_episodio(ep_id, transcript):
+    """Texto da transcrição do EPISÓDIO (outra transcrição) nos mesmos trechos do corte: referência para a revisão final da legenda."""
+    try:
+        segs = json.loads((BASE / str(ep_id) / "transcricao.json").read_text(encoding="utf-8"))
+        ranges = json.loads(Path(transcript).read_text(encoding="utf-8")).get("ranges") or []
+    except (OSError, ValueError):
+        return ""
+    ws = [w for sg in segs for w in sg.get("palavras") or []]
+    return " ".join(w["p"] for w in ws if any(float(a) - 0.2 <= float(w["i"]) <= float(b) + 0.2 for a, b in ranges))
+
+
+def montar_ficha(W, cid, plan, transcript):
+    """A ficha do corte que o time vê ao lado da prévia (e edita): headline, foto, momentos visuais, trilha, legenda corrigida."""
+    try:
+        pl = json.loads(Path(plan).read_text(encoding="utf-8"))
+        tr = json.loads(Path(transcript).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    work = Path(plan).parent
+    try:
+        cenas = json.loads((work / "cenas_fluido.json").read_text(encoding="utf-8")).get("cenas") or []
+    except (OSError, ValueError):
+        cenas = []
+    try:
+        legenda = json.loads((work / "transcript.final.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        legenda = []
+    trilha_db = (pl.get("music") or {}).get("db")
+    if trilha_db is None:
+        try:
+            m = re.search(r"Trilha: clipe (-?[\d.]+) dB", (work / "audio_relatorio.txt").read_text(encoding="utf-8"))
+            trilha_db = float(m.group(1)) if m else None
+        except (OSError, ValueError):
+            trilha_db = None
+    mom = [{"t": round(float(b.get("start") or 0), 1), "dur": round(float(b.get("dur") or 0), 1), "tipo": "b-roll",
+            "o_que": b.get("palavra") or Path(str(b.get("file") or "")).stem.replace("_", " ")} for b in pl.get("broll") or []]
+    mom += [{"t": round(float(x.get("start") or 0), 1), "tipo": "P&B", "o_que": "preto e branco"} for x in pl.get("shots") or [] if x.get("bw")]
+    mom += [{"t": round(float(c.get("t0") or 0), 1), "dur": round(float(c.get("t1") or 0) - float(c.get("t0") or 0), 1), "tipo": "foto",
+             "o_que": c.get("credito") or Path(str(c.get("imagem") or "")).stem.replace("_", " ")} for c in cenas if c.get("imagem") or c.get("imagens")]
+    return {"headline": (pl.get("headline") or "").replace("|", " / "), "foto_gancho": Path(str((pl.get("hook") or {}).get("media") or "")).name,
+            "duracao": round(float(tr.get("duration") or 0), 1), "momentos": sorted(mom, key=lambda x: x["t"]),
+            "trilha": {"arquivo": Path(str((pl.get("music") or {}).get("file") or "")).stem, "db": trilha_db},
+            "legenda_corrigida": [{"de": x["de"], "para": x["para"]} for x in legenda][:30]}
+
+
+EDICOES_IA = {"momento_trocar", "momento_adicionar", "foto_gancho", "pedido"}
+
+
+def itens_das_edicoes(ops):
+    """Edições da Central → itens com área (para a trava e a conferência)."""
+    area = {"headline": "gancho", "foto_gancho": "gancho", "momento_remover": "broll", "momento_trocar": "broll", "momento_adicionar": "broll",
+            "pb_remover": "enquadramento", "trilha_volume": "trilha", "trilha_trocar": "trilha", "palavra": "legenda"}
+    itens = []
+    for o in ops or []:
+        t = o.get("t")
+        if o.get("tipo") == "pedido":
+            itens += itens_ajuste(o.get("texto") or "")
+        else:
+            itens.append({"pedido": texto_edicao(o), "areas": {area.get(o.get("tipo"), "outro")}, "t0": float(t) if t is not None else None,
+                          "t1": float(t) if t is not None else None})
+    return itens
+
+
+def texto_edicao(o):
+    t = o.get("tipo")
+    tm = " em {}".format(_mm(float(o["t"]))) if o.get("t") is not None else ""
+    return {"headline": "headline: \"{}\"".format(o.get("texto")), "foto_gancho": "trocar a foto do gancho" + (": " + o["nota"] if o.get("nota") else ""),
+            "momento_remover": "tirar o momento visual" + tm, "momento_trocar": "trocar o momento visual" + tm + (": " + o["nota"] if o.get("nota") else ""),
+            "momento_adicionar": "pôr um momento visual" + tm + (": " + o["nota"] if o.get("nota") else ""), "pb_remover": "tirar o P&B" + tm,
+            "trilha_volume": "trilha {} ".format("mais baixa" if float(o.get("delta") or 0) < 0 else "mais alta"),
+            "trilha_trocar": "trocar a trilha" + (": " + o["nota"] if o.get("nota") else ""),
+            "palavra": "legenda: \"{}\" → \"{}\"".format(o.get("de"), o.get("para")), "pedido": o.get("texto") or ""}.get(t, str(o))
+
+
+def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
+    """Aplica no plano o que não precisa de IA. Devolve (feitas, pendentes_ia)."""
+    pl = json.loads(Path(plan).read_text(encoding="utf-8"))
+    tr = json.loads(Path(transcript).read_text(encoding="utf-8"))
+    feitas, ia = [], []
+    perto = lambda a, b: abs(float(a) - float(b)) <= 0.6
+    for o in ops or []:
+        t = o.get("tipo")
+        if t in EDICOES_IA:
+            ia.append(o)
+        elif t == "headline" and (o.get("texto") or "").strip():
+            txt = re.sub(r"\s+", " ", o["texto"].replace(" / ", "|")).strip()
+            if "|" not in txt and len(txt) > 32:   # quebra em 2 linhas perto do meio
+                meio = len(txt) // 2
+                k = min((i for i, ch in enumerate(txt) if ch == " "), key=lambda i: abs(i - meio), default=None)
+                txt = txt[:k] + "|" + txt[k + 1:] if k else txt
+            pl["headline"] = txt[:80]
+            feitas.append(o)
+        elif t == "momento_remover" and o.get("t") is not None:
+            antes = len(pl.get("broll") or [])
+            pl["broll"] = [b for b in pl.get("broll") or [] if not perto(b.get("start") or 0, o["t"])]
+            if len(pl["broll"]) < antes:
+                feitas.append(o)
+            else:   # pode ser foto do motion: some da lista de cenas
+                try:
+                    cf = Path(plan).parent / "cenas_fluido.json"
+                    d = json.loads(cf.read_text(encoding="utf-8"))
+                    n = len(d.get("cenas") or [])
+                    d["cenas"] = [c for c in d.get("cenas") or [] if not perto(c.get("t0") or 0, o["t"])]
+                    if len(d["cenas"]) < n:
+                        cf.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+                        feitas.append(o)
+                except (OSError, ValueError):
+                    pass
+        elif t == "pb_remover" and o.get("t") is not None:
+            for x in pl.get("shots") or []:
+                if x.get("bw") and perto(x.get("start") or 0, o["t"]):
+                    x.pop("bw", None)
+                    feitas.append(o)
+        elif t == "trilha_volume":
+            mus = pl.setdefault("music", {})
+            base = float(mus.get("db") or -30)
+            mus["db"] = max(-40.0, min(-22.0, base + (-4 if float(o.get("delta") or 0) < 0 else 4)))
+            mus.pop("vol", None)
+            feitas.append(o)
+        elif t == "trilha_trocar":
+            atual = str((pl.get("music") or {}).get("file") or "")
+            usadas = set()
+            for outro in (W / "work").glob("l*c*/plan.json"):
+                try:
+                    usadas.add(str((json.loads(outro.read_text(encoding="utf-8")).get("music") or {}).get("file") or ""))
+                except (OSError, ValueError):
+                    pass
+            opcoes = sorted(str(f.relative_to(W)) for f in (W / "assets" / "music").glob("*.mp3") if str(f.relative_to(W)) not in usadas | {atual})
+            if opcoes:
+                import random
+                pl.setdefault("music", {})["file"] = random.choice(opcoes)
+                feitas.append(o)
+        elif t == "palavra" and (o.get("de") or "").strip() and (o.get("para") or "").strip():
+            n = 0
+            for w in tr.get("words") or []:
+                if re.sub(r"[.,!?;:…]+$", "", w.get("w") or "").lower() == o["de"].strip().lower():
+                    pont = re.search(r"[.,!?;:…]+$", w["w"])
+                    w["w"] = o["para"].strip() + (pont.group(0) if pont else "")
+                    n += 1
+            if n:
+                feitas.append(o)
+                try:   # vira entrada do dicionário: não erra de novo
+                    srv("glossario", certo=o["para"].strip()[:80], errados=[o["de"].strip()[:80]], obs="edição direta no corte " + cid)
+                except Exception:
+                    pass
+    Path(plan).write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+    Path(transcript).write_text(json.dumps(tr, ensure_ascii=False, indent=1), encoding="utf-8")
+    return feitas, ia
+
+
 def ritmo_faltando(plan, transcript):
     """Janelas de 10 s (depois do gancho, até 2 s do fim) sem nenhum momento visual: b-roll ou P&B. Devolve [(início, fim)]."""
     try:
@@ -1671,12 +1821,12 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         higgs = higgs_do_lote(lote)
         (W / "broll" / "web").mkdir(parents=True, exist_ok=True); (W / "broll" / "ia").mkdir(parents=True, exist_ok=True)
         modelo_prompt = PLANO_CANAL2 if tema == "canal2" else PLANO_FLUIDO
-        if antigas:
+        if antigas is not None:   # lista vazia também vale: o time tirou a única foto, não é para planejar de novo
             passo("Motion (mesmas cenas de antes)")
             cenas.write_text(json.dumps(dict(cfg, cenas=antigas), ensure_ascii=False), encoding="utf-8")
         else:
             passo("Motion (planejando as cenas)")
-        if not antigas: claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
+        if antigas is None: claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
                                    imagem_web=lib / "imagem_web.py", banco=foto_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
@@ -1688,7 +1838,7 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        if not antigas:
+        if antigas is None:
             doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
         # sem insert o corte passa pelo motor do mesmo jeito: transições, SFX e sem a tela de ênfase (formato padrão)
         creditos = sorted({f.get("credito") for c in doc["cenas"] for f in ([c] + list(c.get("imagens") or []))
@@ -1741,7 +1891,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             fim = novo_fim
     trava = None
     if c.get("ajuste") and plan.exists():
-        itens = itens_ajuste(c["ajuste"])
+        itens = itens_das_edicoes(c.get("edicoes")) if c.get("edicoes") else itens_ajuste(c["ajuste"])
         partir_da_versao(c, work)
         trava = Trava(work, itens)   # o que não foi pedido fica como está
         log("ajuste do", cid, "áreas:", ",".join(sorted(trava.areas)))
@@ -1806,7 +1956,14 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         broll = 'SEM b-roll neste formato: deixe "broll": [] (as imagens entram depois, no motion do Zeca).'
     rec =receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
     instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + cortar_receita(rec, 6000) + "\n") if rec else ""
-    if trava:
+    edicoes_ia = None
+    if trava and c.get("edicoes"):   # edição direta da Central: o que é mecânico vai direto no plano, sem IA
+        passo("Edição direta: " + ", ".join(sorted(trava.areas)))
+        feitas, edicoes_ia = aplicar_edicoes_diretas(W, cid, plan, work / "transcript.json", c["edicoes"], ep["id"])
+        log("edição direta do", cid + ":", len(feitas), "aplicada(s) sem IA,", len(edicoes_ia), "com IA")
+    if trava and c.get("edicoes") and not edicoes_ia:
+        trava.aplicar()
+    elif trava:
         passo("Ajuste: " + ", ".join(sorted(trava.areas)))
         extra = ""
         if "broll" in trava.areas:
@@ -1816,7 +1973,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if "fonte" in trava.areas:
             extra += ("FONTE e @: são desenhadas pelo motor do estilo (Montserrat e o @ do canal já vêm do estilo); se o pedido for só isso, "
                       "não há o que mudar no plan.json: responda ok e diga isso nas notas.\n")
-        claude(AJUSTE_TIMEU.format(cid=cid, W=W, ref=ref, itens=texto_itens(trava.itens), extra=extra + instrucoes, prints=texto_prints(prints)),
+        itens_txt = (texto_itens(itens_das_edicoes(edicoes_ia)) if edicoes_ia else texto_itens(trava.itens))
+        claude(AJUSTE_TIMEU.format(cid=cid, W=W, ref=ref, itens=itens_txt, extra=extra + instrucoes, prints=texto_prints(prints)),
                W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
         desfeito = trava.aplicar()
         if desfeito:
@@ -1850,6 +2008,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         resto = ritmo_faltando(plan, work / "transcript.json")
         if resto:
             log("ritmo do", cid, "ainda sem momento visual em:", resto)
+    if not trava or trava.livres is None or "legenda" in trava.areas:   # revisão final do texto que vai para a tela
+        ref_txt = work / "fala_episodio.txt"
+        ref_txt.write_text(fala_do_episodio(ep["id"], work / "transcript.json"), encoding="utf-8")
+        rodar("Revisão final da legenda", [AQUI / "legendas.py", "final", "work/{}/transcript.json".format(cid),
+                                           "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"]), "--referencia", ref_txt], ok=(0, 1), tempo=300)
     def sem_logo():   # Canal 2 não leva a marca do CW Cast: o render sai sem o logo (antes ele era borrado depois, e o borrão aparecia)
         if not formato_canal2(estilo):
             return
@@ -1910,7 +2073,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         except (OSError, ValueError, KeyError, TypeError):
             pass
         return ts[:12]
-    if c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
+    if c.get("edicoes") and not edicoes_ia and final.exists():   # só edição mecânica: o código aplicou, não há o que adivinhar
+        registrar_conferencia(c, {"atendido": True, "destino": "pontual",
+                                  "motivo": "Edições aplicadas direto: " + "; ".join(texto_edicao(o) for o in c["edicoes"])}, cid)
+    elif c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
+        if edicoes_ia:   # a conferência julga só o que foi para a IA
+            c = dict(c, ajuste="\n".join(texto_edicao(o) for o in edicoes_ia))
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")
@@ -1932,6 +2100,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         registrar_conferencia(c, r, cid)
     if trava:   # o time vê na Central o que mudou de verdade
         srv("corte", id=c["id"], ajuste_mudancas=trava.resumo()[:900])
+    try:   # a ficha do corte (o time vê e edita ao lado da prévia)
+        ficha = montar_ficha(W, cid, plan, work / "transcript.json")
+        if ficha:
+            srv("corte", id=c["id"], ficha=ficha)
+    except Exception as e:
+        log("ficha do", cid, "não foi:", e)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
     registrar_broll(W, cid, plan)
