@@ -859,12 +859,19 @@ REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempr
     "é um arquivo e uma cena diferentes, e é proibido usar arquivo que já entrou em outro corte. (3) A cena mostra exatamente o que está "
     "sendo dito naquele trecho, num restaurante/delivery brasileiro real. (4) Sem tela de celular ou notebook com texto, número ou gráfico "
     "(a IA escreve letras sem sentido): se precisar de celular, mostre a pessoa e a reação, com a tela de costas; sem logo, marca ou pessoa real. "
-    "Quantidade: um insert a cada 8–12 s de fala, com pelo menos um no meio do corte, 1,5–3 s cada; nunca nos últimos 2 s nem sobre frase de impacto. "
+    "Ritmo: um momento visual (b-roll ou P&B) em cada janela de 10 s depois do gancho, b-roll de 1,5–3 s; nunca nos últimos 2 s nem sobre frase de impacto. "
     "{pexels}Gere no Higgsfield (cw-studios › gerar; SEM limite de gerações): uma imagem realista 9:16 sem texto em /higgsfield-ai/soul/v2/standard "
     "e anime com /kling-video/v2.6/pro/image-to-video (\"duration\": 5, número inteiro: só aceita 5 ou 10) com um prompt de AÇÃO (o que se "
     "move na cena); ou direto em /kling-video/v2.5-turbo/pro/text-to-video. Acompanhe com status e baixe o mp4 em broll/ com um nome que diga "
     "a cena. Se uma geração falhar, tente de novo (até 3 vezes). Só use arquivo pronto de broll/ ou de {bib} se for vídeo com movimento, "
     "combinar com a fala e não estiver na lista de proibidos. Proibidos (já usados em outros cortes): {proibidos}.")
+
+RITMO = """No corte {cid} (pasta {W}), work/{cid}/plan.json está sem MOMENTO VISUAL nestas janelas: {janelas}.
+A regra do estilo é um momento visual a cada 10 s depois do gancho. Para CADA janela, ponha UM: um b-roll de VÍDEO de 1,5–3 s na fala que
+cita algo mostrável daquela janela (veja work/{cid}/transcript.txt), ou, se a fala ali for uma frase de impacto sem nada mostrável,
+P&B ("bw": true) no shot daquele trecho (crie um shot com o mesmo enquadramento começando na frase, se precisar).
+Não mexa no resto do plano. {regras}
+NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "notas": "o que pôs em cada janela"}}"""
 
 TROCA_BROLL = """No corte {cid} (pasta {W}), estes b-rolls de work/{cid}/plan.json não podem ficar:
 {lista}
@@ -1082,6 +1089,24 @@ def fim_da_frase(ep_id, fim, teto=8.0):
         if fecha(ws[j]) or (j + 1 < len(ws) and float(ws[j + 1]["i"]) - float(ws[j]["f"]) > 0.7):
             return round(float(ws[j]["f"]) + 0.2, 2)
     return fim   # a frase não fecha dentro do teto: não inventa um fim
+
+
+def ritmo_faltando(plan, transcript):
+    """Janelas de 10 s (depois do gancho, até 2 s do fim) sem nenhum momento visual: b-roll ou P&B. Devolve [(início, fim)]."""
+    try:
+        pl = json.loads(Path(plan).read_text(encoding="utf-8"))
+        dur = float(json.loads(Path(transcript).read_text(encoding="utf-8")).get("duration") or 0)
+    except (OSError, ValueError, TypeError):
+        return []
+    ini = float((pl.get("hook") or {}).get("duration") or 0)
+    marcas = [float(b.get("start") or 0) for b in pl.get("broll") or []] + [float(s.get("start") or 0) for s in pl.get("shots") or [] if s.get("bw")]
+    faltam, t = [], ini
+    while t < dur - 4:   # janela final curta (menos de 4 s) não cobra
+        fim = min(t + 10, dur - 2)
+        if not any(t - 0.5 <= m < fim for m in marcas):
+            faltam.append((round(t, 1), round(fim, 1)))
+        t += 10
+    return faltam
 
 
 def trilha_no_limite(W, cid, plan, trava=None):
@@ -1770,8 +1795,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             "Nunca tela de celular/notebook com texto, número ou gráfico (a IA escreve letras sem sentido): mostre a pessoa e a reação, com a tela de costas.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
-    broll = ("B-roll ao longo do corte (não só no gancho): um insert a cada 8–12 s de fala, com pelo menos um no meio do corte, de 1,5–3 s cada, "
-             "nas falas que citam algo mostrável. "
+    broll = ("RITMO (regra do Felipe, 28/10/2026): um MOMENTO VISUAL a cada 10 s depois do gancho (corte de 50 s = 5 momentos), um em cada "
+             "janela de 10 s. Momento visual = b-roll de VÍDEO de 1,5–3 s na fala que cita algo mostrável, ou P&B (\"bw\": true no shot) numa frase "
+             "de impacto. O código confere janela por janela antes do render. "
              + REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")
              + " Ponha em plan.json \"broll\": [{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}] "
              "(\"file\" é sempre o caminho em texto). Nunca tape o rosto num momento de emoção."
@@ -1813,6 +1839,17 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if not formato_canal2(estilo) and (not trava or trava.livres is None or "broll" in trava.areas):
             garantir_broll(W, cid, plan, passo, higgs, lote["id"])
     broll_ok()
+    faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
+    if faltam and not formato_canal2(estilo):   # regra dos 10 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+        log("ritmo do", cid, "faltando em:", faltam)
+        passo("Completando o ritmo (um momento visual a cada 10 s)")
+        claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
+                            regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
+               W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote["id"])
+        broll_ok()
+        resto = ritmo_faltando(plan, work / "transcript.json")
+        if resto:
+            log("ritmo do", cid, "ainda sem momento visual em:", resto)
     def sem_logo():   # Canal 2 não leva a marca do CW Cast: o render sai sem o logo (antes ele era borrado depois, e o borrão aparecia)
         if not formato_canal2(estilo):
             return
