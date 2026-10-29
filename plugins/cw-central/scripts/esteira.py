@@ -1953,7 +1953,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     if formato_canal2(estilo):   # Canal 2: as imagens entram depois, no motion do Zeca (b-roll do Titeu aqui sai cortado no reenquadramento)
         broll = 'SEM b-roll neste formato: deixe "broll": [] (as imagens entram depois, no motion do Zeca).'
     rec =receita(estilo, "CORTE") if (estilo or {}).get("receita") else ""
-    instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + cortar_receita(rec, 18000) + "\n") if rec else ""
+    instrucoes = ("INSTRUÇÕES DA VERSÃO DO ESTILO (valem acima das regras gerais acima):\n" + cortar_receita(rec, 30000) + "\n") if rec else ""
     edicoes_ia = None
     if trava and c.get("edicoes"):   # edição direta da Central: o que é mecânico vai direto no plano, sem IA
         passo("Edição direta: " + ", ".join(sorted(trava.areas)))
