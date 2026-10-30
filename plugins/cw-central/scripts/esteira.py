@@ -1312,6 +1312,97 @@ def enquadrar_por_rosto(W, cid, plan, passo, trava=None, aplicar=True):
     return {"refazer": bool(pode and res.get("ajustes"))}   # "sem_fala" fica só no log (falso positivo em prévia real)
 
 
+FORA_QUADRO = """No corte {cid} (pasta {W}), QUEM ESTÁ FALANDO NÃO APARECE NA IMAGEM nestes trechos (o episódio editado mostra outra
+pessoa reagindo; medido pela boca × voz por scripts falante.py): {lista}.
+Trechos em que o falante aparece e fala (bons para abrir o corte): {falando}.
+Regra do time: nunca deixar na tela a pessoa errada. Para cada trecho:
+- no GANCHO (até {hook} s): o corte não pode abrir com quem não fala. Troque a abertura para uma frase forte de um trecho em que
+  o falante aparece (refaça o gancho pelas ferramentas da skill, conferindo o transcript_diff) ou, se não houver frase boa, cubra o
+  trecho inteiro com b-roll de vídeo.
+- no CORPO: cubra o trecho INTEIRO com b-roll de VÍDEO ("broll" em plan.json, um ou mais inserts colados de 1,5–4 s cada, sem
+  repetir arquivo, ligados ao que é dito); se o trecho for no FIM, passar de ~8 s e a ideia já tiver fechado antes dele, termine o
+  corte antes dele (fim depois da última palavra que fecha a ideia).
+Não mexa no resto do plano. {regras}
+NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "notas": "o que fez em cada trecho"}}"""
+
+
+def _sem_cobertura(fora, pl):
+    """Partes dos trechos 'fora de quadro' que nenhum b-roll cobre."""
+    cob = sorted((float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0)) for b in pl.get("broll") or [])
+    resta = []
+    for a, b in fora:
+        t = a
+        for c0, c1 in cob:
+            if c1 <= t or c0 >= b:
+                continue
+            if c0 - t > 0.4:
+                resta.append((round(t, 2), round(c0, 2)))
+            t = max(t, c1)
+        if b - t > 0.4:
+            resta.append((round(t, 2), round(b, 2)))
+    return resta
+
+
+def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
+    """Falante pela boca × voz (falante.py) no vídeo horizontal do corte: põe o recorte em quem fala nos planos abertos (sem IA)
+    e manda cobrir/tirar os trechos em que quem fala não aparece (o episódio mostra quem só reage). Duas rodadas no máximo."""
+    if trava and trava.livres is not None and not ({"enquadramento", "broll"} & trava.areas):
+        return
+    base = W / "work" / cid / "base.mov"
+    if not base.exists():
+        return
+    try:
+        tr_dur = float(json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8")).get("duration") or 0)
+    except (OSError, ValueError, TypeError):
+        tr_dur = 0
+    bd = ffprobe_dur(base) or 0
+    if tr_dur and abs(bd - tr_dur) > 1.0:
+        log("quem fala do", cid, ": base.mov ({:.1f} s) fora da linha do tempo do corte ({:.1f} s); não medido".format(bd, tr_dur))
+        return
+    for rodada in range(2):
+        passo("Quem está falando (boca × voz)")
+        try:
+            r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base)], capture_output=True, text=True, timeout=900)
+            res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+        except Exception as e:
+            log("quem fala do", cid, "não rodou:", e)
+            return
+        planos = res.get("planos") or []
+        pl = json.loads(plan.read_text(encoding="utf-8"))
+        mexeu = 0
+        if not trava or trava.livres is None or "enquadramento" in trava.areas:
+            for p in planos:   # câmera aberta (2+ rostos) com falante claro: recorte nele, sem empilhar
+                if p.get("estado") != "falando" or len(p.get("rostos") or []) < 2:
+                    continue
+                cx = p["rostos"][p["falante"]]["cx"]
+                for lista in (pl.get("shots") or [], pl.get("_base_shots") or []):
+                    for sh in lista:
+                        t = float(sh.get("start") or 0)
+                        if p["ini"] - 0.05 <= t < p["fim"] - 0.05 and (sh.get("stack") or abs(float(sh.get("cx") or 0.5) - cx) > 0.06):
+                            sh.pop("stack", None)
+                            sh["cx"] = round(cx, 3)
+                            mexeu += 1
+        if mexeu:
+            plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+            log("quem fala do", cid, ": recorte movido para quem fala em", mexeu, "shot(s)")
+        resta = _sem_cobertura(res.get("fora_de_quadro") or [], pl)
+        if not resta:
+            return
+        log("quem fala do", cid, ": falante fora da imagem em", resta)
+        if rodada == 1 or formato_canal2(estilo) or (trava and trava.livres is not None and "broll" not in trava.areas):
+            return   # Canal 2: as imagens entram no motion do Zeca; fica no log para o time ver
+        hook = float((pl.get("hook") or {}).get("duration") or 0)
+        falando = ["{}–{} s".format(p["ini"], p["fim"]) for p in planos if p.get("estado") == "falando"]
+        try:
+            claude(FORA_QUADRO.format(cid=cid, W=W, lista=", ".join("{}–{} s".format(a, b) for a, b in resta), hook=round(hook, 1),
+                                      falando=", ".join(falando) or "nenhum",
+                                      regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
+                   W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote_id)
+        except Exception as e:
+            log("quem fala do", cid, ": correção falhou:", e)
+            return
+
+
 def garantir_broll(W, cid, plan, passo, higgs, lote_id):
     """Troca (com o Claude) o b-roll repetido ou parado; o que ainda sobrar sai do plano: sem b-roll é melhor que repetido ou foto."""
     for _ in range(2 if higgs else 0):
@@ -1994,6 +2085,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             trava.aplicar()
         if not formato_canal2(estilo) and (not trava or trava.livres is None or "broll" in trava.areas):
             garantir_broll(W, cid, plan, passo, higgs, lote["id"])
+    broll_ok()
+    quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"])   # pessoa errada na tela (falante fora da imagem)
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
     if faltam and not formato_canal2(estilo):   # regra dos 10 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
