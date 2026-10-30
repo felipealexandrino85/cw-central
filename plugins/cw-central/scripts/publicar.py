@@ -27,6 +27,7 @@ import central  # noqa: E402
 
 PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes"
 PARA_APROVAR = "2. PARA APROVAR"
+PARA_APROVAR_CANAL2 = "2. PARA APROVAR - Canal 2"   # Zeca: separado do CW Cast (não posta nas contas do CW Cast)
 SUBS = ("Drives compartilhados", "Unidades compartilhadas", "Shared drives", "Meu Drive", "My Drive", "")
 
 
@@ -126,7 +127,8 @@ def cmd_enviar(a):
     if not base:
         sys.exit("não achei o Google Drive do CW Studios nesta máquina (pasta 'CW Studios - Produção/CW Cast - Cortes'). "
                  "Confira se o Google Drive para computador está aberto e com o drive compartilhado disponível.")
-    destino_pasta = base / PARA_APROVAR
+    sub = PARA_APROVAR_CANAL2 if a.programa == "canal2" else PARA_APROVAR
+    destino_pasta = base / sub
     if not pode_gravar_drive(base):
         sys.exit("o Drive deste computador não deixa gravar em {}. Abra o Google Drive (ícone perto do relógio) › engrenagem › "
                  "Preferências e confira se há uma conta com acesso de Colaborador ao drive 'CW Studios - Produção'; se acabou de "
@@ -139,16 +141,17 @@ def cmd_enviar(a):
     if dur and dur > 90:
         avisos.append("Reels acima de 90 s não aparecem na aba Reels de quem não segue")
     imagem = previa(origem, dur)
+    destino_pasta.mkdir(exist_ok=True)
     shutil.copy2(origem, destino_pasta / nome)
     redes = [r.strip() for r in (a.redes or "instagram,tiktok,youtube").split(",") if r.strip()]
     pid = central.rpc("cw_pub_enviar", timeout=30, p_dados={
         "titulo": a.titulo, "legenda": a.legenda or "", "titulo_youtube": a.titulo_youtube or a.titulo[:100],
-        "episodio": a.episodio, "jira": a.jira, "destino": a.destino, "redes": redes, "arquivo": nome,
-        "pasta": str(Path(central.config().get("pasta_publicacao") or PASTA_PADRAO) / PARA_APROVAR),
+        "episodio": a.episodio, "jira": a.jira, "destino": a.destino, "redes": redes, "arquivo": nome, "programa": a.programa,
+        "pasta": str(Path(central.config().get("pasta_publicacao") or PASTA_PADRAO) / sub),
         "tamanho": origem.stat().st_size, "duracao_s": round(dur, 1) if dur else None, "previa": imagem,
         "agendado_para": agendamento(a.agendar)})
     print("Enviado para aprovação: P-{:04d} \"{}\" ({}). Arquivo no Drive: {}/{}".format(
-        pid, a.titulo, ", ".join(redes), PARA_APROVAR, nome))
+        pid, a.titulo, ", ".join(redes), sub, nome))
     for av in avisos:
         print("Atenção:", av)
 
@@ -202,6 +205,7 @@ def main():
     p.add_argument("--jira")
     p.add_argument("--redes")
     p.add_argument("--agendar")
+    p.add_argument("--programa", default="cwcast", choices=["cwcast", "canal2"], help="canal2 = Zeca (pasta e aba próprias)")
     p.add_argument("--destino", help="pasta da sprint (ex.: \"Instagram Cardapio Web\", \"CW Club\"); sem isso vai pelo kit do editor")
     sub.add_parser("minhas")
     sub.add_parser("pasta")

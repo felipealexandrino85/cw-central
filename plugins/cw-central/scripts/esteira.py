@@ -2420,7 +2420,7 @@ def avisar_video_pronto(c, final, cid):
 
 
 def entregar(item):
-    """Corte ou reel aprovado na prévia → Publicação (Drive "2. PARA APROVAR" + card)."""
+    """Corte ou reel aprovado na prévia → Publicação (Drive "2. PARA APROVAR", ou "2. PARA APROVAR - Canal 2" no Zeca, + card)."""
     c, ep = item["corte"], item["episodio"]
     reel = ep.get("linha") == "reels"   # FabI.Ano: o reel também vai para a Publicação, na pasta da sprint da Cardápio Web
     try:
@@ -2429,7 +2429,8 @@ def entregar(item):
         leg = next(legenda, None)
         saida = subprocess.run([sys.executable, str(AQUI / "publicar.py"), "enviar", "--arquivo", str(final), "--titulo", c["titulo"][:120],
                                 "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]]
-                               + (["--destino", "Instagram Cardapio Web"] if reel else []),
+                               + (["--destino", "Instagram Cardapio Web"] if reel else [])
+                               + (["--programa", "canal2"] if item.get("canal2") else []),   # Zeca: pasta e aba próprias
                                capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:
