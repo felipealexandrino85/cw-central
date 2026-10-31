@@ -906,6 +906,16 @@ def foto_banco():
                 " e ".join(_bancos()), AQUI / "fotos_banco.py", AQUI / "fotos_banco.py")
 
 
+def videos_banco():
+    """Canal 2: b-roll em vídeo do Pexels (primeiro) e do Pixabay; sem chave nenhuma, só fotos."""
+    if not _bancos():
+        return "(este servidor não tem chave do Pexels nem do Pixabay: use FOTO no lugar)"
+    fb = AQUI / "fotos_banco.py"
+    return ("python3 -I {} search \"<cena em inglês>\" --video --orient any --n 10 (lista fonte:id, tamanho, duração e tags, sem baixar; "
+            "o Pexels vem primeiro); baixe o escolhido com python3 -I {} get <fonte:id> --dest broll/banco; confira um quadro "
+            "(ffmpeg -ss 1 -i <mp4> -frames:v 1 broll/banco/q.jpg e abra com Read) antes de usar; prefira vertical ou cena centralizada.").format(fb, fb)
+
+
 BROLL_REGISTRO = BASE / "broll_usados.json"   # sha256 do arquivo -> corte que usou (vale para todos os episódios)
 IMAGEM = re.compile(r"\.(jpe?g|png|webp|gif|bmp|heic|tiff?)$", re.I)
 
@@ -1820,26 +1830,28 @@ NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true
 
 
 PLANO_CANAL2 = """Você é o editor de motion do corte {cid} do SEGUNDO CANAL do CW Cast, sem ninguém olhando. O corte está PRONTO
-(enquadramento, cortes, b-roll); o motor desenha a legenda pequena, o gancho em caixas brancas e o que você planejar. É uma edição
-BÁSICA e diferente da oficial (referência do Felipe: Signal55): frases animadas por cima da câmera e imagens em tela cheia.
+(enquadramento e cortes); o motor desenha a legenda pequena (o tempo todo), o gancho em caixas brancas e o que você planejar. É uma
+edição BÁSICA e diferente da oficial: a pessoa falando com a legenda e, em alguns momentos, B-ROLL em tela.
+SEM FRASES ANIMADAS (Felipe, 31/10/2026: nada de frase grande com palavra verde): nenhuma cena "tipo": "frase".
 Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (a fala por blocos), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "cenas": [...] depois de {evitar:.1f} s:
-- 3 a 5 FRASES: {{"t0", "t1", "tipo": "frase", "texto": "<as palavras EXATAMENTE como ditas, 3 a 7>", "destaque": [1 a 2 palavras do texto],
-  "pos": "esq" | "dir" | "centro", "pb": false}}. Cada uma de 2 a 4 s, no começo da frase mais forte de cada trecho.
-  Uma delas (a de maior impacto) pode ter "pb": true (o momento fica em preto e branco). Entre frases, pelo menos 4 s.
-- 2 a 4 IMAGENS em tela cheia, de 1,5 a 3 s, quando a fala cita algo que dá para mostrar:
-  {{"t0", "t1", "layout": "full", "tipo": "foto", "imagem": "<caminho>", "credito": "<crédito>"}}
-  · coisa/marca/lugar/pessoa ESPECÍFICA citada: python3 {imagem_web} "<busca curta e específica>" --saida broll/web
+- 3 a 5 B-ROLLS, de 1,5 a 3 s cada, nos momentos em que a fala descreve algo que dá para MOSTRAR (cozinha cheia, motoboy saindo,
+  cliente pedindo no celular, dinheiro, fila, embalagem...). Entre um b-roll e outro, pelo menos 4 s de pessoa falando; nunca
+  cubra a frase mais forte do corte (o rosto vende) e, somados, no máximo 35% do corte.
+  · cena genérica = FILMAGEM REAL (vídeo): {videos}
+    {{"t0", "t1", "tipo": "video", "imagem": "<o mp4 baixado>", "credito": "<crédito>"}}
+  · coisa/marca/lugar/pessoa ESPECÍFICA citada = FOTO: python3 {imagem_web} "<busca curta e específica>" --saida broll/web
     (traz da internet, com o crédito; ABRA a imagem com Read antes de usar: se vier errada ou genérica, tente --origem wikipedia
     ou --origem web, ou troque a busca. Logo, loja, produto ou app reconhecível > prédio/escritório.)
-  · cena genérica (cozinha cheia, motoboy, cliente no celular): {banco}python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
-    (Higgsfield; nunca marca ou pessoa real; nunca tela de celular/notebook com texto, a IA escreve letras sem sentido).
-  Copie "arquivo" e "credito" do JSON que o comando devolve. Imagem e frase nunca ao mesmo tempo.
+    {{"t0", "t1", "layout": "full", "tipo": "foto", "imagem": "<caminho>", "credito": "<crédito>"}}
+  · só se o banco não tiver nada que sirva para uma cena genérica: {banco}python3 {objeto3d} "<cena em inglês>" --foto --slug <slug> --banco broll/ia
+    (Higgsfield; nunca marca ou pessoa real; nunca tela de celular/notebook com texto, a IA escreve letras sem sentido) como "tipo": "foto".
+  Copie "arquivo" e "credito" do JSON que o comando devolve. Comece cada b-roll no começo da palavra que ele ilustra.
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
-e abra {quadros}/folha.jpg (frase legível, sem tapar o rosto? imagem certa?). Ajuste e confira de novo (no máximo 2 voltas).
-NENHUMA IMAGEM SE REPETE (regra do time): cada insert com uma imagem diferente, e é proibido usar arquivo que já entrou em outro corte
-(proibidos: {proibidos}); imagem repetida é tirada automaticamente.
+e abra {quadros}/folha.jpg (o b-roll mostra o que a fala diz? legenda legível?). Ajuste e confira de novo (no máximo 2 voltas).
+NADA SE REPETE (regra do time): cada b-roll diferente, e é proibido usar arquivo que já entrou em outro corte
+(proibidos: {proibidos}); repetido é tirado automaticamente.
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
 
 
@@ -1918,14 +1930,15 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         if antigas is None: claude(modelo_prompt.format(cid=cid, pal=work / "palavras_final.json", fala=work / "fala_final.txt", video=sem, dur=dur,
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
-                                   imagem_web=lib / "imagem_web.py", banco=foto_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
+                                   imagem_web=lib / "imagem_web.py", banco=foto_banco(), videos=videos_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
                                    brolls=", ".join("{:.1f}–{:.1f} s".format(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))
                                                     for b, _ in _broll_do_plano(work / "plan.json", W)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
-        doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar]
+        doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar
+                        and not (tema == "canal2" and c.get("tipo") == "frase")]   # Canal 2 sem frases (Felipe, 31/10/2026)
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
         if antigas is None:
             doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
