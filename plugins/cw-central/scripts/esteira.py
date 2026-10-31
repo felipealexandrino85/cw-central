@@ -907,12 +907,12 @@ def foto_banco():
 
 
 def videos_banco():
-    """Canal 2: b-roll em vídeo do Pexels (primeiro) e do Pixabay; sem chave nenhuma, só fotos."""
+    """Canal 2: b-roll em vídeo do banco grátis que o servidor tiver (hoje o Pixabay); sem chave nenhuma, só fotos."""
     if not _bancos():
-        return "(este servidor não tem chave do Pexels nem do Pixabay: use FOTO no lugar)"
+        return "(este servidor não tem chave de banco de vídeos: use FOTO no lugar)"
     fb = AQUI / "fotos_banco.py"
-    return ("python3 -I {} search \"<cena em inglês>\" --video --orient any --n 10 (lista fonte:id, tamanho, duração e tags, sem baixar; "
-            "o Pexels vem primeiro); baixe o escolhido com python3 -I {} get <fonte:id> --dest broll/banco; confira um quadro "
+    return ("vídeo grátis do " + " e do ".join(_bancos()) + ": python3 -I {} search \"<cena em inglês>\" --video --orient any --n 10 "
+            "(lista fonte:id, tamanho, duração e tags, sem baixar); baixe o escolhido com python3 -I {} get <fonte:id> --dest broll/banco; confira um quadro "
             "(ffmpeg -ss 1 -i <mp4> -frames:v 1 broll/banco/q.jpg e abra com Read) antes de usar; prefira vertical ou cena centralizada.").format(fb, fb)
 
 
