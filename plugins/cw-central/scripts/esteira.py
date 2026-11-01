@@ -161,6 +161,12 @@ def hms(s):
     return "{:02d}:{:02d}:{:02d}".format(s // 3600, s % 3600 // 60, s % 60)
 
 
+# o Whisper "corrige" a fala para a norma ("tá" vira "está", "pra" vira "para") e a legenda sai com palavras que ninguém disse
+# (corte 79); o prompt mostra o jeito de falar do podcast e os nomes que ele erra
+PROMPT_WHISPER = ("Podcast CW Cast, papo de dono de restaurante e delivery. Aí, tá bom, né? Pra gente, cê sabe, tô vendendo no iFood, "
+                  "no Cardápio Web, no Anota AI. Faturamento, ticket médio, ROAS, CMV, motoboy, cupom, tá ligado?")
+
+
 def transcrever_groq(audio, pasta, dur, aviso):
     """whisper-large-v3 na Groq (via função Ferramentas da central): pedaços de 10 min, 3 de cada vez. Devolve a lista de segmentos."""
     import base64
@@ -178,21 +184,27 @@ def transcrever_groq(audio, pasta, dur, aviso):
                         "-ac", "1", "-ar", "16000", "-b:a", "32k", str(arq)], check=True)
         if arq.stat().st_size < 2000:
             return k, {"segmentos": [], "palavras": []}
-        for tentativa in range(3):
+        for tentativa in range(5):
             try:
                 r = ferramentas_mcp.chamar({"acao": "transcrever", "ferramenta": "groq", "modelo": "whisper-large-v3", "nome": arq.name,
-                                            "audio_b64": base64.b64encode(arq.read_bytes()).decode(), "trabalho": "esteira"}, timeout=300)
+                                            "audio_b64": base64.b64encode(arq.read_bytes()).decode(), "trabalho": "esteira",
+                                            "prompt": PROMPT_WHISPER}, timeout=300)
                 if r.get("erro"):
-                    raise RuntimeError(r["erro"])
-                feitos[0] += 1
-                aviso(20 + int(65 * feitos[0] / total))
-                return k, r
-            except Exception:
-                if tentativa == 2:
+                    raise RuntimeError("{} {}".format(r["erro"], r.get("detalhe") or ""))
+                break
+            except Exception as e:
+                if tentativa == 4:
                     raise
-                time.sleep(5 * (tentativa + 1))
+                limite = re.search(r"429|rate limit", str(e), re.I)   # limite por hora do Groq: 187 falhas até 28/10 com espera de 5–10 s
+                time.sleep(60 * (tentativa + 1) if limite else 5 * (tentativa + 1))
+        feitos[0] += 1
+        try:   # o aviso de progresso fala com a central: se falhar, não conta como falha da transcrição
+            aviso(20 + int(65 * feitos[0] / total))
+        except Exception:
+            pass
+        return k, r
 
-    with ThreadPoolExecutor(3) as ex:
+    with ThreadPoolExecutor(2) as ex:
         resultados = dict(ex.map(um, range(total)))
     segs = []
     for k in range(total):
@@ -239,7 +251,8 @@ def preparar(ep):
             modelo = os.environ.get("CW_WHISPER", "large-v3" if gpu else "medium")
             srv("episodio", id=eid, etapa="transcrevendo ({}, {})".format(modelo, "placa de vídeo" if gpu else "processador"), progresso=20)
             m = WhisperModel(modelo, device="cuda" if gpu else "cpu", compute_type="float16" if gpu else "int8")
-            segs, _ = m.transcribe(str(audio), language="pt", word_timestamps=True, vad_filter=True, condition_on_previous_text=False)
+            segs, _ = m.transcribe(str(audio), language="pt", word_timestamps=True, vad_filter=True, condition_on_previous_text=False,
+                                  initial_prompt=PROMPT_WHISPER)
             saida, ultimo = [], 0
             for s in segs:
                 saida.append({"inicio": round(s.start, 2), "fim": round(s.end, 2), "texto": s.text.strip(),
@@ -1076,27 +1089,54 @@ def sem_imagem_repetida(cenas_arq, W, cid):
     return saida
 
 
-def fim_da_frase(ep_id, fim, teto=8.0):
-    """Se a pessoa ainda estava no meio da frase no fim escolhido, estende até a frase fechar (no máximo `teto` s).
-    O time reclamou de "o final cortou o que a pessoa ia falar" (cortes 30, 31, 47)."""
+def fim_da_frase(ep_id, fim, teto=8.0, inicio=None):
+    """Fim do corte numa frase fechada e com respiro (o time reclamou de "o final cortou o que a pessoa ia falar": cortes 30, 31,
+    47 e 71). Pode estender (frase em andamento) ou recuar (a frase seguinte mal começou, ou sobrou uma pergunta solta no fim).
+    O fim fica 0,35 s depois da última palavra, sem encostar na próxima."""
     try:
         segs = json.loads((BASE / str(ep_id) / "transcricao.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return fim
     ws = sorted((w for sg in segs for w in sg.get("palavras") or []), key=lambda w: float(w["i"]))
-    ult = [w for w in ws if float(w["f"]) <= fim + 0.05]
-    if not ult:
+    if not ws:
         return fim
-    k = ws.index(ult[-1])
+    I, F = (lambda w: float(w["i"])), (lambda w: float(w["f"]))
     fecha = lambda w: re.search(r"[.?!…]$", (w.get("p") or "").strip()) is not None
-    if fecha(ws[k]) or k + 1 >= len(ws) or float(ws[k + 1]["i"]) - float(ws[k]["f"]) > 0.6:
-        return fim   # a frase já terminou ou houve pausa: o fim está bom
-    j = k
-    while j + 1 < len(ws) and float(ws[j + 1]["f"]) <= fim + teto:
-        j += 1
-        if fecha(ws[j]) or (j + 1 < len(ws) and float(ws[j + 1]["i"]) - float(ws[j]["f"]) > 0.7):
-            return round(float(ws[j]["f"]) + 0.2, 2)
-    return fim   # a frase não fecha dentro do teto: não inventa um fim
+    pausa = lambda k: k + 1 >= len(ws) or I(ws[k + 1]) - F(ws[k]) > 0.6
+
+    def com_respiro(k):   # 0,35 s depois da palavra k, sem pegar o começo da próxima
+        t = F(ws[k]) + 0.35
+        if k + 1 < len(ws):
+            t = min(t, I(ws[k + 1]) - 0.05)
+        return round(max(t, F(ws[k]) + 0.05), 2)
+
+    dentro = [k for k, w in enumerate(ws) if I(w) < fim - 0.02]
+    if not dentro:
+        return fim
+    k = dentro[-1]   # última palavra que começou antes do fim (pode estar cortada no meio)
+    minimo = (float(inicio) + 15.0) if inicio is not None else -1
+    # 1) a frase em que o fim caiu: fechou ali, ou estende até fechar, ou recua para a anterior se ela mal começou
+    if not (fecha(ws[k]) or pausa(k)) or F(ws[k]) > fim + 0.02:
+        a = k   # começo da frase atual
+        while a > 0 and not (fecha(ws[a - 1]) or pausa(a - 1)):
+            a -= 1
+        if a > 0 and fim - I(ws[a]) < 2.5 and F(ws[a - 1]) > minimo:
+            k = a - 1   # a frase seguinte mal começou: termina na anterior
+        else:
+            j = k
+            while j + 1 < len(ws) and F(ws[j + 1]) <= fim + teto and not (fecha(ws[j]) or pausa(j)):
+                j += 1
+            if not (fecha(ws[j]) or pausa(j)):
+                return fim   # a frase não fecha dentro do teto: não inventa um fim
+            k = j
+    # 2) pergunta solta no fim (ex.: "Foi quanto tempo?" do entrevistador depois da resposta): termina na resposta
+    if (ws[k].get("p") or "").strip().endswith("?"):
+        a = k
+        while a > 0 and not (fecha(ws[a - 1]) or pausa(a - 1)):
+            a -= 1
+        if a > 0 and F(ws[k]) - I(ws[a]) <= 3.0 and F(ws[a - 1]) > minimo:
+            k = a - 1
+    return com_respiro(k)
 
 
 def fala_do_episodio(ep_id, transcript):
@@ -1562,7 +1602,10 @@ def quadros_do_ajuste(video, pedido, pasta, transcript=None, extra=()):
         tempos = [max(0, tempos[0] - 1), tempos[0], min(dur - 0.1, tempos[0] + 1.5)]
     else:
         tempos = [dur * k / 6 for k in range(1, 6)]
-    tempos = sorted(set([0.4, 1.5, 3.0] + [round(t, 1) for t in list(tempos) + [x for x in extra if 0 <= x <= dur]]))   # o começo (gancho, headline, foto de capa) sempre entra
+    fim_v = [dur - 1.5, dur - 0.4]   # o FIM sempre entra (no corte 71 a conferência não viu os últimos 7 s e não pôde julgar)
+    if PEDE_FIM.search(pedido or ""):
+        fim_v += [dur - 4.0, dur - 3.0, dur - 2.2, dur - 0.9, dur - 0.15]
+    tempos = sorted(set([0.4, 1.5, 3.0] + [round(t, 1) for t in list(tempos) + fim_v + [x for x in extra if 0 <= x <= dur] if t >= 0]))   # o começo (gancho, headline, foto de capa) sempre entra
     destino = pasta / "conferencia"
     shutil.rmtree(destino, ignore_errors=True)
     destino.mkdir()
@@ -1611,19 +1654,55 @@ def legendas_que_sairam(work):
     return ""
 
 
+PEDE_FIM = re.compile(r"final|finaliz|termin|acab|fim\b|cort(ou|ando|a) (a fala|o que|no meio)", re.I)
+PEDE_QUEM = re.compile(r"enquadr|quem (est[aá] |t[aá] )?fal|pessoa errada|c[aâ]mera|n[aã]o (est[aá] |t[aá] )?falando|foc", re.I)
+
+
+def medicoes(video, pedido):
+    """O que dá para MEDIR no vídeo sobre o pedido (vai para a conferência e para a correção): a voz no fim e quem fala na tela."""
+    linhas = []
+    if PEDE_FIM.search(pedido or ""):
+        try:
+            import qc_video
+            f = qc_video.fim(video)
+            if f.get("db_fim") is not None:
+                linhas.append("Fim do vídeo: a voz nos últimos 0,3 s está em {} dB (fala do corte: {} dB) → {}.".format(
+                    f["db_fim"], f["db_fala"], "A FALA AINDA ESTÁ ACONTECENDO NO ÚLTIMO INSTANTE (corta a pessoa)" if f["voz_ate_o_fim"]
+                    else "termina em silêncio/respiro"))
+        except Exception as e:
+            log("medição do fim falhou:", e)
+    if PEDE_QUEM.search(pedido or ""):
+        try:
+            r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video)], capture_output=True, text=True, timeout=900)
+            res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+            pls = res.get("planos") or []
+            errada = [p for p in pls if p.get("estado") == "fora_de_quadro" and p.get("rostos")]   # rosto na tela, mas não é quem fala
+            cobre = [p for p in pls if p.get("estado") == "fora_de_quadro" and not p.get("rostos")]   # sem rosto: b-roll/foto (ok)
+            fal = [p for p in pls if p.get("estado") == "falando"]
+            trechos = lambda ps: ", ".join("{:.1f}–{:.1f} s".format(p["ini"], p["fim"]) for p in ps)
+            linhas.append("Detector boca × voz no vídeo novo: {} plano(s) com quem fala na tela; {}{}.".format(
+                len(fal), ("PESSOA ERRADA NA TELA (aparece rosto, mas quem fala é outra pessoa) em: " + trechos(errada)) if errada
+                else "nenhum trecho com a pessoa errada na tela", ("; sem rosto (b-roll/foto cobrindo a fala, ok): " + trechos(cobre)) if cobre else ""))
+        except Exception as e:
+            log("medição de quem fala falhou:", e)
+    return ("\nMEDIÇÕES AUTOMÁTICAS DO VÍDEO NOVO (medidas, não estimadas; pesam mais que a impressão de um quadro):\n" + "\n".join(linhas)) if linhas else ""
+
+
 def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     """O Claude olha os quadros do trecho e diz se o pedido foi atendido. Devolve o dict da resposta."""
     passo("Conferindo se o ajuste foi atendido")
     extra = list(extra) + termos_citados(c.get("ajuste"), transcript)
     quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript, extra)
     leg = legendas_que_sairam(Path(transcript).parent) if transcript and "legenda" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))) else ""
+    med = medicoes(video, c.get("ajuste"))
     try:
         r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
                                              quadros=", ".join(str(q) for q in quadros))
                               + ("\nTEXTO DAS LEGENDAS COMO SAÍRAM NO CORTE NOVO (tempo e texto de cada legenda; use isto para julgar pedido de "
-                                 "legenda em todo o corte, não só nos quadros):\n" + leg if leg else ""), pasta, "sonnet", ao_passo=passo, limite=600))
+                                 "legenda em todo o corte, não só nos quadros):\n" + leg if leg else "") + med, pasta, "sonnet", ao_passo=passo, limite=600))
     except Exception as e:
         r = {"atendido": False, "motivo": "não consegui conferir ({})".format(e)}
+    r["_medicoes"] = med
     return r
 
 
@@ -1987,8 +2066,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     plan = work / "plan.json"
     ini, fim = float(c["inicio"]), float(c["fim"])
     if not c.get("ajuste") or "corte" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))):
-        novo_fim = fim_da_frase(ep["id"], fim)
-        if novo_fim > fim:
+        novo_fim = fim_da_frase(ep["id"], fim, inicio=ini)
+        if abs(novo_fim - fim) > 0.05:
             log("corte", cid, "termina no fim da frase:", fim, "→", novo_fim)
             fim = novo_fim
     trava = None
@@ -2032,7 +2111,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         sug = linha.split(":", 1)[1].strip() if linha else ""
         medido = bool(sug) and not re.search(r"^FAIL", saida, re.M)   # alguma ponta sem vale: deixa o transcribe ajustar sozinho
         rodar("Transcrição do trecho", ["scripts/transcribe.py", "--src", bruto, "--ranges", sug if medido else ranges, "--out", "work/" + cid,
-                                        "--cut-silence", "0.8", "--cut-gaps", "0", "--keep-pause", "0.24"] + (["--no-snap-edges"] if medido else []), tempo=1200)
+                                        "--cut-silence", "0.8", "--cut-gaps", "0", "--keep-pause", "0.24", "--prompt", PROMPT_WHISPER]
+                                       + (["--no-snap-edges"] if medido else []), tempo=1200)   # a legenda sai do jeito que se fala (tá, pra, né)
         base = ["tools/plano_rascunho.py", "--ficha", ficha.with_suffix(".json"), "--corte", cid, "--episodio", epj, "--transcript", "work/{}/transcript.json".format(cid), "--root", "."]
         rodar("Plano do corte", base)
         rodar("Pontas e emendas", ["scripts/refinar_inicios.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
@@ -2166,7 +2246,27 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
                           reusar=bool(trava and trava.reaproveitar_motion()))
+
+    def limpar_final():   # flash branco de 1–3 quadros nas transições: o time lia como "bug de frame na transição" (cortes 69 e 78)
+        import qc_video
+        try:
+            n = qc_video.tirar_flash(final)
+        except Exception as e:
+            log("flash do", cid, "não saiu:", e)
+            return
+        try:   # a fala não pode estar acontecendo no último instante (o fim_da_frase já cuida no plano; aqui fica medido no log)
+            f = qc_video.fim(final)
+            if f.get("voz_ate_o_fim"):
+                log("ATENÇÃO corte", cid, "termina com voz no último instante:", f)
+        except Exception:
+            pass
+        if n:
+            log("corte", cid, "sem flash em", n, "transição(ões)")
+            if previa.exists():
+                subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                                "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
     motion()
+    limpar_final()
     def meios_broll():   # a conferência olha o meio de cada b-roll e cada momento citado no pedido (0:12, 0:18–0:29)
         ts = []
         for i in (trava.itens if trava else itens_ajuste(c.get("ajuste") or "")):
@@ -2188,7 +2288,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             passo("O ajuste não ficou bom: corrigindo de novo")
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + "\nO PEDIDO DO EDITOR AINDA NÃO FOI ATENDIDO (mexa só nestes itens): "
                    + (texto_itens(trava.itens) if trava else c["ajuste"])
-                   + "\nO que a conferência viu: " + (r.get("motivo") or "") + "\n" + texto_prints(prints)
+                   + "\nO que a conferência viu: " + (r.get("motivo") or "") + (r.get("_medicoes") or "") + "\n" + texto_prints(prints)
                    + ("\n" + REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum") if higgs else ""),
                    W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
             broll_ok()
@@ -2197,6 +2297,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
             rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
             motion()   # o render novo sai sem o motion do formato: aplica de novo antes de conferir
+            limpar_final()
             r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         resta, usados = higgs_restante(lote)
         if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
