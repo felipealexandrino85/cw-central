@@ -1176,8 +1176,11 @@ def montar_ficha(W, cid, plan, transcript):
             trilha_db = float(m.group(1)) if m else None
         except (OSError, ValueError):
             trilha_db = None
+    def mostra(b):   # o que a imagem mostra (do nome do arquivo) e em que fala entra; antes só a fala ("Caraca"), sem dizer a imagem
+        nome = re.sub(r"^(pixabay|pexels|pxb|web|ia)_|_(vert_)?(pxb|pexels)?\d+$", "", Path(str(b.get("file") or "")).stem).replace("_", " ").strip()
+        return (nome[:60] + (" · fala \"{}\"".format(b["palavra"]) if b.get("palavra") else "")) or (b.get("palavra") or "")
     mom = [{"t": round(float(b.get("start") or 0), 1), "dur": round(float(b.get("dur") or 0), 1), "tipo": "b-roll",
-            "o_que": b.get("palavra") or Path(str(b.get("file") or "")).stem.replace("_", " ")} for b in pl.get("broll") or []]
+            "o_que": mostra(b)} for b in pl.get("broll") or []]
     mom += [{"t": round(float(x.get("start") or 0), 1), "tipo": "P&B", "o_que": "preto e branco"} for x in pl.get("shots") or [] if x.get("bw")]
     mom += [{"t": round(float(c.get("t0") or 0), 1), "dur": round(float(c.get("t1") or 0) - float(c.get("t0") or 0), 1), "tipo": "foto",
              "o_que": c.get("credito") or Path(str(c.get("imagem") or "")).stem.replace("_", " ")} for c in cenas if c.get("imagem") or c.get("imagens")]
@@ -1260,14 +1263,109 @@ def legenda_tem(work, texto):
     return bool(sai) and _sem_pont(texto) in sai
 
 
+def decisoes_editor(work):
+    """O que o editor decidiu na Central e nenhuma etapa automática pode desfazer (work/<cid>/decisoes_editor.json).
+    sem_visual: trechos [ini, fim] em que ele tirou b-roll/foto (antes "quem fala", ritmo e troca de repetido punham de volta,
+    cortes 74, 78 e 79). trilha_db: volume da trilha que ele escolheu (o limite automático da trilha desfazia "mais alta")."""
+    try:
+        d = json.loads((Path(work) / "decisoes_editor.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _guardar_decisoes(work, d):
+    (Path(work) / "decisoes_editor.json").write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _cruza(js, a, b, folga=0.2):
+    return any(a < z - folga and b > x + folga for x, z in js)
+
+
+def respeitar_editor(work):
+    """Tira do plano e do motion o visual que caiu num trecho que o editor esvaziou. Devolve o que tirou (para o log)."""
+    js = decisoes_editor(work).get("sem_visual") or []
+    if not js:
+        return []
+    tirados = []
+    try:
+        pl = json.loads((Path(work) / "plan.json").read_text(encoding="utf-8"))
+        fica = [b for b in pl.get("broll") or [] if not _cruza(js, float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))]
+        if len(fica) < len(pl.get("broll") or []):
+            tirados += ["b-roll em {:.1f} s".format(float(b.get("start") or 0)) for b in pl["broll"] if b not in fica]
+            pl["broll"] = fica
+            (Path(work) / "plan.json").write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    try:
+        cf = Path(work) / "cenas_fluido.json"
+        d = json.loads(cf.read_text(encoding="utf-8"))
+        fica = [c for c in d.get("cenas") or [] if not _cruza(js, float(c.get("t0") or 0), float(c.get("t1") or c.get("t0") or 0))]
+        if len(fica) < len(d.get("cenas") or []):
+            tirados += ["imagem em {:.1f} s".format(float(c.get("t0") or 0)) for c in d["cenas"] if c not in fica]
+            d["cenas"] = fica
+            cf.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    return tirados
+
+
+def conferir_edicoes(work, ops, antes_plan=None):
+    """Confere no plano que virou vídeo cada edição mecânica da Central (medido, não repetido). Devolve (ok, falhas) em texto."""
+    work = Path(work)
+    try:
+        pl = json.loads((work / "plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], ["plano do corte não abriu"]
+    try:
+        cenas = json.loads((work / "cenas_fluido.json").read_text(encoding="utf-8")).get("cenas") or []
+    except (OSError, ValueError):
+        cenas = []
+    antes = antes_plan or {}
+    vis = [(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0)) for b in pl.get("broll") or []]
+    vis += [(float(c.get("t0") or 0), float(c.get("t1") or c.get("t0") or 0)) for c in cenas]
+    ok, falhas = [], []
+    for o in ops or []:
+        t, txt = o.get("tipo"), texto_edicao(o)
+        if t == "momento_remover" and o.get("t") is not None:
+            x = float(o["t"]) + 0.3
+            (falhas if any(a <= x <= b for a, b in vis) else ok).append(txt)
+        elif t == "pb_remover" and o.get("t") is not None:
+            (falhas if any(s.get("bw") and abs(float(s.get("start") or 0) - float(o["t"])) <= 0.6 for s in pl.get("shots") or []) else ok).append(txt)
+        elif t == "headline":
+            (ok if _sem_pont((pl.get("headline") or "").replace("|", " ")) == _sem_pont(o.get("texto")) else falhas).append(txt)
+        elif t == "trilha_trocar" and antes:
+            (ok if (pl.get("music") or {}).get("file") != (antes.get("music") or {}).get("file") else falhas).append(txt)
+        elif t == "trilha_volume" and antes:
+            a, d = float((antes.get("music") or {}).get("db") or -30), float((pl.get("music") or {}).get("db") or -30)
+            (ok if (d < a if float(o.get("delta") or 0) < 0 else d > a) else falhas).append(txt)
+        elif t == "palavra":
+            (ok if legenda_tem(work, o.get("para")) else falhas).append(txt)
+    return ok, falhas
+
+
 def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
     """Aplica no plano o que não precisa de IA. Devolve (feitas, pendentes_ia)."""
     pl = json.loads(Path(plan).read_text(encoding="utf-8"))
     tr = json.loads(Path(transcript).read_text(encoding="utf-8"))
     feitas, ia = [], []
     perto = lambda a, b: abs(float(a) - float(b)) <= 0.6
+    dec = decisoes_editor(Path(plan).parent)
+    for o in ops or []:   # pôr/trocar visual num trecho que ele tinha esvaziado: o trecho volta a aceitar imagem
+        if o.get("tipo") in ("momento_adicionar", "momento_trocar") and o.get("t") is not None:
+            dec["sem_visual"] = [j for j in dec.get("sem_visual") or [] if not (j[0] - 0.6 <= float(o["t"]) <= j[1] + 0.6)]
     for o in ops or []:
         t = o.get("tipo")
+        if t == "momento_remover" and o.get("t") is not None:   # o trecho fica sem visual até o editor pedir outro ali
+            vis = [(float(b.get("start") or 0), float(b.get("dur") or 0)) for b in pl.get("broll") or []]
+            try:
+                vis += [(float(c.get("t0") or 0), float(c.get("t1") or 0) - float(c.get("t0") or 0))
+                        for c in json.loads((Path(plan).parent / "cenas_fluido.json").read_text(encoding="utf-8")).get("cenas") or []]
+            except (OSError, ValueError):
+                pass
+            alvo = [(s, d) for s, d in vis if perto(s, o["t"])]
+            for s, d in alvo or [(float(o["t"]) - 0.3, 2.8)]:
+                dec.setdefault("sem_visual", []).append([round(s, 2), round(s + max(d, 0.5), 2)])
         if t in EDICOES_IA:
             ia.append(o)
         elif t == "headline" and (o.get("texto") or "").strip():
@@ -1309,6 +1407,7 @@ def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
             base = float(mus.get("db") or -30)
             mus["db"] = max(-40.0, min(-22.0, base + (-4 if float(o.get("delta") or 0) < 0 else 4)))
             mus.pop("vol", None)
+            dec["trilha_db"] = mus["db"]   # o limite automático da trilha não desfaz o volume que o editor escolheu
             feitas.append(o)
         elif t == "trilha_trocar":
             atual = str((pl.get("music") or {}).get("file") or "")
@@ -1335,6 +1434,7 @@ def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
                 ia.append(o)
     Path(plan).write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
     Path(transcript).write_text(json.dumps(tr, ensure_ascii=False, indent=1), encoding="utf-8")
+    _guardar_decisoes(Path(plan).parent, dec)
     return feitas, ia
 
 
@@ -1348,9 +1448,10 @@ def ritmo_faltando(plan, transcript):
     ini = float((pl.get("hook") or {}).get("duration") or 0)
     marcas = [float(b.get("start") or 0) for b in pl.get("broll") or []] + [float(s.get("start") or 0) for s in pl.get("shots") or [] if s.get("bw")]
     faltam, t = [], ini
+    vazios = decisoes_editor(Path(plan).parent).get("sem_visual") or []   # o editor tirou a imagem dali: o ritmo não põe de volta
     while t < dur - 4:   # janela final curta (menos de 4 s) não cobra
         fim = min(t + 10, dur - 2)
-        if not any(t - 0.5 <= m < fim for m in marcas):
+        if not any(t - 0.5 <= m < fim for m in marcas) and not _cruza(vazios, t, fim, 0):
             faltam.append((round(t, 1), round(fim, 1)))
         t += 10
     return faltam
@@ -1360,6 +1461,8 @@ def trilha_no_limite(W, cid, plan, trava=None):
     """Gate da trilha: o render às vezes deixa a trilha em −25 dB (o time reclamou de "música alta"). Acima de −27,5 dB de clipe,
     fixa music.db = −30 no plano (precedência do render) e pede outra prévia. Devolve True se mudou."""
     if trava and trava.livres is not None and not ({"audio", "trilha"} & trava.areas):
+        return False
+    if decisoes_editor(W / "work" / cid).get("trilha_db") is not None:   # volume escolhido pelo editor na Central
         return False
     try:
         rel = (W / "work" / cid / "audio_relatorio.txt").read_text(encoding="utf-8")
@@ -1500,6 +1603,10 @@ def _recorte_na_voz(pl, med, dur):
 
 
 def _cobrir_fora(W, cid, pl, resta, falando, passo, higgs, lote_id):
+    vazios = decisoes_editor(W / "work" / cid).get("sem_visual") or []
+    resta = [(a, b) for a, b in resta if not _cruza(vazios, a, b)]   # o editor tirou a imagem dali: a escolha é dele
+    if not resta:
+        return
     hook = float((pl.get("hook") or {}).get("duration") or 0)
     try:
         claude(FORA_QUADRO.format(cid=cid, W=W, lista=", ".join("{}–{} s".format(a, b) for a, b in resta), hook=round(hook, 1),
@@ -2176,8 +2283,10 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
+        vazios = decisoes_editor(work).get("sem_visual") or []   # trecho que o editor esvaziou na Central fica sem imagem
         doc["cenas"] = [c for c in doc.get("cenas") or [] if float(c.get("t0", 0)) >= evitar
-                        and not (tema == "canal2" and c.get("tipo") == "frase")]   # Canal 2 sem frases (Felipe, 31/10/2026)
+                        and not (tema == "canal2" and c.get("tipo") == "frase")   # Canal 2 sem frases (Felipe, 31/10/2026)
+                        and not _cruza(vazios, float(c.get("t0") or 0), float(c.get("t1") or c.get("t0") or 0))]
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
         if antigas is None:
             doc["cenas"] = sem_imagem_repetida(cenas, W, cid)   # regra do time: imagem nenhuma se repete (no corte nem entre cortes)
@@ -2338,6 +2447,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             trava.aplicar()
         if not trava or trava.livres is None or "broll" in trava.areas or "gancho" in trava.areas:
             garantir_broll(W, cid, plan, passo, higgs, lote["id"])   # no Canal 2 o plano não tem b-roll: confere a foto do gancho
+        tirados = respeitar_editor(work)   # o que o editor tirou na Central não volta por etapa automática
+        if tirados:
+            log("decisão do editor no", cid + ": tirado de novo", ", ".join(tirados))
     broll_ok()
     quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"])   # pessoa errada na tela (falante fora da imagem)
     broll_ok()
@@ -2372,6 +2484,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         sem_logo()
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
+        respeitar_editor(work)
         rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
         rodar("Revisão técnica", ["tools/gates.py", "work/{}/plan.json".format(cid), "--root", ".", "--video", "saida/{}_rascunho.mp4".format(cid),
                                   "--json", "work/{}/gates.json".format(cid), "--replay"], ok=(0, 1, 2))
@@ -2393,6 +2506,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + extra, W, "sonnet", ao_passo=passo, limite=900)
         broll_ok()
     sem_logo()
+    respeitar_editor(work)
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
@@ -2439,9 +2553,16 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         return ts[:12]
     falhou_leg = [o for o in (c.get("edicoes") or []) if o.get("tipo") == "palavra" and final.exists()
                   and (not legenda_tem(work, o.get("para")) or (_sem_pont(o.get("de")) not in _sem_pont(o.get("para")) and legenda_tem(work, o.get("de"))))]
-    if c.get("edicoes") and not edicoes_ia and not falhou_leg and final.exists():   # só edição mecânica, e a legenda que saiu confirma
-        registrar_conferencia(c, {"atendido": True, "destino": "pontual",
-                                  "motivo": "Edições aplicadas direto (conferido na legenda que saiu): " + "; ".join(texto_edicao(o) for o in c["edicoes"])}, cid)
+    mec_ok, mec_falhas = conferir_edicoes(work, [o for o in c.get("edicoes") or [] if o.get("tipo") != "palavra"
+                                                 and (o not in (edicoes_ia or []) or o.get("tipo") == "momento_remover")],
+                                          trava.antes["plan.json"] if trava else None) if c.get("edicoes") else ([], [])
+    if mec_falhas:
+        log("edição direta do", cid, "não ficou no vídeo:", "; ".join(mec_falhas))
+    if c.get("edicoes") and not edicoes_ia and not falhou_leg and final.exists():   # só edição mecânica: conferida no plano que virou vídeo
+        feitas_txt = mec_ok + [texto_edicao(o) for o in c["edicoes"] if o.get("tipo") == "palavra"]
+        registrar_conferencia(c, {"atendido": not mec_falhas, "destino": "pontual",
+                                  "motivo": ("NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " if mec_falhas else "")
+                                  + ("Conferido no vídeo que saiu: " + "; ".join(feitas_txt) if feitas_txt else "")}, cid)
     elif c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         if edicoes_ia or falhou_leg:   # a conferência julga o que foi para a IA e a troca de legenda que não apareceu no vídeo
             c = dict(c, ajuste="\n".join(texto_edicao(o) for o in (edicoes_ia or []) + [o for o in falhou_leg if o not in (edicoes_ia or [])]))
@@ -2462,6 +2583,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             limpar_final()
             r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         resta, usados = higgs_restante(lote)
+        if mec_falhas:   # edição mecânica que não ficou: a conferência não pode dizer "atendido"
+            r["atendido"] = False
+            r["motivo"] = "NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " + (r.get("motivo") or "")
         if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
             r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
         registrar_conferencia(c, r, cid)
