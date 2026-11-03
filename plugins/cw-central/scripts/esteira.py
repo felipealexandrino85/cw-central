@@ -664,19 +664,21 @@ LIVRE = {"corte", "outro"}   # mexe no tempo do corte ou não deu para entender:
 SEMPRE = {"fixes"}            # correções técnicas dos gates
 ROTULOS = {"b-roll": "broll", "broll": "broll", "imagens": "motion", "motion": "motion", "legenda": "legenda", "headline": "gancho",
            "gancho": "gancho", "capa": "gancho", "áudio": "audio", "audio": "audio", "trilha": "trilha", "enquadramento": "enquadramento",
-           "câmera": "enquadramento", "corte": "corte", "início/fim": "corte", "fonte": "fonte", "ênfase": "enfase", "outro": "outro"}
+           "câmera": "enquadramento", "corte": "corte", "início/fim": "corte", "início": "corte", "inicio": "corte", "fim": "corte",
+           "fonte": "fonte", "ênfase": "enfase", "outro": "outro"}   # a etiqueta "[início/fim]" da página chega partida no "/"
 PALAVRAS_AREA = [
     ("broll", r"b-?\s?rolls?|v[íi]deo de apoio|inserts?"),
     ("motion", r"motion|anima[çc]|frases? na tela|texto na tela|tela cheia"),
     ("broll", r"\bfotos?\b|imagens?"), ("motion", r"\bfotos?\b|imagens?"),
-    ("gancho", r"gancho|headline|t[íi]tulo|\bcapa\b"),
+    ("gancho", r"gancho|headline|t[íi]tulo|\bcapa\b|fotos? d[oae] (in[íi]cio|come[çc]o|abertura|capa)|primeira foto"),
     ("legenda", r"legenda|palavra|escrit|ortograf|amarel|destaque"),
     ("enfase", r"[êe]nfase|preto e branco|p&b|\bpb\b"),
     ("audio", r"[áa]udio|\bsom\b|volume|estour|chiad|ru[íi]do|\bvoz\b|efeito sonoro|sfx"),
     ("trilha", r"trilha|m[úu]sica"),
-    ("enquadramento", r"enquadr|c[âa]mera|\bzoom|centraliz|rosto|cabe[çc]a|cortad[oa] na tela|aparece"),
+    ("enquadramento", r"enquadr|c[âa]mera|\bzoom|centraliz|rosto|cabe[çc]a|cortad[oa] na tela|aparece|quem (s[óo] )?(ouve|reage|fala|est[áa] falando)"),
     ("fonte", r"\bfonte|montserrat|tipografia|\bletra|@|arroba|\bperfil\b"),
-    ("corte", r"come[çc]a|termina|\bfinal do|tir[ae]r? (a|essa|esta) fala|encurt|mais curto|dura[çc][ãa]o|corte seco|emenda"),
+    ("corte", r"come[çc]a|termina|\bfinal do|tir[ae]r? (a|essa|esta) fala|encurt|mais curto|dura[çc][ãa]o|corte seco|emenda"
+              r"|finaliz|cortou (o que|a fala)|ia falar|ainda (fosse|ia) falar|pausa|repet(iu|indo|e) (a |as )?(frase|palavra)"),
 ]
 
 
@@ -1092,7 +1094,7 @@ def sem_imagem_repetida(cenas_arq, W, cid):
     return saida
 
 
-def fim_da_frase(ep_id, fim, teto=8.0, inicio=None):
+def fim_da_frase(ep_id, fim, teto=8.0, inicio=None, emenda=False):
     """Fim do corte numa frase fechada e com respiro (o time reclamou de "o final cortou o que a pessoa ia falar": cortes 30, 31,
     47 e 71). Pode estender (frase em andamento) ou recuar (a frase seguinte mal começou, ou sobrou uma pergunta solta no fim).
     O fim fica 0,35 s depois da última palavra, sem encostar na próxima."""
@@ -1139,6 +1141,15 @@ def fim_da_frase(ep_id, fim, teto=8.0, inicio=None):
             a -= 1
         if a > 0 and F(ws[k]) - I(ws[a]) <= 3.0 and F(ws[a - 1]) > minimo:
             k = a - 1
+    # 3) só quando o editor disse que o fim ficou cortado (emenda=True): a pessoa continua o raciocínio logo depois (corte 69:
+    #    "plantada. É claro que…", pausa curta) e o corte parece acabar com ela ainda falando. Vai até o fim da próxima frase
+    #    que fecha, dentro do teto; se a próxima fala vem depois de 1,5 s de silêncio, o fim já estava certo.
+    if emenda and k + 1 < len(ws) and I(ws[k + 1]) - F(ws[k]) < 1.5:
+        j = k + 1
+        while j + 1 < len(ws) and F(ws[j]) <= fim + teto and not fecha(ws[j]):
+            j += 1
+        if fecha(ws[j]) and F(ws[j]) <= fim + teto:   # frase fechada basta: o respiro não encosta na próxima palavra
+            k = j
     return com_respiro(k)
 
 
@@ -2345,6 +2356,20 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         partir_da_versao(c, work)
         trava = Trava(work, itens)   # o que não foi pedido fica como está
         log("ajuste do", cid, "áreas:", ",".join(sorted(trava.areas)))
+        fim_cedo = any(re.search(r"ainda (fosse|ia|iria) falar|ia falar|cortou (o que|a fala|o final|no meio)|faltou o final|terminou antes|"
+                                 r"finalizou como|acabou (antes|do nada|no meio)|fim (ficou )?cortad", i["pedido"], re.I) for i in trava.itens)
+        if "corte" in trava.areas and fim_cedo:   # "o final cortou o que ia falar": vai até a próxima frase fechar (antes nada mudava; cortes 47 e 69)
+            try:
+                rg = [[float(x), float(y)] for x, y in json.loads((work / "transcript.json").read_text(encoding="utf-8")).get("ranges") or []]
+            except (OSError, ValueError, TypeError):
+                rg = []
+            novo = fim_da_frase(ep["id"], rg[-1][1], teto=10.0, inicio=rg[0][0], emenda=True) if rg else None
+            if novo and novo > rg[-1][1] + 0.1:
+                log("ajuste do", cid, ": fim levado ao fim da frase", round(rg[-1][1], 2), "→", round(novo, 2))
+                rg[-1][1] = novo
+                rodar("Transcrição do trecho", ["scripts/transcribe.py", "--src", bruto, "--ranges", ",".join("{}-{}".format(mmss_t(x), mmss_t(y)) for x, y in rg),
+                                                "--out", "work/" + cid, "--cut-silence", "0.8", "--cut-gaps", "0", "--keep-pause", "0.24",
+                                                "--prompt", PROMPT_WHISPER, "--no-snap-edges"], tempo=1200)
     if trava and trava.livres is not None and "enquadramento" not in trava.areas:
         rodar("Pontas e emendas", ["scripts/alinhar_frames.py", cid], ok=(0, 1))
     elif c.get("ajuste") and plan.exists():
