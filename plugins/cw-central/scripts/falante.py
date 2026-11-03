@@ -163,14 +163,170 @@ def medir(video, de=0.0, ate=None):
     return {"planos": planos, "fora_de_quadro": fora}
 
 
+# ------------------------------------------------------------------ quem fala pela VOZ + quem aparece pelo ROSTO (02/11/2026)
+# A boca falha quando o microfone tapa o rosto (convidado do João Barcelos, lote 19: "fora de quadro" em 30 dos 36 s em que ele
+# falava) e no plano aberto o rosto é pequeno demais. Aqui: as duas vozes do corte separadas pelo timbre (MFCC + k-means), as duas
+# pessoas pelo rosto (SFace, mesmo pacote do YuNet), e cada voz ligada à pessoa que mais aparece sozinha enquanto ela fala
+# (o episódio editado mostra quem fala na maior parte do tempo). Calibrado no l19c01: rosto certo em 147/148 amostras.
+SR = 16000
+PASSO_VOZ = 0.5    # uma janela de voz (1 s) a cada 0,5 s
+VOZ_MIN = 1.2      # troca de quem fala mais curta que isso não move o recorte (s)
+
+
+def _kmeans(X, k=2, it=40):
+    import numpy as np
+    best = None
+    for s in range(8):
+        r = np.random.default_rng(s)
+        C = X[r.choice(len(X), k, replace=False)]
+        for _ in range(it):
+            lab = ((X[:, None] - C[None]) ** 2).sum(2).argmin(1)
+            C = np.array([X[lab == j].mean(0) if (lab == j).any() else C[j] for j in range(k)])
+        inn = float(((X - C[lab]) ** 2).sum())
+        if best is None or inn < best[0]:
+            best = (inn, lab, C)
+    return best[1], best[2]
+
+
+def vozes(video):
+    """[(t, voz 0|1)] a cada 0,5 s com fala: MFCC (13) média e desvio em janela de 1 s, normalizados no corte, em 2 grupos."""
+    import numpy as np
+    a = np.frombuffer(subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", str(SR), "-f",
+                                      "s16le", "-"], capture_output=True).stdout, np.int16).astype(np.float32) / 32768
+    if len(a) < SR * 4:
+        return []
+    n, hop = 400, 160
+    fr = np.lib.stride_tricks.sliding_window_view(a, n)[::hop] * np.hamming(n)
+    sp = np.abs(np.fft.rfft(fr, 512)) ** 2
+    mel, imel = (lambda f: 2595 * np.log10(1 + f / 700)), (lambda m: 700 * (10 ** (m / 2595) - 1))
+    b = np.floor(513 * imel(np.linspace(mel(80), mel(7600), 28)) / SR).astype(int)
+    fb = np.zeros((26, 257))
+    for i in range(26):
+        fb[i, b[i]:b[i + 1]] = (np.arange(b[i], b[i + 1]) - b[i]) / max(1, b[i + 1] - b[i])
+        fb[i, b[i + 1]:b[i + 2]] = (b[i + 2] - np.arange(b[i + 1], b[i + 2])) / max(1, b[i + 2] - b[i + 1])
+    m = np.log(sp @ fb.T + 1e-10) @ np.cos(np.pi / 26 * (np.arange(26) + 0.5)[None, :] * np.arange(1, 14)[:, None]).T
+    m = (m - m.mean(0)) / (m.std(0) + 1e-6)
+    en = np.log(sp.sum(1) + 1e-10)
+    lim = np.percentile(en, 40)
+    ts, X = [], []
+    for i in range(0, len(m) - 100, int(PASSO_VOZ * 100)):
+        vo = en[i:i + 100] > lim
+        if vo.mean() >= 0.5:
+            ts.append(round(i / 100 + 0.5, 2))   # centro da janela
+            X.append(np.concatenate([m[i:i + 100][vo].mean(0), m[i:i + 100][vo].std(0)]))
+    if len(X) < 10:
+        return []
+    lab, _ = _kmeans(np.array(X))
+    return list(zip(ts, (int(x) for x in lab)))
+
+
+def rostos_id(video, fps=2):
+    """[(t, cx, cy, pessoa 0|1)] e a semelhança entre as 2 pessoas: rostos (YuNet) com identidade pelo SFace."""
+    import cv2
+    import numpy as np
+    W, H = tamanho(video)
+    w2, h2 = 1280, int(round(H * 1280 / W / 2) * 2)
+    aqui = Path(__file__).resolve().parent
+    yn = cv2.FaceDetectorYN.create(str(aqui / "face_detection_yunet.onnx"), "", (w2, h2), 0.7, 0.3, 5000)
+    sf = cv2.FaceRecognizerSF.create(str(aqui / "face_recognition_sface.onnx"), "")
+    p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vf", "fps={},scale={}:{}".format(fps, w2, h2),
+                          "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
+    achados, k = [], 0
+    while True:
+        b = p.stdout.read(w2 * h2 * 3)
+        if len(b) < w2 * h2 * 3:
+            break
+        im = np.frombuffer(b, np.uint8).reshape(h2, w2, 3)
+        _, fs = yn.detect(im)
+        for f in (fs if fs is not None else []):
+            if f[2] < w2 * 0.035:
+                continue   # rosto minúsculo no fundo
+            e = sf.feature(sf.alignCrop(im, f)).flatten()
+            achados.append((round(k / fps, 2), float((f[0] + f[2] / 2) / w2), float((f[1] + f[3] / 2) / h2), e / (np.linalg.norm(e) + 1e-9)))
+        k += 1
+    p.wait()
+    if len(achados) < 6:
+        return [], 1.0
+    lab, C = _kmeans(np.array([x[3] for x in achados]))
+    sim = float(C[0] @ C[1] / (np.linalg.norm(C[0]) * np.linalg.norm(C[1]) + 1e-9))
+    return [(t, cx, cy, int(l)) for (t, cx, cy, _), l in zip(achados, lab)], sim
+
+
+def medir_voz(video):
+    """{"ok", "motivo", "pessoa_da_voz", "falas": [[ini, fim, pessoa]], "amostras": [{"t", "rostos": [[cx, cy, pessoa]]}]}.
+    ok=False quando não dá para confiar (uma pessoa só, rostos parecidos demais, vozes que não batem com quem aparece)."""
+    vz = vozes(video)
+    rs, sim = rostos_id(video)
+    if not vz or not rs:
+        return {"ok": False, "motivo": "sem voz ou sem rosto"}
+    if sim > 0.6 or min(sum(1 for r in rs if r[3] == j) for j in (0, 1)) < 0.08 * len(rs):
+        return {"ok": False, "motivo": "uma pessoa só na tela (ou rostos parecidos demais: {:.2f})".format(sim)}
+    por_t = {}
+    for t, cx, cy, pe in rs:
+        por_t.setdefault(t, []).append([round(cx, 3), round(cy, 3), pe])
+    # voz × pessoa nos quadros com UMA pessoa na tela
+    cont = [[0, 0], [0, 0]]
+    for t, v in vz:
+        q = por_t.get(round(round(t * 2) / 2, 2)) or []
+        if len(q) == 1:
+            cont[v][q[0][2]] += 1
+    reto, cruz = cont[0][0] + cont[1][1], cont[0][1] + cont[1][0]
+    tot = reto + cruz
+    acerto = max(reto, cruz) / tot if tot else 0
+    amostras = [{"t": t, "rostos": por_t[t]} for t in sorted(por_t)]
+    if tot < 10 or acerto < 0.8 or min(sum(1 for _, v in vz if v == j) for j in (0, 1)) < 0.1 * len(vz):
+        # vozes não separam (quase sempre: uma pessoa falando o corte todo e o k-means partindo a mesma voz em dois). Quem conduz
+        # é quem o episódio mostra SOZINHO a maior parte do tempo; no plano aberto o recorte fica nele (l19c03: o convidado falava
+        # e o plano aberto mostrava o apresentador ouvindo)
+        sozinho = [q[0][2] for q in por_t.values() if len(q) == 1]
+        if len(sozinho) >= 10:
+            pr = max((0, 1), key=sozinho.count)
+            if sozinho.count(pr) >= 0.75 * len(sozinho):
+                return {"ok": True, "modo": "principal", "acerto": round(acerto, 2), "semelhanca_rostos": round(sim, 2),
+                        "falas": [[0.0, round(max(t for t, _ in vz) + 1, 2), pr]], "amostras": amostras,
+                        "motivo": "vozes não separam ({:.0%}); recorte em quem conduz (sozinho em {:.0%} dos closes)".format(
+                            acerto, sozinho.count(pr) / len(sozinho))}
+        return {"ok": False, "motivo": "vozes não batem com quem aparece ({:.0%} em {} amostras)".format(acerto, tot)}
+    pv = [0, 1] if reto >= cruz else [1, 0]   # voz -> pessoa
+    # falas contínuas por pessoa (trocas curtas são absorvidas)
+    falas = []
+    for t, v in vz:
+        pe = pv[v]
+        if falas and falas[-1][2] == pe and t - falas[-1][1] <= 1.0:
+            falas[-1][1] = t + PASSO_VOZ / 2
+        else:
+            falas.append([t - PASSO_VOZ / 2, t + PASSO_VOZ / 2, pe])
+    lim = []
+    for f in falas:
+        if lim and (f[1] - f[0] < VOZ_MIN) and lim[-1][2] != f[2]:
+            lim[-1][1] = f[1]   # troca curta demais: fica com quem já falava
+        elif lim and lim[-1][2] == f[2]:
+            lim[-1][1] = f[1]
+        else:
+            lim.append(list(f))
+    return {"ok": True, "modo": "voz", "acerto": round(acerto, 2), "semelhanca_rostos": round(sim, 2), "pessoa_da_voz": pv,
+            "falas": [[round(a, 2), round(b, 2), p] for a, b, p in lim], "amostras": amostras}
+
+
+def quem_fala_em(med, t0, t1):
+    """Pessoa que mais fala em [t0, t1) segundo medir_voz (None se ninguém)."""
+    tempo = {}
+    for a, b, p in med.get("falas") or []:
+        s = min(b, t1) - max(a, t0)
+        if s > 0:
+            tempo[p] = tempo.get(p, 0) + s
+    return max(tempo, key=tempo.get) if tempo else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
     ap.add_argument("--de", type=float, default=0.0)
     ap.add_argument("--ate", type=float)
     ap.add_argument("--json")
+    ap.add_argument("--voz", action="store_true", help="quem fala pela voz + quem aparece pelo rosto")
     a = ap.parse_args()
-    txt = json.dumps(medir(a.video, a.de, a.ate), ensure_ascii=False)
+    txt = json.dumps(medir_voz(a.video) if a.voz else medir(a.video, a.de, a.ate), ensure_ascii=False)
     if a.json:
         Path(a.json).write_text(txt, encoding="utf-8")
     print(txt)

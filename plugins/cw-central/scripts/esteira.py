@@ -1004,11 +1004,14 @@ def broll_usados_fora(W, cid):
     except (OSError, ValueError):
         usados = {}
     usados = {h: v for h, v in usados.items() if v.get("corte") != cid}
-    for outro in (W / "work").glob("l*c*/plan.json"):
+    # todas as pastas de trabalho (outros episódios e estilos também: o Canal 2 e o CW Cast produzem ao mesmo tempo e o registro
+    # só recebe o corte no fim da produção; a foto do gancho saiu repetida entre o Zeca e o Titeu, 02/11/2026)
+    for outro in sorted(set(BASE.glob("*/*/work/l*c*/plan.json")) | set((W / "work").glob("l*c*/plan.json"))):
         nome = outro.parent.name
         if nome == cid or "_antigo_" in nome:
             continue
-        for p in _arquivos_do_corte(outro.parent, W):
+        Wo = outro.parent.parent.parent
+        for p in _arquivos_do_corte(outro.parent, Wo):
             if p.is_file():
                 usados.setdefault(_sha_arq(p), {"corte": nome, "arquivo": p.name})
     return usados
@@ -1439,13 +1442,85 @@ def _sem_cobertura(fora, pl):
     return resta
 
 
+def _recorte_na_voz(pl, med, dur):
+    """Plano aberto (2+ rostos): o recorte vai para o rosto de QUEM FALA (falante.medir_voz), dividindo o shot quando a fala troca
+    de pessoa no meio. Devolve (shots mexidos, trechos [ini, fim] com close de quem NÃO está falando)."""
+    import falante
+    am = med.get("amostras") or []
+    fora, mexeu = [], 0
+    for chave in ("shots", "_base_shots"):
+        shots = sorted(pl.get(chave) or [], key=lambda s: float(s.get("start") or 0))
+        if not shots:
+            continue
+        novos = []
+        for i, sh in enumerate(shots):
+            a = float(sh.get("start") or 0)
+            b = float(shots[i + 1].get("start") or dur) if i + 1 < len(shots) else dur
+            amo = [x for x in am if a <= x["t"] < b]
+            abertos = [x for x in amo if len(x["rostos"]) >= 2]
+            if not abertos or len(abertos) < 0.5 * len(amo):   # close: quem aparece está falando? (conta só no plano principal)
+                if chave == "shots" and med.get("modo") == "voz":
+                    for x in amo:
+                        p = falante.quem_fala_em(med, x["t"] - 0.25, x["t"] + 0.25)
+                        if len(x["rostos"]) == 1 and p is not None and x["rostos"][0][2] != p:
+                            if fora and x["t"] - fora[-1][1] <= 0.6:
+                                fora[-1][1] = x["t"] + 0.5
+                            else:
+                                fora.append([x["t"], x["t"] + 0.5])
+                novos.append(sh)
+                continue
+            partes = []   # trechos do shot por pessoa que fala
+            for fa, fb, p in med.get("falas") or []:
+                ia, ib = max(a, fa), min(b, fb)
+                if ib - ia <= 0:
+                    continue
+                if partes and partes[-1][2] == p:
+                    partes[-1][1] = ib
+                else:
+                    partes.append([ia, ib, p])
+            partes = [x for x in partes if x[1] - x[0] >= falante.VOZ_MIN] or partes[:1]
+            if not partes:
+                novos.append(sh)
+                continue
+            partes[0][0] = a
+            for j, (pa, pb, p) in enumerate(partes):
+                cxs = sorted(r[0] for x in abertos if pa <= x["t"] < pb for r in x["rostos"] if r[2] == p) \
+                    or sorted(r[0] for x in abertos for r in x["rostos"] if r[2] == p)
+                novo = dict(sh) if j == 0 else {k: v for k, v in sh.items() if k not in ("punch", "on_word")}
+                novo["start"] = round(pa, 3)
+                if cxs:
+                    cx = round(cxs[len(cxs) // 2], 3)
+                    if novo.get("stack") or abs(float(novo.get("cx") or 0.5) - cx) > 0.06:
+                        novo.pop("stack", None)
+                        novo["cx"] = cx
+                        mexeu += 1
+                novos.append(novo)
+        pl[chave] = novos
+    return mexeu, [[round(x, 2), round(y, 2)] for x, y in fora if y - x >= 1.5]
+
+
+def _cobrir_fora(W, cid, pl, resta, falando, passo, higgs, lote_id):
+    hook = float((pl.get("hook") or {}).get("duration") or 0)
+    try:
+        claude(FORA_QUADRO.format(cid=cid, W=W, lista=", ".join("{}–{} s".format(a, b) for a, b in resta), hook=round(hook, 1),
+                                  falando=", ".join("{}–{} s".format(a, b) for a, b in falando) or "nenhum",
+                                  regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
+               W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote_id)
+    except Exception as e:
+        log("quem fala do", cid, ": correção falhou:", e)
+
+
 def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
-    """Falante pela boca × voz (falante.py) no vídeo horizontal do corte: põe o recorte em quem fala nos planos abertos (sem IA)
-    e manda cobrir/tirar os trechos em que quem fala não aparece (o episódio mostra quem só reage). Duas rodadas no máximo."""
+    """Quem fala no vídeo horizontal do corte: pela VOZ + ROSTO (falante.medir_voz) e, se isso não for confiável, pela boca × voz.
+    Põe o recorte em quem fala nos planos abertos (sem IA) e manda cobrir os trechos em que a tela mostra quem não fala (o
+    episódio editado mostra quem só reage). Os trechos ficam em work/<cid>/quem_fala.json (no Canal 2 o motion cobre com foto)."""
     if trava and trava.livres is not None and not ({"enquadramento", "broll"} & trava.areas):
         return
     base = W / "work" / cid / "base.mov"
+    registro = W / "work" / cid / "quem_fala.json"
+    registro.unlink(missing_ok=True)
     if not base.exists():
+        log("quem fala do", cid, ": sem base.mov; não medido")
         return
     try:
         tr_dur = float(json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8")).get("duration") or 0)
@@ -1455,6 +1530,28 @@ def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
     if tr_dur and abs(bd - tr_dur) > 1.0:
         log("quem fala do", cid, ": base.mov ({:.1f} s) fora da linha do tempo do corte ({:.1f} s); não medido".format(bd, tr_dur))
         return
+    pode_recortar = not trava or trava.livres is None or "enquadramento" in trava.areas
+    so_registra = formato_canal2(estilo) or (trava and trava.livres is not None and "broll" not in trava.areas)
+    passo("Quem está falando (voz + rosto)")
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz"], capture_output=True, text=True, timeout=1500)
+        med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {"ok": False, "motivo": (r.stderr or "sem saída")[-200:]}
+    except Exception as e:
+        med = {"ok": False, "motivo": str(e)[:200]}
+    if med.get("ok"):
+        pl = json.loads(plan.read_text(encoding="utf-8"))
+        mexeu, fora = _recorte_na_voz(pl, med, bd)
+        if mexeu and pode_recortar:
+            plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("quem fala do", cid, "(voz + rosto, {}, acerto {}):".format(med.get("modo"), med.get("acerto")), "recorte movido para quem fala em",
+            mexeu if pode_recortar else 0, "shot(s); close de quem não fala em", fora or "nenhum")
+        pl = json.loads(plan.read_text(encoding="utf-8"))
+        resta = _sem_cobertura(fora, pl)
+        registro.write_text(json.dumps({"modo": med.get("modo"), "falas": med.get("falas"), "fora": resta}, ensure_ascii=False), encoding="utf-8")
+        if resta and not so_registra:
+            _cobrir_fora(W, cid, pl, resta, [[a, b] for a, b, _ in med.get("falas") or []], passo, higgs, lote_id)
+        return
+    log("quem fala do", cid, ": voz + rosto sem confiança (" + str(med.get("motivo")) + "); vai pela boca")
     for rodada in range(2):
         passo("Quem está falando (boca × voz)")
         try:
@@ -1464,9 +1561,12 @@ def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
             log("quem fala do", cid, "não rodou:", e)
             return
         planos = res.get("planos") or []
+        if not planos:
+            log("quem fala do", cid, ": o detector de boca não devolveu nada", (r.stderr or "")[-200:])
+            return
         pl = json.loads(plan.read_text(encoding="utf-8"))
         mexeu = 0
-        if not trava or trava.livres is None or "enquadramento" in trava.areas:
+        if pode_recortar:
             for p in planos:   # câmera aberta (2+ rostos) com falante claro: recorte nele, sem empilhar
                 if p.get("estado") != "falando" or len(p.get("rostos") or []) < 2:
                     continue
@@ -1481,22 +1581,20 @@ def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
         if mexeu:
             plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
             log("quem fala do", cid, ": recorte movido para quem fala em", mexeu, "shot(s)")
-        resta = _sem_cobertura(res.get("fora_de_quadro") or [], pl)
+        fq = res.get("fora_de_quadro") or []
+        if sum(b - a for a, b in fq) > bd / 3:   # a boca tapada pelo microfone vira "ninguém fala" (l19c05: 30 de 36 s); não confia
+            log("quem fala do", cid, ": boca × voz diz falante fora da imagem em", round(sum(b - a for a, b in fq), 1),
+                "de", round(bd, 1), "s; ignorado (falso alarme, microfone na frente da boca)")
+            return
+        resta = _sem_cobertura(fq, pl)
         if not resta:
             return
         log("quem fala do", cid, ": falante fora da imagem em", resta)
-        if rodada == 1 or formato_canal2(estilo) or (trava and trava.livres is not None and "broll" not in trava.areas):
-            return   # Canal 2: as imagens entram no motion do Zeca; fica no log para o time ver
-        hook = float((pl.get("hook") or {}).get("duration") or 0)
-        falando = ["{}–{} s".format(p["ini"], p["fim"]) for p in planos if p.get("estado") == "falando"]
-        try:
-            claude(FORA_QUADRO.format(cid=cid, W=W, lista=", ".join("{}–{} s".format(a, b) for a, b in resta), hook=round(hook, 1),
-                                      falando=", ".join(falando) or "nenhum",
-                                      regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
-                   W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote_id)
-        except Exception as e:
-            log("quem fala do", cid, ": correção falhou:", e)
+        if rodada == 1 or so_registra:
+            if rodada == 0:
+                registro.write_text(json.dumps({"modo": "boca", "fora": resta}, ensure_ascii=False), encoding="utf-8")
             return
+        _cobrir_fora(W, cid, pl, resta, [[p["ini"], p["fim"]] for p in planos if p.get("estado") == "falando"], passo, higgs, lote_id)
 
 
 def garantir_broll(W, cid, plan, passo, higgs, lote_id):
@@ -1975,9 +2073,15 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
 Depois confira: rode
   python3 {motor} {saida} {video} {quadros} --quadros <o meio de cada cena>
 e abra {quadros}/folha.jpg (o b-roll mostra o que a fala diz? legenda legível?). Ajuste e confira de novo (no máximo 2 voltas).
-NADA SE REPETE (regra do time): cada b-roll diferente, e é proibido usar arquivo que já entrou em outro corte
+{fora}NADA SE REPETE (regra do time): cada b-roll diferente, e é proibido usar arquivo que já entrou em outro corte
 (proibidos: {proibidos}); repetido é tirado automaticamente.
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "cenas": n, "notas": "uma linha"}}"""
+
+FORA_CANAL2 = """PESSOA ERRADA NA TELA (medido pela voz + rosto): nestes trechos a imagem mostra quem está OUVINDO, não quem fala: {lista}.
+Cubra CADA trecho inteiro com FOTO em tela cheia ("tipo": "foto", "layout": "full"; uma ou mais fotos coladas de até 4 s cada, ligadas
+ao que é dito ali). Vídeo de b-roll aqui não serve: ele ocupa só metade da tela e a pessoa errada continua embaixo. Estes trechos contam
+nos 3 a 5 b-rolls e nos 35% do corte e valem mais que os outros: se não couber tudo, tire os outros b-rolls, não estes.
+"""
 
 
 def formato_canal2(estilo):
@@ -2005,6 +2109,15 @@ def arroba_do_estilo(estilo):
     """@ do canal, da linha "ARROBA: @perfil" na receita do estilo (o motor desenha embaixo da legenda)."""
     m = re.search(r"(?im)^\s*ARROBA:\s*(@[\w.]+)", (estilo or {}).get("receita") or "")
     return m.group(1) if m else ""
+
+
+def _fora_canal2(work):
+    """Os trechos de quem_fala.json (close de quem não fala) para o motion do Canal 2 cobrir com foto em tela cheia."""
+    try:
+        fora = json.loads((work / "quem_fala.json").read_text(encoding="utf-8")).get("fora") or []
+    except (OSError, ValueError):
+        return ""
+    return FORA_CANAL2.format(lista=", ".join("{:.1f}–{:.1f} s".format(a, b) for a, b in fora)) if fora else ""
 
 
 def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0, tema="roi", arroba="", reusar=False):
@@ -2056,6 +2169,7 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
                                    imagem_web=lib / "imagem_web.py", banco=foto_banco(), videos=videos_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
+                                   fora=_fora_canal2(work) if tema == "canal2" else "",
                                    brolls=", ".join("{:.1f}–{:.1f} s".format(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))
                                                     for b, _ in _broll_do_plano(work / "plan.json", W)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
@@ -2222,8 +2336,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     def broll_ok():   # regra do time: b-roll é vídeo com movimento e nunca se repete (no corte nem entre cortes)
         if trava:
             trava.aplicar()
-        if not formato_canal2(estilo) and (not trava or trava.livres is None or "broll" in trava.areas):
-            garantir_broll(W, cid, plan, passo, higgs, lote["id"])
+        if not trava or trava.livres is None or "broll" in trava.areas or "gancho" in trava.areas:
+            garantir_broll(W, cid, plan, passo, higgs, lote["id"])   # no Canal 2 o plano não tem b-roll: confere a foto do gancho
     broll_ok()
     quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"])   # pessoa errada na tela (falante fora da imagem)
     broll_ok()
