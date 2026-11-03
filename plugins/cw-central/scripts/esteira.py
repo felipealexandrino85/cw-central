@@ -1628,17 +1628,53 @@ def _cobrir_fora(W, cid, pl, resta, falando, passo, higgs, lote_id):
         log("quem fala do", cid, ": correção falhou:", e)
 
 
+def _base_do_corte(W, cid):
+    """Vídeo horizontal do corte (trechos do bruto juntos) para medir quem fala. O base.mov do render só sai na etapa de motion,
+    depois do render final: nos cortes novos o "quem fala" não rodava ("sem base.mov", lote 19 inteiro em 03/11/2026).
+    Usa o base.mov se ele for mais novo que o transcript; senão monta base_quem_fala.mov com o mesmo stage_base do render."""
+    work = W / "work" / cid
+    tr = work / "transcript.json"
+    for b in (work / "base.mov", work / "base_quem_fala.mov"):
+        if b.exists() and tr.exists() and b.stat().st_mtime >= tr.stat().st_mtime:
+            return b
+    bruto = next(W.parent.glob("bruto.*"), None)
+    if not bruto or not tr.exists():
+        return None
+    destino = work / "base_quem_fala.mov"
+    cod = ("import json, sys, tempfile, shutil; from pathlib import Path; sys.path.insert(0, 'scripts'); import render\n"
+           "rg = [(float(a), float(b)) for a, b in json.load(open(sys.argv[2]))['ranges']]\n"
+           "d = Path(tempfile.mkdtemp()); out = render.stage_base(sys.argv[1], rg, d / 'b.mp4', True, d)\n"
+           "shutil.move(str(out), sys.argv[3]); shutil.rmtree(d, ignore_errors=True)")
+    try:
+        r = subprocess.run([sys.executable, "-c", cod, str(bruto), str(tr), str(destino)], cwd=str(W), capture_output=True, text=True, timeout=1200)
+        if r.returncode or not destino.exists():
+            log("quem fala do", cid, ": não montou o vídeo horizontal:", (r.stderr or r.stdout)[-200:])
+            return None
+    except Exception as e:
+        log("quem fala do", cid, ": não montou o vídeo horizontal:", e)
+        return None
+    return destino
+
+
 def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
+    try:
+        return _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id)
+    finally:   # o vídeo montado só para medir tem ~1 GB: não fica no disco
+        (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
+
+
+def _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
     """Quem fala no vídeo horizontal do corte: pela VOZ + ROSTO (falante.medir_voz) e, se isso não for confiável, pela boca × voz.
     Põe o recorte em quem fala nos planos abertos (sem IA) e manda cobrir os trechos em que a tela mostra quem não fala (o
     episódio editado mostra quem só reage). Os trechos ficam em work/<cid>/quem_fala.json (no Canal 2 o motion cobre com foto)."""
     if trava and trava.livres is not None and not ({"enquadramento", "broll"} & trava.areas):
         return
-    base = W / "work" / cid / "base.mov"
     registro = W / "work" / cid / "quem_fala.json"
     registro.unlink(missing_ok=True)
-    if not base.exists():
-        log("quem fala do", cid, ": sem base.mov; não medido")
+    passo("Quem está falando (montando o vídeo horizontal)")
+    base = _base_do_corte(W, cid)
+    if not base:
+        log("quem fala do", cid, ": sem o vídeo horizontal; não medido")
         return
     try:
         tr_dur = float(json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8")).get("duration") or 0)
