@@ -1213,6 +1213,50 @@ def texto_edicao(o):
             "palavra": "legenda: \"{}\" → \"{}\"".format(o.get("de"), o.get("para")), "pedido": o.get("texto") or ""}.get(t, str(o))
 
 
+def _sem_pont(x):
+    return re.sub(r"\s+", "", re.sub(r"[.,!?;:…\"'“”]+", "", (x or "").lower()))
+
+
+def trocar_na_legenda(tr, de, para):
+    """Troca um texto da legenda por outro, de uma palavra ou de várias seguidas (o "R$19,90 $19" do corte 78 são duas palavras
+    no transcript e a troca de palavra única nunca achava). Compara sem pontuação, maiúsculas e espaços; as palavras do trecho viram
+    uma só (tempo do início da primeira ao fim da última). Devolve quantas vezes trocou."""
+    ws, alvo, n, k = tr.get("words") or [], _sem_pont(de), 0, 0
+    if not alvo:
+        return 0
+    while k < len(ws):
+        junto, j = "", k
+        while j < len(ws) and len(junto) < len(alvo):
+            junto += _sem_pont(ws[j].get("w"))
+            j += 1
+        if junto == alvo and _sem_pont(ws[k].get("w")):
+            pont = re.search(r"[.,!?;:…]+$", ws[j - 1].get("w") or "")
+            novas = para.split()
+            if pont and not re.search(r"[.,!?;:…]$", novas[-1]):
+                novas[-1] += pont.group(0)
+            if len(novas) == j - k:   # mesma quantidade: uma por uma, cada palavra no seu tempo
+                for x, w in zip(ws[k:j], novas):
+                    x["w"] = w
+            else:   # quantidades diferentes: o tempo do trecho é dividido igual entre as palavras novas
+                t0, t1 = float(ws[k].get("start") or 0), float(ws[j - 1].get("end") or ws[k].get("end") or 0)
+                d = (t1 - t0) / len(novas)
+                ws[k:j] = [dict(ws[k], w=w, start=round(t0 + q * d, 4), end=round(t0 + (q + 1) * d, 4)) for q, w in enumerate(novas)]
+            n += 1
+            k += len(novas)
+            continue
+        k += 1
+    for i, w in enumerate(ws):
+        if "i" in w:
+            w["i"] = i
+    return n
+
+
+def legenda_tem(work, texto):
+    """O texto aparece nas legendas que saíram no vídeo (captions_final.ass)? Sem pontuação nem espaços."""
+    sai = _sem_pont(re.sub(r"^\d+:\d+\.\d ", "", legendas_que_sairam(work), flags=re.M).replace("\n", " "))
+    return bool(sai) and _sem_pont(texto) in sai
+
+
 def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
     """Aplica no plano o que não precisa de IA. Devolve (feitas, pendentes_ia)."""
     pl = json.loads(Path(plan).read_text(encoding="utf-8"))
@@ -1247,11 +1291,16 @@ def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
                         feitas.append(o)
                 except (OSError, ValueError):
                     pass
+                if o not in feitas:   # nem b-roll nem cena do motion naquele instante: a IA acha o que é
+                    ia.append(o)
         elif t == "pb_remover" and o.get("t") is not None:
             for x in pl.get("shots") or []:
                 if x.get("bw") and perto(x.get("start") or 0, o["t"]):
                     x.pop("bw", None)
-                    feitas.append(o)
+                    if o not in feitas:
+                        feitas.append(o)
+            if o not in feitas:
+                ia.append(o)
         elif t == "trilha_volume":
             mus = pl.setdefault("music", {})
             base = float(mus.get("db") or -30)
@@ -1272,18 +1321,15 @@ def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
                 pl.setdefault("music", {})["file"] = random.choice(opcoes)
                 feitas.append(o)
         elif t == "palavra" and (o.get("de") or "").strip() and (o.get("para") or "").strip():
-            n = 0
-            for w in tr.get("words") or []:
-                if re.sub(r"[.,!?;:…]+$", "", w.get("w") or "").lower() == o["de"].strip().lower():
-                    pont = re.search(r"[.,!?;:…]+$", w["w"])
-                    w["w"] = o["para"].strip() + (pont.group(0) if pont else "")
-                    n += 1
+            n = trocar_na_legenda(tr, o["de"], o["para"])
             if n:
                 feitas.append(o)
                 try:   # vira entrada do dicionário: não erra de novo
                     srv("glossario", certo=o["para"].strip()[:80], errados=[o["de"].strip()[:80]], obs="edição direta no corte " + cid)
                 except Exception:
                     pass
+            else:   # o texto não foi achado nas palavras: vai para a IA em vez de sumir (antes ficava "conferido" sem mudar nada)
+                ia.append(o)
     Path(plan).write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
     Path(transcript).write_text(json.dumps(tr, ensure_ascii=False, indent=1), encoding="utf-8")
     return feitas, ia
@@ -2277,12 +2323,14 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         except (OSError, ValueError, KeyError, TypeError):
             pass
         return ts[:12]
-    if c.get("edicoes") and not edicoes_ia and final.exists():   # só edição mecânica: o código aplicou, não há o que adivinhar
+    falhou_leg = [o for o in (c.get("edicoes") or []) if o.get("tipo") == "palavra" and final.exists()
+                  and (not legenda_tem(work, o.get("para")) or (_sem_pont(o.get("de")) not in _sem_pont(o.get("para")) and legenda_tem(work, o.get("de"))))]
+    if c.get("edicoes") and not edicoes_ia and not falhou_leg and final.exists():   # só edição mecânica, e a legenda que saiu confirma
         registrar_conferencia(c, {"atendido": True, "destino": "pontual",
-                                  "motivo": "Edições aplicadas direto: " + "; ".join(texto_edicao(o) for o in c["edicoes"])}, cid)
+                                  "motivo": "Edições aplicadas direto (conferido na legenda que saiu): " + "; ".join(texto_edicao(o) for o in c["edicoes"])}, cid)
     elif c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
-        if edicoes_ia:   # a conferência julga só o que foi para a IA
-            c = dict(c, ajuste="\n".join(texto_edicao(o) for o in edicoes_ia))
+        if edicoes_ia or falhou_leg:   # a conferência julga o que foi para a IA e a troca de legenda que não apareceu no vídeo
+            c = dict(c, ajuste="\n".join(texto_edicao(o) for o in (edicoes_ia or []) + [o for o in falhou_leg if o not in (edicoes_ia or [])]))
         r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
         if not r.get("atendido"):
             passo("O ajuste não ficou bom: corrigindo de novo")

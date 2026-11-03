@@ -204,13 +204,30 @@ def revisar_final(arq, contexto="", referencia="", modelo="anthropic/claude-sonn
     return mudou
 
 
+def sobra_de_moeda(palavras):
+    """"R$19,90" seguido de "$19": a transcrição repete o começo do valor numa palavra solta (corte 78, 02/11/2026). A sobra fica
+    vazia e sai junto com as outras palavras vazias (o tempo dela passa para o valor)."""
+    mudou = []
+    for i in range(1, len(palavras)):
+        a, b = palavras[i - 1].strip(), palavras[i].strip()
+        m = re.fullmatch(r"\$(\d+)[.,!?;:…]*", b)
+        if m and re.match(r"(R|US)?\$\s?" + m.group(1), a):
+            pont = re.search(r"[.,!?;:…]+$", b)
+            if pont and not re.search(r"[.,!?;:…]$", a):
+                palavras[i - 1] += pont.group(0)
+            palavras[i] = ""
+            mudou.append({"i": i, "de": b, "para": "", "por_que": "sobra do valor em dinheiro"})
+    return mudou
+
+
 def revisar_arquivo(arq, contexto="", campo="w"):
     arq = Path(arq)
     dados = json.loads(arq.read_text(encoding="utf-8"))
     lista = dados["words"] if isinstance(dados, dict) else dados
     palavras = [str(w.get(campo) or "") for w in lista]
     gloss = glossario()
-    mudou = pelo_dicionario(palavras, gloss)
+    mudou = sobra_de_moeda(palavras)
+    mudou += pelo_dicionario(palavras, gloss)
     mudou += pela_ia(palavras, contexto, gloss, modelo_da_etapa())
     if mudou:
         arq.with_name(arq.stem + ".antes_revisao.json").write_text(arq.read_text(encoding="utf-8"), encoding="utf-8")
