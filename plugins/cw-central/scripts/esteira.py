@@ -2903,7 +2903,7 @@ def produzir(item):
         final = Path(r.get("final") or "")
         if final and not final.is_absolute():
             final = (extra[0] if extra else pasta) / final
-        if not r.get("aprovado") or not final.is_file():
+        if not final.is_file():
             srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
             return
         previa = Path(r.get("previa") or final)
@@ -2911,7 +2911,10 @@ def produzir(item):
             previa = (extra[0] if extra else pasta) / previa
         if c.get("ajuste"):
             registrar_conferencia(c, conferir_ajuste(c, final, pasta, prints, passo), cid)
-        entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta)
+        # o vídeo existe: vai para a prévia mesmo com falhas na conferência automática (ex.: "ombros fora" num close que já está
+        # no zoom mínimo), com o motivo como aviso; quem decide é uma pessoa, como nos reels (04/11/2026)
+        entregar_previa(c, final, previa if previa.is_file() else final, cid, r.get("legenda_post"), pasta,
+                        aviso=None if r.get("aprovado") else (r.get("motivo") or "a conferência automática apontou problemas"))
     except Exception as e:
         log("corte", c["id"], "falhou:", traceback.format_exc()[-600:])
         srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
