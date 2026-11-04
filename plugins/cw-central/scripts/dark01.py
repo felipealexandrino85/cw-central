@@ -5,7 +5,7 @@ Recebe um plano (JSON) com o vídeo horizontal do corte, as palavras com tempo e
 e desenha o vertical 1080x1920 quadro a quadro: título fixo, vídeo do episódio que encolhe/sobe/some,
 legenda de 2-3 palavras, nome do convidado, gancho invertido com citação congelada, tipografia em tela
 cheia, contador com gráfico, ícones a traço, linha do tempo, antes x depois, zoom de impacto, transição
-em faixa vermelha e fechamento "parte 2". Sem imagem gerada por IA e sem logo da marca.
+em faixa vermelha e fechamento com a pergunta do corte. Sem imagem gerada por IA e sem logo da marca.
 
 Uso: python dark01.py plano.json
 O plano é escrito pelo Claude na esteira (cenas, gancho, destaques, zooms); limpar_plano() conserta tempos e tira o que não cabe.
@@ -961,20 +961,30 @@ def render(plano_path):
                 # onda de áudio e barra de progresso (somem quando o gráfico ou a comparação ocupam a parte de baixo)
                 onda(cv, env, T)
                 barra_baixo(cv, t, dur_main, plano.get("rotulo") or plano["titulo"].replace("*", ""))
-            else:   # fechamento: último quadro congelado, escurecido, "parte 2"
+            else:   # fechamento: último quadro congelado, escurecido, com a pergunta do corte
                 u = T - off - dur_main
                 fr = cached(("fim_duo",), lambda: duotone(frame_fim))
                 desenha_pane(cv, fr, PANE["normal"], dim=0.55 * clamp(u / 0.3))
+                # sem "parte 2 / no perfil" (Felipe, 04/11/2026): o fechamento é a pergunta do corte, grande no centro;
+                # texto/sub só aparecem se o plano pedir de propósito
                 fim = plano.get("fim", {})
-                im, _ = cached(("p2", fim.get("texto", "Parte 2")), lambda: rich(fim.get("texto", "Parte 2"), fonte("anton", 270), W, entrelinha=0.9))
-                a, s = slam(u - 0.35, 0.32)
-                put(cv, im, W / 2, 700, a, s)
-                im, _ = cached(("np", fim.get("sub", "no perfil")), lambda: rich(fim.get("sub", "no perfil"), fonte("anton", 130), W, cor=VERMELHO, entrelinha=0.9))
-                a, s = slam(u - 0.75, 0.32)
-                put(cv, im, W / 2, 900, a, s)
-                if fim.get("pergunta"):
-                    im, _ = cached(("perg", fim["pergunta"]), lambda: rich(fim["pergunta"], fonte("mont", 65), 0.88 * W, sombra=True))
-                    put(cv, im, W / 2, 1255, clamp((u - 1.2) / 0.3))
+                texto, sub, perg = fim.get("texto") or "", fim.get("sub") or "", fim.get("pergunta") or ""
+                if texto:
+                    im, _ = cached(("p2", texto), lambda: rich(texto, fonte("anton", 270), W, entrelinha=0.9))
+                    a, s = slam(u - 0.35, 0.32)
+                    put(cv, im, W / 2, 700, a, s)
+                if sub:
+                    im, _ = cached(("np", sub), lambda: rich(sub, fonte("anton", 130), W, cor=VERMELHO, entrelinha=0.9))
+                    a, s = slam(u - 0.75, 0.32)
+                    put(cv, im, W / 2, 900, a, s)
+                if perg:
+                    grande = not (texto or sub)
+                    im, _ = cached(("perg", perg, grande), lambda: rich(perg, fonte("mont", 92 if grande else 65), 0.86 * W, sombra=True))
+                    if grande:
+                        a, s = slam(u - 0.3, 0.32)
+                        put(cv, im, W / 2, 0.47 * H, a, s)
+                    else:
+                        put(cv, im, W / 2, 1255, clamp((u - 1.2) / 0.3))
             if mostra_titulo:
                 put(cv, arroba, W / 2, 0.055 * H)
                 pt = ease_out(clamp(T / 0.45))

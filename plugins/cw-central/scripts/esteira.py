@@ -2851,7 +2851,7 @@ def produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo):
     plano = {"video": str(base), "palavras": str(work / "dark_palavras.json"), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
              "titulo": r["titulo"], "arroba": arroba_do_estilo(estilo) or "", "gancho": r.get("gancho"), "cenas": r["cenas"],
              "zooms": r.get("zooms") or [], "destaques": r.get("destaques") or [], "convidado": (r.get("convidado") or "").strip(), "nome_em": 4.0,
-             "fim": {"texto": "Parte 2", "sub": "no perfil", "pergunta": r.get("pergunta") or ""},
+             "fim": {"texto": "", "sub": "", "pergunta": r.get("pergunta") or ""},   # sem "parte 2 / no perfil" (04/11)
              "trilha": TRILHAS_DARK[int(c.get("ordem") or 0) % len(TRILHAS_DARK)]}
     plano = dark01.limpar_plano(plano, dur)
     roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
