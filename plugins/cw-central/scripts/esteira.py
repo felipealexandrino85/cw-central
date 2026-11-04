@@ -646,6 +646,72 @@ class Falhou(Exception):
     pass
 
 
+# ------------------------------------------------------------------------------------------- fala travada
+# Felipe, 04/11/2026: "o Zeca está cortando tudo". No lote 20 a etapa editorial rodou as ferramentas de tempo da receita e tirou
+# até metade da fala (l20c05: 43 s → 22 s; sumiu "hoje a gente tem 50 funcionários… 28 mil hambúrgueres"). Os trechos já vêm
+# decididos da parte mecânica: se uma etapa do Claude tirar fala, o código desfaz a etapa inteira e pede de novo sem tirar.
+NAO_TIRE_FALA = ("\n\nA FALA ESTÁ TRAVADA: a tentativa anterior tirou falas do corte e foi desfeita pelo código. Não rode ferramentas de tempo "
+                 "nem de decupagem e não tire nenhum trecho de work/{cid}/transcript.json: mude só o plan.json (gancho, destaques, imagens, "
+                 "câmeras, sons). Isto vale acima da receita do estilo.")
+
+
+def _fala(work):
+    """Palavras ditas do corte (sem pontuação) e a duração somada dos trechos."""
+    try:
+        t = json.loads((work / "transcript.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], 0.0
+    return ([re.sub(r"\W", "", (w.get("w") or "").lower()) for w in t.get("words") or []],
+            sum(float(b) - float(a) for a, b in t.get("ranges") or []))
+
+
+class GuardaFala:
+    """Fotografa o corte antes de uma etapa do Claude; perdeu() diz se a etapa tirou fala, desfazer() volta como estava."""
+
+    def __init__(self, work):
+        self.work, self.arqs = work, {}
+        for n in ("transcript.json", "transcript.txt", "plan.json"):
+            try:
+                self.arqs[n] = (work / n).read_bytes()
+            except OSError:
+                pass
+        self.palavras, self.dur = _fala(work)
+
+    def perdeu(self):
+        import difflib
+        depois, dur = _fala(self.work)
+        if not self.palavras or not depois:
+            return []
+        sm = difflib.SequenceMatcher(None, self.palavras, depois, autojunk=False)
+        sumiu = [w for op, i1, i2, j1, j2 in sm.get_opcodes() if op in ("delete", "replace")
+                 for w in self.palavras[i1:i2][:max(0, (i2 - i1) - (j2 - j1))] if w]   # trocar a grafia não conta, tirar conta
+        # tolera a decupagem mínima do estilo (gaguejo, palavra repetida colada): até 3 palavras ou 3%, e até 8% do tempo
+        if len(sumiu) > max(3, int(0.03 * len(self.palavras))) or (self.dur and dur < self.dur * 0.92):
+            return sumiu or ["({:.1f} s → {:.1f} s)".format(self.dur, dur)]
+        return []
+
+    def desfazer(self):
+        for n, dados in self.arqs.items():
+            (self.work / n).write_bytes(dados)
+
+
+def com_fala_travada(etapa, work, cid, nome):
+    """Roda uma etapa do Claude (etapa(extra) → resposta) sem deixar tirar fala: desfaz e repete uma vez com o aviso; se insistir, desfaz."""
+    guarda = GuardaFala(work)
+    resposta = etapa("")
+    sumiu = guarda.perdeu()
+    if not sumiu:
+        return resposta
+    log("fala travada no", cid, ":", nome, "tirou", len(sumiu), "palavra(s) (" + " ".join(sumiu[:12]) + ") — desfeito, pedindo de novo")
+    guarda.desfazer()
+    resposta = etapa(NAO_TIRE_FALA.format(cid=cid))
+    sumiu = guarda.perdeu()
+    if sumiu:
+        log("fala travada no", cid, ":", nome, "insistiu em tirar", len(sumiu), "palavra(s) — desfeito, segue com o corte inteiro")
+        guarda.desfazer()
+    return resposta
+
+
 # ------------------------------------------------------------------------------------------- ajuste cirúrgico
 # Felipe, 28/10/2026: "sempre altera mais do que é pedido". O ajuste é dividido em itens, cada item ganha as ÁREAS que toca
 # (e o trecho, se o editor disse o momento); o resto do plano fica TRAVADO: o código desfaz o que o Claude mexer fora disso.
@@ -2501,7 +2567,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             log("ajuste do", cid, "desfeito fora do pedido:", ", ".join(desfeito))
     else:
         passo("Plano do corte (gancho, legenda, B-roll)")
-        claude(DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
+        pedido = DECISAO_TIMEU.format(cid=cid, W=W, ref=ref, foto=foto, broll=broll, instrucoes=instrucoes,
                                 enfase=('NÃO use "enfase" (a tela branca com a frase): este formato não tem; deixe "enfase": [].'
                                         if formato_02(estilo) or formato_canal2(estilo) else "Ênfase (frase de impacto) conforme as regras do estilo, se fizer sentido."),
                                 ajuste=("AJUSTE PEDIDO PELO EDITOR (o corte já existe): " + c["ajuste"] + ". Mude só isso; se for câmera/enquadramento, "
@@ -2509,8 +2575,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                                         "(os planos já foram refeitos pelo mapa de câmeras). Se quem fala NÃO aparece em nenhuma câmera do bruto "
                                         "naquele momento, reenquadrar não resolve: cubra o trecho com B-roll ou com a foto do gancho, ou tire a fala "
                                         "se o corte continuar fazendo sentido, e diga isso nas notas.\n" + texto_prints(prints))
-                                if c.get("ajuste") else ""),
-           W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
+                                if c.get("ajuste") else "")
+        decidir = lambda extra: claude(pedido + extra, W, "sonnet", ao_passo=passo, limite=2100 if higgs else 900, higgs=higgs, higgs_lote=lote["id"])
+        if c.get("ajuste"):   # pedido do editor pode tirar fala de propósito (ex.: quem fala não aparece em câmera nenhuma)
+            decidir("")
+        else:
+            com_fala_travada(decidir, work, cid, "a etapa editorial")
     def broll_ok():   # regra do time: b-roll é vídeo com movimento e nunca se repete (no corte nem entre cortes)
         if trava:
             trava.aplicar()
@@ -2572,7 +2642,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if reprov_broll:
             extra += "\nO ANALISADOR DE B-ROLL REPROVOU (corrija em plan.json, trocando ou movendo o b-roll):\n" + reprov_broll
         if (g.get("geral") == "FAIL" and falhas) or extra:
-            claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + extra, W, "sonnet", ao_passo=passo, limite=900)
+            corrigir = lambda aviso: claude(CORRIGE_TIMEU.format(cid=cid, W=W, ref=ref) + extra + aviso, W, "sonnet", ao_passo=passo, limite=900)
+            if trava and "corte" in trava.areas:   # o editor pediu mexer nos trechos: a correção pode mexer também
+                corrigir("")
+            else:
+                com_fala_travada(corrigir, work, cid, "a correção dos gates")
         broll_ok()
     sem_logo()
     respeitar_editor(work)
