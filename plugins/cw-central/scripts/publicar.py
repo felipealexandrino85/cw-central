@@ -28,6 +28,7 @@ import central  # noqa: E402
 PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes"
 PARA_APROVAR = "2. PARA APROVAR"
 PARA_APROVAR_CANAL2 = "2. PARA APROVAR - Canal 2"   # Zeca: separado do CW Cast (não posta nas contas do CW Cast)
+PARA_APROVAR_DARK = "2. PARA APROVAR - Canal Dark"   # Breu: canal dark (@corte_sdelivery), também separado do CW Cast
 SUBS = ("Drives compartilhados", "Unidades compartilhadas", "Shared drives", "Meu Drive", "My Drive", "")
 
 
@@ -127,7 +128,7 @@ def cmd_enviar(a):
     if not base:
         sys.exit("não achei o Google Drive do CW Studios nesta máquina (pasta 'CW Studios - Produção/CW Cast - Cortes'). "
                  "Confira se o Google Drive para computador está aberto e com o drive compartilhado disponível.")
-    sub = PARA_APROVAR_CANAL2 if a.programa == "canal2" else PARA_APROVAR
+    sub = {"canal2": PARA_APROVAR_CANAL2, "dark": PARA_APROVAR_DARK}.get(a.programa, PARA_APROVAR)
     destino_pasta = base / sub
     if not pode_gravar_drive(base):
         sys.exit("o Drive deste computador não deixa gravar em {}. Abra o Google Drive (ícone perto do relógio) › engrenagem › "
@@ -205,7 +206,8 @@ def main():
     p.add_argument("--jira")
     p.add_argument("--redes")
     p.add_argument("--agendar")
-    p.add_argument("--programa", default="cwcast", choices=["cwcast", "canal2"], help="canal2 = Zeca (pasta e aba próprias)")
+    p.add_argument("--programa", default="cwcast", choices=["cwcast", "canal2", "dark"],
+                   help="canal2 = Zeca, dark = Breu (pasta e aba próprias)")
     p.add_argument("--destino", help="pasta da sprint (ex.: \"Instagram Cardapio Web\", \"CW Club\"); sem isso vai pelo kit do editor")
     sub.add_parser("minhas")
     sub.add_parser("pasta")

@@ -1,0 +1,4 @@
+Arquivos do estilo Dark-01 · Noir Motion (Breu, canal dark de cortes). Usados por scripts/dark01.py.
+fonts/    Anton, Montserrat (Bold/ExtraBold) e JetBrains Mono: Google Fonts / OFL.
+sfx/      subconjunto do banco de sons do motion-vox (índice com ganho e pico de cada som). Licença do pack: confirmar antes de postar.
+trilhas/  Biblioteca de Áudio do YouTube, licença "Atribuição não obrigatória": Broken Glass e Not My First Rodeo (Dyalla).

@@ -588,7 +588,7 @@ def selecionar(lote, ep, estilo=None):
                        "transcrição = {}). Os cortes que você escolher vão ser produzidos nesse estilo:\n{}").format(
                 W, bruto, pasta / "transcricao.txt", receita(estilo, "EPISÓDIO"))
             extra = [W]
-        if formato_canal2(estilo):   # segundo canal: momentos que o CW Cast ainda não usou ("para não parecer que é nosso")
+        if formato_canal2(estilo) or formato_dark(estilo):   # Zeca e Breu: momentos que os outros canais ainda não usaram
             usados = srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []
             if usados:
                 prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
@@ -2243,6 +2243,11 @@ def formato_canal2(estilo):
     return "formato: canal 2" in ((estilo or {}).get("receita") or "").lower()
 
 
+def formato_dark(estilo):
+    """Estilo do canal dark do Breu (marca na receita: "FORMATO: DARK"): motor Dark-01 · Noir Motion (scripts/dark01.py)."""
+    return "formato: dark" in ((estilo or {}).get("receita") or "").lower()
+
+
 def formato_02(estilo):
     """O estilo escolhido no pedido é o "Padrão #02"? (marca na receita: "FORMATO: PADRÃO #02")."""
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
@@ -2368,7 +2373,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 if r.is_dir()), HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references")
     env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
     epj = W / "work" / "eps" / "ep" / "episodio.json"
-    preparar_episodio_estilo(ep, W, janelas, passo)
+    if not formato_dark(estilo):   # o Breu mostra o vídeo horizontal inteiro: não precisa do mapa de câmeras
+        preparar_episodio_estilo(ep, W, janelas, passo)
 
     def rodar(nome, args, ok=(0,), tempo=900):
         passo(nome)
@@ -2386,6 +2392,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if abs(novo_fim - fim) > 0.05:
             log("corte", cid, "termina no fim da frase:", fim, "→", novo_fim)
             fim = novo_fim
+    if formato_dark(estilo):
+        return produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo)
     trava = None
     if c.get("ajuste") and plan.exists():
         itens = itens_das_edicoes(c.get("edicoes")) if c.get("edicoes") else itens_ajuste(c["ajuste"])
@@ -2664,6 +2672,130 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     return final, (previa if previa.exists() else final)
 
 
+PLANO_DARK = """Você é o Breu, o editor do canal dark de cortes (%%ARROBA%%), no estilo Dark-01 · Noir Motion. Ninguém está olhando:
+decida e responda. Corte %%CID%% do episódio "%%EPISODIO%%", %%DUR%% s. Título da seleção: %%TITULO%%. Gancho da seleção: %%GANCHO%%
+%%AJUSTE%%
+FALA DO CORTE (segundo do corte: frase). Todos os tempos abaixo e na resposta são segundos DO CORTE:
+%%FALAS%%
+
+Escreva o ROTEIRO DE MOTION. O motor desenha tudo; você decide o quê e quando.
+- titulo: até 7 palavras, afirmação forte, com 1 ou 2 palavras-chave entre *asteriscos* (viram a barra vermelha). Ex.: "Fidelidade só funciona no *3º pedido*".
+- gancho: {"de": s, "ate": s}: a frase mais forte do corte, de 4 a 6 s, do começo de uma frase até ela acabar (nunca no meio da fala).
+  Ela abre o vídeo, depois o corte começa do início.
+- cenas: uma peça de motion a cada 6 a 10 s, sem sobrepor, cada uma de 3 a 9 s, começando quando o assunto é falado (4 a 7 num corte de 60 s).
+  Varie os tipos. Tipos:
+  - tipografia: {"tipo": "tipografia", "de": s, "ate": s, "linhas": ["Não viu", "~resultado", "*Parou*"], "tempos": [s, s, s]}
+    2 ou 3 linhas de 1 a 2 palavras ditas na fala; "~" = linha cinza, "*...*" = linha grande com sublinhado vermelho (só uma);
+    tempos = quando cada linha é falada, contados do "de" da cena.
+  - contador: {"tipo": "contador", "de": s, "ate": s, "valor": 64, "sufixo": "%", "prefixo": "No 3º pedido", "sub": "dos clientes fidelizam",
+    "grafico": {"valores": [34, 64], "rotulos": ["1º pedido", "3º pedido"], "destaque": 1, "legenda": "clientes que voltam"}}
+    só com número FALADO; a cena começa ~1,2 s antes de o número ser dito. "grafico" só se a fala tiver 2+ números comparáveis.
+  - icones: {"tipo": "icones", "de": s, "ate": s, "itens": [["celular", "Rede social", s], ["carrinho", "Cardápio digital", s]]}
+    2 ou 3 itens (rótulo de 1 a 2 palavras); o terceiro número = quando é falado, do "de" da cena. Ícones: %%ICONES%%.
+  - linha_tempo: {"tipo": "linha_tempo", "de": s, "ate": s, "marcos": [{"topo": "2019", "texto": "abriu", "em": s}, {"topo": "2021", "texto": "quase quebrou", "em": s, "destaque": true}, ...]}
+    3 marcos, só quando a fala conta uma sequência (anos, etapas, 1º/3º/10º).
+  - comparacao: {"tipo": "comparacao", "de": s, "ate": s, "esq": "Plataforma", "dir": "Canal próprio", "linhas": [["Taxa de 16%", "Taxa de *6%*"], ...]}
+    2 ou 3 linhas de até 4 palavras, quando a fala compara duas coisas.
+- zooms: 1 a 3 segundos de frases de impacto, fora das cenas.
+- destaques: 6 a 12 palavras da fala que ficam vermelhas na legenda (termos-chave, sem artigo).
+- convidado: "Nome · papel" de quem fala, só se você tiver certeza pelo título do episódio ou pela fala; senão "".
+- pergunta: pergunta curta que puxa comentário no fim.
+- legenda_post: legenda para o Instagram (2 a 3 linhas + 3 hashtags), sem citar Cardápio Web nem CW Cast.
+Todo texto em português correto, com acento. Nada inventado: número, fato e nome só se forem ditos.
+Responda APENAS com JSON: {"titulo": "...", "gancho": {...}, "cenas": [...], "zooms": [...], "destaques": [...], "convidado": "", "pergunta": "...", "legenda_post": "..."}"""
+
+TRILHAS_DARK = ["broken-glass-dyalla.mp3", "not-my-first-rodeo-dyalla.mp3"]
+
+
+def _falas_dark(words):
+    """A fala do corte em frases curtas com o segundo do começo ("12.3: o terceiro pedido fideliza..."), para o roteiro."""
+    out, cur, t0 = [], [], None
+    for k, w in enumerate(words):
+        if t0 is None:
+            t0 = float(w["start"])
+        cur.append(w["w"])
+        prox = words[k + 1] if k + 1 < len(words) else None
+        if prox is None or re.search(r"[.!?]$", w["w"]) or len(cur) >= 14 or float(prox["start"]) - float(w["end"]) > 0.6:
+            out.append("{:.1f}: {}".format(t0, " ".join(cur)))
+            cur, t0 = [], None
+    return "\n".join(out)
+
+
+def produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo):
+    """Breu (canal dark): a esteira prepara o trecho como no Titeu (pontas no vale do som, transcrição sem silêncios, revisão da
+    legenda), o Claude escreve o roteiro de motion e o motor Dark-01 (scripts/dark01.py) desenha o vertical quadro a quadro."""
+    work = W / "work" / cid
+    tr = work / "transcript.json"
+    roteiro = work / "dark_plano.json"
+    if not (c.get("ajuste") and tr.exists()):
+        if work.exists():   # tentativa anterior: guarda e começa limpo
+            shutil.move(str(work), str(W / "work" / "{}_antigo_{}".format(cid, int(time.time()))))
+        work.mkdir(parents=True)
+        ranges = "{}-{}".format(mmss_t(ini), mmss_t(fim))
+        saida = rodar("Pontas no vale do som", ["tools/pontas.py", "--src", bruto, "--ranges", ranges], ok=(0, 1))
+        linha = next((l for l in saida.splitlines() if l.startswith("RANGES:")), "")
+        sug = linha.split(":", 1)[1].strip() if linha else ""
+        medido = bool(sug) and not re.search(r"^FAIL", saida, re.M)
+        rodar("Transcrição do trecho", ["scripts/transcribe.py", "--src", bruto, "--ranges", sug if medido else ranges, "--out", "work/" + cid,
+                                        "--cut-silence", "0.8", "--cut-gaps", "0", "--keep-pause", "0.24", "--prompt", PROMPT_WHISPER]
+                                       + (["--no-snap-edges"] if medido else []), tempo=1200)
+        rodar("Revisão das legendas", [AQUI / "legendas.py", "revisar", "work/{}/transcript.json".format(cid),
+                                       "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"])], ok=(0, 1), tempo=300)
+    t = json.loads(tr.read_text(encoding="utf-8"))
+    rg = [(float(a), float(b)) for a, b in t.get("ranges") or []]
+    words = [w for w in t.get("words") or [] if (w.get("w") or "").strip()]
+    if not rg or not words:
+        raise Falhou("transcrição do corte sem trechos ou sem palavras")
+    dur = round(sum(b - a for a, b in rg), 3)
+    base = work / "base_dark.mp4"
+    if not base.exists() or base.stat().st_mtime < tr.stat().st_mtime:   # o vídeo horizontal do corte: trechos do bruto juntos, em 1080p
+        passo("Vídeo horizontal do corte")
+        ins, fc = [], []
+        for k, (a, b) in enumerate(rg):
+            ins += ["-ss", "{:.3f}".format(a), "-t", "{:.3f}".format(b - a), "-i", str(bruto)]
+            fc.append("[{k}:v]fps=30,scale=1920:1080:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[v{k}];[{k}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+                      "asetpts=PTS-STARTPTS,afade=t=in:d=0.02,afade=t=out:st={o:.3f}:d=0.02[a{k}]".format(k=k, o=max(0, b - a - 0.02)))
+        fc.append("".join("[v{k}][a{k}]".format(k=k) for k in range(len(rg))) + "concat=n={}:v=1:a=1[v][a]".format(len(rg)))
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y"] + ins + ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-f", "mov", str(base)],
+                           capture_output=True, text=True, timeout=2400)
+        if r.returncode or not base.exists():
+            raise Falhou("vídeo horizontal do corte: " + (r.stderr or "")[-300:])
+    (work / "dark_palavras.json").write_text(json.dumps({"words": words}, ensure_ascii=False), encoding="utf-8")
+    ajuste = ""
+    if c.get("ajuste") and roteiro.exists():
+        ajuste = ("\nAJUSTE PEDIDO PELO EDITOR (o corte já foi feito; mude SÓ isto e mantenha o resto do roteiro anterior):\n"
+                  + texto_itens(itens_ajuste(c["ajuste"])) + "\nROTEIRO ANTERIOR:\n" + roteiro.read_text(encoding="utf-8")[:6000] + "\n")
+    import dark01
+    prompt = (PLANO_DARK.replace("%%ARROBA%%", arroba_do_estilo(estilo) or "o canal").replace("%%CID%%", cid).replace("%%EPISODIO%%", ep["nome"])
+              .replace("%%DUR%%", "{:.1f}".format(dur)).replace("%%TITULO%%", c["titulo"]).replace("%%GANCHO%%", c.get("gancho") or "(nenhum)")
+              .replace("%%AJUSTE%%", ajuste).replace("%%FALAS%%", _falas_dark(words)).replace("%%ICONES%%", ", ".join(sorted(dark01.ICONES))))
+    passo("Roteiro de motion (Breu)")
+    r = json_final(claude(prompt, work, "sonnet", ao_passo=passo, limite=600))
+    if not r.get("titulo") or not isinstance(r.get("cenas"), list):
+        raise Falhou("o roteiro de motion veio sem título ou sem cenas")
+    plano = {"video": str(base), "palavras": str(work / "dark_palavras.json"), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
+             "titulo": r["titulo"], "arroba": arroba_do_estilo(estilo) or "", "gancho": r.get("gancho"), "cenas": r["cenas"],
+             "zooms": r.get("zooms") or [], "destaques": r.get("destaques") or [], "convidado": (r.get("convidado") or "").strip(), "nome_em": 4.0,
+             "fim": {"texto": "Parte 2", "sub": "no perfil", "pergunta": r.get("pergunta") or ""},
+             "trilha": TRILHAS_DARK[int(c.get("ordem") or 0) % len(TRILHAS_DARK)]}
+    plano = dark01.limpar_plano(plano, dur)
+    roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
+    (W / "saida").mkdir(exist_ok=True)
+    rodar("Render do Breu (Dark-01)", [AQUI / "dark01.py", roteiro], tempo=3600)
+    final = W / "saida" / "{}.mp4".format(cid)
+    previa = W / "saida" / "{}_preview.mp4".format(cid)
+    if not final.exists():
+        raise Falhou("o motor Dark-01 não gerou saida/{}.mp4".format(cid))
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                    "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+    if r.get("legenda_post"):
+        (pasta / "legenda_post_ia.txt").write_text(r["legenda_post"].strip(), encoding="utf-8")
+    base.unlink(missing_ok=True)   # ~1 GB por corte; o disco do servidor anda cheio
+    log("Breu:", cid, "com", len(plano["cenas"]), "cena(s) de motion:", ", ".join(x["tipo"] for x in plano["cenas"]))
+    return final, (previa if previa.exists() else final)
+
+
 PRODUCAO_REEL = """Você é o FabI.Ano, o editor de reels da Cardápio Web na esteira do CW Studios, sem ninguém olhando: não pergunte nada,
 decida e siga. Valem as regras e lições do time e o pedido abaixo.
 Reel {cid} "{titulo}": o material gravado está em {bruto} (a câmera e, se houver, a gravação de tela do OBS); veja {material}.
@@ -2751,7 +2883,8 @@ def produzir(item):
             try:
                 janelas = "" if estilo.get("teste") else (item.get("janelas") or "")   # teste de estilo: usa o mapa de câmeras que já existe
                 final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
-                entregar_previa(c, final, previa, cid, "", pasta)
+                leg_ia = pasta / "legenda_post_ia.txt"   # o Breu escreve a legenda do post junto com o roteiro
+                entregar_previa(c, final, previa, cid, leg_ia.read_text(encoding="utf-8") if leg_ia.exists() else "", pasta)
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
                 log("motor automático do corte", c["id"], "caiu para o modo Claude:", e)
@@ -2891,7 +3024,8 @@ def entregar(item):
         saida = subprocess.run([sys.executable, str(AQUI / "publicar.py"), "enviar", "--arquivo", str(final), "--titulo", c["titulo"][:120],
                                 "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]]
                                + (["--destino", "Instagram Cardapio Web"] if reel else [])
-                               + (["--programa", "canal2"] if item.get("canal2") else []),   # Zeca: pasta e aba próprias
+                               + (["--programa", "canal2"] if item.get("canal2") else [])   # Zeca: pasta e aba próprias
+                               + (["--programa", "dark"] if item.get("dark") else []),   # Breu: pasta e aba próprias
                                capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:

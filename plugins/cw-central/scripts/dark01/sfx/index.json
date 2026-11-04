@@ -1,0 +1,262 @@
+{
+ "versao": 2,
+ "estilo": "Dark-01 · Noir Motion (subconjunto do banco do motion-vox)",
+ "aprovado": "Felipe, 01/10/2026: opcao C do teste no m09 (um som para cada momento, glitch na saida do hook)",
+ "hook": "glitch-02",
+ "nivel": "volume casado com o whoosh sintetizado aprovado; o tema aplica o mesmo 0,22 (bem abaixo da voz)",
+ "sincronia": "o tema alinha o pico de cada som ao pico do whoosh sintetizado (t + 0,08 s)",
+ "uso_por_tipo": {
+  "whoosh": "entrada/saida de cena ou de video (o padrao do Viral-01)",
+  "pop": "objeto ou rotulo pousa na tela",
+  "papel": "cartao/papel entra (combina com o fundo branco)",
+  "ding": "numero ou resultado aparece",
+  "impacto": "payoff, a frase que fecha (no maximo 1 por corte)",
+  "riser": "antes da virada; o pico cai no evento",
+  "glitch": "saida do hook (glitch discreto)",
+  "camera": "foto/print entra",
+  "caixa": "dinheiro, faturamento, venda",
+  "digitar": "tela de sistema, digitacao"
+ },
+ "sons": [
+  {
+   "id": "whoosh-01",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-01.wav",
+   "dur": 0.334,
+   "pico": 0.104,
+   "ganho_db": -5.8,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Nova pasta/sfx_whoosh_lo_sh01.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-02",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-02.wav",
+   "dur": 0.328,
+   "pico": 0.061,
+   "ganho_db": -5.3,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Nova pasta/sfx_whoosh_lo_sh02.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-03",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-03.wav",
+   "dur": 0.328,
+   "pico": 0.109,
+   "ganho_db": -4.9,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Nova pasta/sfx_whoosh_lo_sh03.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-04",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-04.wav",
+   "dur": 0.343,
+   "pico": 0.089,
+   "ganho_db": -6.5,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Nova pasta/sfx_whoosh_lo_sh04.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-05",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-05.wav",
+   "dur": 0.351,
+   "pico": 0.109,
+   "ganho_db": -6.6,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Nova pasta/sfx_whoosh_lo_sh05.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-06",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-06.wav",
+   "dur": 0.24,
+   "pico": 0.07,
+   "ganho_db": -6.8,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Ultimate Social Content SFX/Transitions Short/Swipe.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-07",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-07.wav",
+   "dur": 0.25,
+   "pico": 0.061,
+   "ganho_db": 9.8,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Diversos/swoosh quick 4.mp3",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-08",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-08.wav",
+   "dur": 0.439,
+   "pico": 0.09,
+   "ganho_db": -2.5,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Diversos/whoosh-6316.mp3",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "whoosh-09",
+   "tipo": "whoosh",
+   "arquivo": "whoosh-09.wav",
+   "dur": 0.475,
+   "pico": 0.266,
+   "ganho_db": -1.2,
+   "origem": "3 SFX essenciais - @_danielburlini/01 - Whooshes/Whoosh 5 - Fast, Airy.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "pop-01",
+   "tipo": "pop",
+   "arquivo": "pop-01.wav",
+   "dur": 0.141,
+   "pico": 0.047,
+   "ganho_db": -3.4,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Diversos/mixkit-hard-pop-click-2364.wav",
+   "licenca": "Mixkit (licenca livre, uso comercial ok)"
+  },
+  {
+   "id": "pop-02",
+   "tipo": "pop",
+   "arquivo": "pop-02.wav",
+   "dur": 0.22,
+   "pico": 0.017,
+   "ganho_db": -3.3,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Diversos/mixkit-soap-bubble-sound-2925.wav",
+   "licenca": "Mixkit (licenca livre, uso comercial ok)"
+  },
+  {
+   "id": "pop-03",
+   "tipo": "pop",
+   "arquivo": "pop-03.wav",
+   "dur": 0.214,
+   "pico": 0.086,
+   "ganho_db": -3.5,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/11. SHORT FOLEY/Short foley Click.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "pop-04",
+   "tipo": "pop",
+   "arquivo": "pop-04.wav",
+   "dur": 0.267,
+   "pico": 0.132,
+   "ganho_db": 5.4,
+   "origem": "Pack SFX Sound Design - @_danielburlini/Focus-Click.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "pop-05",
+   "tipo": "pop",
+   "arquivo": "pop-05.wav",
+   "dur": 0.376,
+   "pico": 0.168,
+   "ganho_db": 1.7,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Vintage SFX/Click-1.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "ding-02",
+   "tipo": "ding",
+   "arquivo": "ding-02.wav",
+   "dur": 0.409,
+   "pico": 0.014,
+   "ganho_db": -2.1,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Diversos/Ding.mp3",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-01",
+   "tipo": "impacto",
+   "arquivo": "impacto-01.wav",
+   "dur": 0.159,
+   "pico": 0.03,
+   "ganho_db": -10.0,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/11. SHORT FOLEY/Short foley Hit Soft.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-02",
+   "tipo": "impacto",
+   "arquivo": "impacto-02.wav",
+   "dur": 0.163,
+   "pico": 0.032,
+   "ganho_db": -8.4,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/11. SHORT FOLEY/Short foley Hit.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-03",
+   "tipo": "impacto",
+   "arquivo": "impacto-03.wav",
+   "dur": 0.228,
+   "pico": 0.029,
+   "ganho_db": -10.7,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/11. SHORT FOLEY/Short foley Hit Deep.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-04",
+   "tipo": "impacto",
+   "arquivo": "impacto-04.wav",
+   "dur": 1.84,
+   "pico": 0.173,
+   "ganho_db": -0.6,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/1. HITS IMPACTS/Impact Bass.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-05",
+   "tipo": "impacto",
+   "arquivo": "impacto-05.wav",
+   "dur": 1.871,
+   "pico": 0.012,
+   "ganho_db": -1.4,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/17. TONES/Tones Hit.mp3",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-06",
+   "tipo": "impacto",
+   "arquivo": "impacto-06.wav",
+   "dur": 2.161,
+   "pico": 0.106,
+   "ganho_db": -2.1,
+   "origem": "3 SFX essenciais - @_danielburlini/03 - Impacts/Cinematic Hit.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "impacto-07",
+   "tipo": "impacto",
+   "arquivo": "impacto-07.wav",
+   "dur": 2.435,
+   "pico": 0.061,
+   "ganho_db": -7.9,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Ultimate Social Content SFX/Impacts/Boom.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "riser-03",
+   "tipo": "riser",
+   "arquivo": "riser-03.wav",
+   "dur": 1.707,
+   "pico": 1.647,
+   "ganho_db": -7.9,
+   "origem": "Pack SFX Sound Design - @_danielburlini/Riser Metálico.mp3",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  },
+  {
+   "id": "glitch-02",
+   "tipo": "glitch",
+   "arquivo": "glitch-02.wav",
+   "dur": 0.333,
+   "pico": 0.097,
+   "ganho_db": -3.6,
+   "origem": "Melhores Efeitos Sonoros - @_danielburlini /Cinematic Sound Library/9. GLITCHES/Glitch Quickly.wav",
+   "licenca": "desconhecida (pack gratuito; confirmar antes de publicar)"
+  }
+ ]
+}
