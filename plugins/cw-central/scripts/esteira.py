@@ -3092,14 +3092,14 @@ Decida, frase a frase:
   SUPERPODER, ALEGRIA, CONQUISTA, NINGUÉM, A OBRIGAÇÃO, RADAR SOCIAL). Copie EXATAMENTE como está na frase (1 a 2 palavras
   seguidas). No máximo uma por frase; frase de ligação ("NÉ?", "POIS É", "E AÍ") fica sem. Em torno de 2 de cada 3 frases têm uma.
 - "medio": true só para frase curta de peso sem uma palavra única de destaque ("VIVER O MOMENTO", "PRECISA SER VISTA"); 0 a 3 no corte.
-- "impacto": true nas frases do ÁPICE EMOCIONAL do corte: a frase inteira fica AMARELA. São as DECISÕES, CONFISSÕES e VIRADAS
+- "impacto": true nas frases do ÁPICE EMOCIONAL do corte: a frase inteira fica em DESTAQUE (roxo). São as DECISÕES, CONFISSÕES e VIRADAS
   da história, ditas em primeira pessoa e com sentimento: "NÃO QUERO MAIS EMPRESA", "MAS EU VOU INVESTIR NAQUILO QUE / EU SEMPRE
   QUIS", "EU PERDI TUDO", "FOI AÍ QUE EU ENTENDI". Quando a ideia ocupa duas frases seguidas, marque as duas. 2 a 4 momentos por
   corte. NUNCA marque fato, número, lugar, tempo ou descrição ("CINCO ANOS", "UM HAMBÚRGUER POR SEMANA", "CHAPINHA DE 60 CM"),
-  nem frase de ligação: número e fato podem ser "grande", mas não amarelos.
+  nem frase de ligação: número e fato podem ser "grande", mas não ficam em destaque.
 - "virada": o segundo do corte em que acontece o ponto sentimental (a trilha cresce ali).
 - "clima": "queda" (dificuldade, perda, medo), "virada" (ascensão, conquista, recomeço) ou "conselho" (pensamento para outros donos).
-- No corte INSPIRADOR a palavra grande sai AMARELA: escolha nela a palavra da ambição, da conquista ou do adversário
+- No corte INSPIRADOR a palavra grande sai em DESTAQUE (roxo): escolha nela a palavra da ambição, da conquista ou do adversário
   (NÚMERO UM, DE FRENTE, PESSOAS CERTAS, SUPERPODER).
 - "legenda_post": legenda para o Instagram, 2 a 3 linhas no tom do corte + 3 hashtags, sem citar Cardápio Web nem CW Cast.
 Nada inventado: palavra-chave só se estiver na frase.
@@ -3205,7 +3205,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
               .replace("%%TITULO%%", c["titulo"]).replace("%%MOTIVO%%", c.get("motivo") or "(nenhum)").replace("%%AJUSTE%%", ajuste)
               .replace("%%FRASES%%", nanquim.texto_frases(ws)))
     tipo = "inspirador" if re.search(r"\[\s*INSPIRADOR", c.get("motivo") or "", re.I) else "reflexivo"   # decidido na seleção
-    prompt = prompt.replace("%%TIPO%%", tipo.upper() + (" (termina na conquista: cor de filme, palavra grande amarela, trilha épica)"
+    prompt = prompt.replace("%%TIPO%%", tipo.upper() + (" (termina na conquista: cor de filme, palavra grande em destaque roxo, trilha épica)"
                                                          if tipo == "inspirador" else " (termina na reflexão: P&B, trilha contida)"))
     passo("Palavras-chave e trilha (Nanquim)")
     r = json_final(claude(prompt, work, "sonnet", ao_passo=passo, limite=600))
@@ -3222,7 +3222,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
         acc += b - a
         emendas.append(round(acc, 3))
     plano = {"video": str(base), "palavras": str(pal), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
-             "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima, "tipo": tipo,
+             "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima, "tipo": tipo, "arroba": arroba_do_estilo(estilo),
              "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem"))}
     roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
     (W / "saida").mkdir(exist_ok=True)

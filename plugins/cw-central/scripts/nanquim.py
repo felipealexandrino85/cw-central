@@ -46,8 +46,8 @@ SEGURA = 0.6                        # respiro depois da última palavra
 CARD = 3.0                          # tela preta com o CTA e a trilha sumindo
 CTA = ["ME SIGA PARA MAIS", "CONTEÚDOS COMO ESTE"]
 CTA_KICKER = "GOSTOU DESSA HISTÓRIA?"
-BRANCO, AMARELO = (255, 255, 255), (255, 212, 0)   # amarelo = frase de impacto (destaca bem no P&B; Felipe, 05/11)
-AMARELO_INSP = (255, 201, 40)   # INSPIRADOR: a palavra grande fica amarela (#FFC928), como na referência 2
+BRANCO = (255, 255, 255)
+DESTAQUE = (176, 98, 255)   # roxo da marca, um pouco mais claro para ler sobre o P&B (Felipe, 05/11/2026: destaques em roxo, não amarelo)
 FUNCAO = {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "no", "na", "nos", "nas", "e", "que", "pra", "pro",
           "em", "eu", "ele", "ela", "se", "me", "te", "lhe", "por", "com", "sem", "mas", "ou", "é", "tá", "isso", "esse", "essa"}
 
@@ -209,8 +209,8 @@ def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False, inspirad
         x0 = 0 if alinhar == "left" else -lw if alinhar == "right" else -lw / 2
         x = x0
         for p in ln:
-            # frase de impacto: a frase inteira em amarelo (Felipe, 05/11); INSPIRADOR: também a palavra grande
-            cor = AMARELO if impacto else AMARELO_INSP if inspirador and tam > MED else BRANCO
+            # frase de impacto: a frase inteira em destaque (Felipe, 05/11); INSPIRADOR: também a palavra grande
+            cor = DESTAQUE if impacto or (inspirador and tam > MED) else BRANCO
             out.append({"t": p["t"], "i": p["i"], "tam": tam, "x": x, "y": y, "grande": tam > MED, "cor": cor})
             x += largura(p["t"] + " ", f)
     return out
@@ -262,54 +262,43 @@ def suaviza(x, sigma):
 
 def trilha_recorte(video, dur, emendas, falante=None):
     """Janela de recorte (x, y, largura, altura em px do vídeo 1920x1080) para cada quadro.
-    Dentro de um trecho o recorte fica PARADO, no lugar mediano do rosto de quem fala; em cada emenda/troca de câmera muda
-    de posição e escala (100% ↔ ~108%) para disfarçar o pulo, como na referência."""
+    Enquadramento SEMPRE o mesmo (Felipe, 05/11/2026: sem zoom e sem mudança de enquadramento): um zoom só para o corte todo e
+    o rosto de quem fala centrado. Só muda quando o próprio episódio troca de câmera (aí a imagem já é outra); nas emendas
+    (jump cuts) da mesma câmera o recorte não se mexe."""
     rostos, cortes, n = detectar(video, dur)
-    limites = sorted(set(cortes + [int(round(e * FPS)) for e in emendas if 0 < e * FPS < n] + [n]))
+    limites = sorted(set(cortes + [n]))   # só troca de câmera; emenda não muda o recorte
     jan = np.zeros((n, 4))
-    for s, (a, b) in enumerate(zip(limites[:-1], limites[1:])):
+    planos, alturas = [], []
+    for a, b in zip(limites[:-1], limites[1:]):
         if b <= a:
             continue
         alvo_cx = None
-        if falante:   # quem fala no meio do segmento (falante.py), quando a medida existe
+        if falante:   # quem fala no meio do plano (falante.py), quando a medida existe
             t = (a + b) / 2 / FPS
             p = next((p for p in falante.get("planos") or [] if p["ini"] <= t < p["fim"]), None)
             if p and p.get("falante") is not None:
                 alvo_cx = p["rostos"][p["falante"]]["cx"]
-        amostras = [(i, r) for i in range(a, b) if rostos[i] for r in rostos[i]]
+        amostras = [r for i in range(a, b) if rostos[i] for r in rostos[i]]
         if not amostras:
-            ch = 1080.0
-            jan[a:b] = [(1920 - ch * 4 / 3) / 2, 0, ch * 4 / 3, ch]
+            planos.append((a, b, None))
             continue
-        if alvo_cx is None:   # o rosto maior do segmento
-            alvo_cx = max(amostras, key=lambda x: x[1][2])[1][0]
-        cx, cy, fh = np.full(b - a, np.nan), np.full(b - a, np.nan), np.full(b - a, np.nan)
-        ult = alvo_cx
-        for i in range(a, b):
-            if rostos[i]:
-                r = min(rostos[i], key=lambda r: abs(r[0] - ult))
-                if abs(r[0] - ult) < 0.12:
-                    cx[i - a], cy[i - a], fh[i - a] = r
-                    ult = r[0]
-        ok = ~np.isnan(cx)
-        if not ok.any():
-            ch = 1080.0
-            jan[a:b] = [(1920 - ch * 4 / 3) / 2, 0, ch * 4 / 3, ch]
+        if alvo_cx is None:   # o rosto maior do plano
+            alvo_cx = max(amostras, key=lambda r: r[2])[0]
+        perto = [r for r in amostras if abs(r[0] - alvo_cx) < 0.12]
+        cx, cy, fh = (float(np.median([r[k] for r in perto])) for k in range(3))
+        planos.append((a, b, (cx, cy)))
+        alturas += [fh] * (b - a)
+    # um zoom só para o corte todo: cabeça ≈ 1,45 × o rosto do detector, ocupando ~40% da altura da faixa
+    z = clamp(1080.0 / (float(np.median(alturas)) * 1080 * 1.45 / 0.40), 1.0, ZOOM_MAX) if alturas else 1.0
+    ch = 1080.0 / z
+    cw = ch * 4 / 3
+    for a, b, c in planos:
+        if c is None:
+            jan[a:b] = [(1920 - cw) / 2, (1080 - ch) / 2, cw, ch]
             continue
-        idx = np.arange(b - a)
-        cx = np.interp(idx, idx[ok], cx[ok])
-        cy = np.interp(idx, idx[ok], cy[ok])
-        cx[:], cy[:] = float(np.median(cx)), float(np.median(cy))   # câmera PARADA no trecho (Felipe, 05/11: sem acompanhar o rosto)
-        # cabeça ≈ 1,45 × o rosto do detector; na referência a cabeça ocupa ~40% da altura da faixa
-        z = clamp(1080.0 / (float(np.median(fh[ok])) * 1080 * 1.45 / 0.40), 1.0, ZOOM_MAX)
-        if s % 2:   # trecho sim, trecho não: ~8% mais fechado (ou mais aberto, se já está no limite)
-            z = z * 1.08 if z * 1.08 <= ZOOM_MAX else z / 1.08
-        ch = 1080.0 / z
-        cw = ch * 4 / 3
-        pos = (0.5, 0.56, 0.46)[s % 3]   # o rosto passeia um pouco de lado entre os trechos
-        x = np.clip(cx * 1920 - pos * cw, 0, 1920 - cw)
-        y = np.clip(cy * 1080 - 0.36 * ch, 0, 1080 - ch)
-        jan[a:b, 0], jan[a:b, 1], jan[a:b, 2], jan[a:b, 3] = x, y, cw, ch
+        x = float(np.clip(c[0] * 1920 - 0.5 * cw, 0, 1920 - cw))
+        y = float(np.clip(c[1] * 1080 - 0.36 * ch, 0, 1080 - ch))
+        jan[a:b] = [x, y, cw, ch]
     return jan, n
 
 
@@ -582,7 +571,7 @@ def render(plano_path):
     nframes = int(round(total * FPS))
 
     # legenda: um bloco por frase; palavra-chave grande e frases médias vêm do plano (o Claude escolhe pelo número da frase)
-    inspirador = (plano.get("tipo") or "").lower() == "inspirador"   # INSPIRADOR: cor de filme e palavra grande amarela
+    inspirador = (plano.get("tipo") or "").lower() == "inspirador"   # INSPIRADOR: cor de filme e palavra grande em destaque
     escolhas = {int(b["n"]): b for b in plano.get("blocos") or [] if isinstance(b, dict) and str(b.get("n", "")).lstrip("-").isdigit()}
     fr = frases(ws)
     blocos = []
@@ -624,6 +613,11 @@ def render(plano_path):
         return _spr[k]
 
     card = {}
+    marca = None
+    if plano.get("arroba"):   # marca d'água do canal, pequena, no preto logo abaixo da faixa, o vídeo todo
+        im, dx, dy = sprite(plano["arroba"], fonte(30), (235, 235, 238))
+        im.putalpha(im.getchannel("A").point(lambda v: int(v * 0.6)))
+        marca = (np.asarray(im).astype(np.float32), round(W / 2 - largura(plano["arroba"], fonte(30)) / 2 - dx), FY + FH + 26 - dy)
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -708,6 +702,12 @@ def render(plano_path):
                     card["fundo"] = fundo_card(card.get("ultima"))
                 quadro = np.zeros((H, W, 3), np.uint8)
                 quadro[FY:FY + FH] = np.asarray(desenha_card(card["fundo"], T - fim_img))
+            if marca is not None:
+                im, mx, my = marca
+                reg = quadro[my:my + im.shape[0], mx:mx + im.shape[1]].astype(np.float32)
+                al = im[..., 3:4] / 255.0
+                quadro = np.array(quadro)
+                quadro[my:my + im.shape[0], mx:mx + im.shape[1]] = (reg * (1 - al) + im[..., :3] * al).astype(np.uint8)
             enc.stdin.write(quadro.tobytes())
             if n % 150 == 0:
                 print("quadro {}/{}".format(n, nframes), flush=True)
