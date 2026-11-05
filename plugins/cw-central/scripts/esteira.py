@@ -615,16 +615,52 @@ def selecionar(lote, ep, estilo=None):
             if usados:
                 prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
                            "(segundos do episódio): " + json.dumps(usados))
+        n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) else 0
+        if n_res:   # Zeca: reservas para trocar os trechos em que quem fala não aparece na imagem
+            prompt += ("\n\nDepois dos {n}, escolha mais {r} RESERVAS (momentos bons e diferentes, mesmo formato) na chave \"reservas\" do "
+                       "JSON. Prefira trechos em que quem fala aparece no vídeo (o canal mostra a câmera do episódio).").format(n=lote["quantidade"], r=n_res)
         texto = claude(prompt, pasta, "opus", limite=2400, extra_dirs=extra)
         r = json_final(texto)
-        cortes = [c for c in r.get("cortes") or [] if float(c.get("fim", 0)) > float(c.get("inicio", 0))]
+        valido = lambda c: float(c.get("fim", 0)) > float(c.get("inicio", 0))
+        cortes = [c for c in r.get("cortes") or [] if valido(c)]
         if not cortes:
             raise RuntimeError("nenhum corte válido na seleção")
-        srv("lista", lote=lote["id"], cortes=cortes, resumo=r.get("resumo") or "")
+        resumo = r.get("resumo") or ""
+        if n_res:
+            cortes, resumo = mapa_falante(pasta, cortes, [c for c in r.get("reservas") or [] if valido(c)], int(lote["quantidade"]), resumo)
+        srv("lista", lote=lote["id"], cortes=cortes, resumo=resumo)
         log("lote", lote["id"], "com", len(cortes), "cortes para conferir")
     except Exception as e:
         log("seleção do lote", lote["id"], "falhou:", e)
         srv("lote", id=lote["id"], estado="erro", erro=str(e)[:500])
+
+
+def mapa_falante(pasta, cortes, reservas, n, resumo):
+    """Zeca: confere cada trecho escolhido (e as reservas) no vídeo do episódio. Trecho em que quem fala não aparece na imagem
+    (uma pessoa só na tela enquanto outra fala) troca por uma reserva boa; sem reserva, fica com o aviso no motivo. Se isso
+    acontece em boa parte do episódio, o lote chega com o alerta no resumo (Felipe, 05/11/2026: Ep.6-005 foi descartado inteiro)."""
+    from concurrent.futures import ThreadPoolExecutor
+    bruto = next(pasta.glob("bruto.*"), None)
+    if not bruto:
+        return cortes, resumo
+    todos = cortes + reservas
+    with ThreadPoolExecutor(3) as ex:
+        chk = list(ex.map(lambda c: checar_falante(bruto, float(c["inicio"]), float(c["fim"])), todos))
+    ruim = lambda k: (chk[k] or 0) >= FORA_TUDO
+    bons = [c for k, c in enumerate(cortes) if not ruim(k)]
+    res_boas = [c for k, c in enumerate(reservas, len(cortes)) if not ruim(k)]
+    ruins = [c for k, c in enumerate(cortes) if ruim(k)]
+    final = bons + res_boas[:max(0, n - len(bons))]
+    for c in ruins[:max(0, n - len(final))]:   # faltou reserva boa: o trecho fica, com o aviso
+        c["motivo"] = "⚠ quem fala não aparece na imagem neste trecho. " + (c.get("motivo") or "")
+        final.append(c)
+    medidos = [k for k in range(len(todos)) if chk[k] is not None]
+    nr = sum(1 for k in medidos if ruim(k))
+    log("quem fala na seleção:", nr, "de", len(medidos), "trecho(s) com quem fala fora da imagem;", len(ruins), "corte(s) trocado(s) ou com aviso")
+    if medidos and nr >= 0.4 * len(medidos):
+        resumo = ("⚠ Neste vídeo, quem fala muitas vezes NÃO aparece na imagem ({} de {} trechos testados mostram só quem ouve). "
+                  "A lista já evita esses trechos onde deu; confira antes de produzir.\n\n").format(nr, len(medidos)) + resumo
+    return final, resumo
 
 
 # ------------------------------------------------------------------------------------------- ③ produção e ④ entrega
@@ -662,6 +698,31 @@ work/{cid}/plan.json, work/{cid}/gates.json (o que falhou), transcript.json e a 
 Corrija SÓ a causa de cada FAIL (editando plan.json ou com o script indicado em RECEITAS_OPERACIONAIS §3 em {ref}),
 sem refazer o corte. NÃO renderize nem rode os gates (é automático). Valem as regras do time.
 Responda APENAS com JSON: {{"ok": true, "corrigiu": "uma linha"}}"""
+
+
+class SemFalante(Exception):
+    """Quem fala não aparece na imagem em boa parte do trecho (o vídeo do episódio mostra uma pessoa só): não vale produzir."""
+
+
+FORA_TUDO = 0.93   # boca × voz dizendo "ninguém na tela fala" em quase o trecho todo = quem fala está mesmo fora da imagem.
+# Medido (05/11/2026): microfone na frente da boca dá 75–85% (l19c05/06/08/10, cortes bons); o host falando com só os convidados
+# na tela dá 96–100% (l20c01/03/04/05/11/13, descartados pelo time).
+
+
+def checar_falante(video, de=0.0, ate=None, tempo=900):
+    """Parte do trecho (0–1) em que há voz e ninguém na tela está falando (falante.py, boca × voz). None se não mediu."""
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video), "--de", "{:.2f}".format(float(de or 0))]
+                           + (["--ate", "{:.2f}".format(float(ate))] if ate else []), capture_output=True, text=True, timeout=tempo)
+        res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+    except Exception as e:
+        log("checagem de quem fala não rodou:", str(e)[:200])
+        return None
+    planos = res.get("planos") or []
+    if not planos:
+        return None
+    dur = (float(ate) - float(de or 0)) if ate else max(float(p.get("fim") or 0) for p in planos)
+    return min(1.0, sum(b - a for a, b in res.get("fora_de_quadro") or []) / dur) if dur > 0 else None
 
 
 class Falhou(Exception):
@@ -1850,9 +1911,15 @@ def _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
             log("quem fala do", cid, ": recorte movido para quem fala em", mexeu, "shot(s)")
         fq = res.get("fora_de_quadro") or []
         if sum(b - a for a, b in fq) > bd / 3:   # a boca tapada pelo microfone vira "ninguém fala" (l19c05: 30 de 36 s); não confia
-            log("quem fala do", cid, ": boca × voz diz falante fora da imagem em", round(sum(b - a for a, b in fq), 1),
-                "de", round(bd, 1), "s; ignorado (falso alarme, microfone na frente da boca)")
-            return
+            if formato_canal2(estilo) and not (trava and trava.livres is not None) and sum(b - a for a, b in fq) >= FORA_TUDO * bd:
+                # Zeca, o corte todo: não é o microfone, quem fala não aparece (lote 20). Titeu e ajustes seguem como antes.
+                log("quem fala do", cid, ": boca × voz diz falante fora da imagem em", round(sum(b - a for a, b in fq), 1), "de", round(bd, 1), "s")
+                raise SemFalante("Não produzido: quem fala não aparece na imagem em quase todo o corte (o vídeo do episódio mostra "
+                                 "só quem ouve). Escolha outro trecho ou peça o ajuste dizendo como cobrir.")
+            else:
+                log("quem fala do", cid, ": boca × voz diz falante fora da imagem em", round(sum(b - a for a, b in fq), 1),
+                    "de", round(bd, 1), "s; ignorado (falso alarme, microfone na frente da boca)")
+                return
         resta = _sem_cobertura(fq, pl)
         if not resta:
             return
@@ -2325,9 +2392,10 @@ edição BÁSICA e diferente da oficial: a pessoa falando com a legenda e, em al
 SEM FRASES ANIMADAS (Felipe, 31/10/2026: nada de frase grande com palavra verde): nenhuma cena "tipo": "frase".
 Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (a fala por blocos), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "cenas": [...] depois de {evitar:.1f} s:
-- 3 a 5 B-ROLLS, de 1,5 a 3 s cada, nos momentos em que a fala descreve algo que dá para MOSTRAR (cozinha cheia, motoboy saindo,
-  cliente pedindo no celular, dinheiro, fila, embalagem...). Entre um b-roll e outro, pelo menos 4 s de pessoa falando; nunca
-  cubra a frase mais forte do corte (o rosto vende) e, somados, no máximo 35% do corte.
+- {n_broll} B-ROLLS (UM A CADA ~8–10 s de corte, sem buraco de mais de 12 s sem imagem), de 1,5 a 3 s cada, nos momentos em que a
+  fala descreve algo que dá para MOSTRAR (cozinha cheia, motoboy saindo, cliente pedindo no celular, dinheiro, fila, embalagem...).
+  Entre um b-roll e outro, pelo menos 4 s de pessoa falando; nunca cubra a frase mais forte do corte (o rosto vende) e, somados,
+  no máximo 40% do corte.
   · cena genérica = FILMAGEM REAL (vídeo): {videos}
     {{"t0", "t1", "tipo": "video", "imagem": "<o mp4 baixado>", "credito": "<crédito>"}}
   · coisa/marca/lugar/pessoa ESPECÍFICA citada = FOTO: python3 {imagem_web} "<busca curta e específica>" --saida broll/web
@@ -2346,9 +2414,34 @@ NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true
 
 FORA_CANAL2 = """PESSOA ERRADA NA TELA (medido pela voz + rosto): nestes trechos a imagem mostra quem está OUVINDO, não quem fala: {lista}.
 Cubra CADA trecho inteiro com FOTO em tela cheia ("tipo": "foto", "layout": "full"; uma ou mais fotos coladas de até 4 s cada, ligadas
-ao que é dito ali). Vídeo de b-roll aqui não serve: ele ocupa só metade da tela e a pessoa errada continua embaixo. Estes trechos contam
-nos 3 a 5 b-rolls e nos 35% do corte e valem mais que os outros: se não couber tudo, tire os outros b-rolls, não estes.
+ao que é dito ali). Vídeo de b-roll aqui não serve: ele ocupa só metade da tela e a pessoa errada continua embaixo. Estes trechos vêm
+PRIMEIRO e ficam FORA da conta dos b-rolls e dos 40% (a regra dos 4 s entre um e outro também não vale entre estas fotos).
 """
+
+
+COMPLETA_CANAL2 = """No motion do corte {cid} (segundo canal), estes trechos ficaram MAIS DE 12 s sem nenhuma imagem: {janelas}.
+Acrescente em {saida} (mantenha tudo o que já está lá) UM b-roll em cada trecho, de 1,5 a 3 s, começando na palavra que ele ilustra
+(tempos em {pal}; fala em {fala}), a pelo menos 4 s das cenas vizinhas:
+  · cena genérica = FILMAGEM REAL (vídeo): {videos}   {{"t0", "t1", "tipo": "video", "imagem": "<o mp4>", "credito": "<crédito>"}}
+  · coisa/marca/lugar específico = FOTO: python3 {imagem_web} "<busca curta>" --saida broll/web
+    {{"t0", "t1", "layout": "full", "tipo": "foto", "imagem": "<caminho>", "credito": "<crédito>"}} (abra a imagem antes de usar)
+Se a fala daquele trecho não tiver nada que dê para mostrar, deixe sem. Nada repetido (proibidos: {proibidos}).
+NÃO renderize. Responda APENAS com JSON: {{"ok": true, "acrescentadas": n}}"""
+
+
+def _buracos_canal2(cenas, evitar, dur, maximo=12.0):
+    """Trechos do corte (depois do gancho e antes dos 2 s finais) com mais de 12 s sem nenhuma imagem do motion."""
+    try:
+        cs = sorted((float(c.get("t0") or 0), float(c.get("t1") or c.get("t0") or 0))
+                    for c in json.loads(cenas.read_text(encoding="utf-8")).get("cenas") or [])
+    except (OSError, ValueError):
+        return []
+    fim, t, res = dur - 2.0, evitar, []
+    for a, b in cs + [(fim, fim)]:
+        if a - t > maximo:
+            res.append((round(t, 1), round(min(a, fim), 1)))
+        t = max(t, b)
+    return res
 
 
 def formato_canal2(estilo):
@@ -2441,10 +2534,19 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
                                    imagem_web=lib / "imagem_web.py", banco=foto_banco(), videos=videos_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
-                                   fora=_fora_canal2(work) if tema == "canal2" else "",
+                                   fora=_fora_canal2(work) if tema == "canal2" else "", n_broll=max(3, round((dur - evitar) / 9)),
                                    brolls=", ".join("{:.1f}–{:.1f} s".format(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))
                                                     for b, _ in _broll_do_plano(work / "plan.json", W)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
+        buracos = _buracos_canal2(cenas, evitar, dur) if tema == "canal2" and antigas is None else []
+        if buracos:   # Zeca: imagem no ritmo (uma a cada ~10 s); uma rodada para completar os buracos (Felipe, 05/11/2026)
+            log("motion do", cid, "sem imagem em:", buracos)
+            passo("Motion (completando as imagens)")
+            claude(COMPLETA_CANAL2.format(cid=cid, saida=cenas, fala=work / "fala_final.txt", pal=work / "palavras_final.json",
+                                          janelas=", ".join("{:.1f}–{:.1f} s".format(a, b) for a, b in buracos),
+                                          imagem_web=lib / "imagem_web.py", videos=videos_banco(),
+                                          proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
+                   W, "sonnet", ao_passo=passo, limite=900, higgs=higgs, higgs_lote=lote["id"])
         doc = json.loads(cenas.read_text(encoding="utf-8"))
         doc.update({k: v for k, v in cfg.items() if k != "cenas"})   # cartelas ficam vazias (Felipe, 24/10: sem a tag de tema)
         doc.pop("tag", None)   # Felipe: a headline no meio, não a tag em cima
@@ -2507,6 +2609,12 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             fim = novo_fim
     if formato_dark(estilo):
         return produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo)
+    if formato_canal2(estilo) and not c.get("ajuste") and not estilo.get("teste"):   # Zeca: quem fala aparece? (antes de gastar Claude e render)
+        passo("Quem fala aparece na imagem?")
+        fora = checar_falante(bruto, ini, fim)
+        if fora is not None and fora >= FORA_TUDO:
+            raise SemFalante("Não produzido: quem fala não aparece na imagem em {:.0%} do trecho (o vídeo do episódio mostra só quem "
+                             "ouve). Escolha outro trecho ou peça o ajuste dizendo como cobrir.".format(fora))
     trava = None
     if c.get("ajuste") and plan.exists():
         itens = itens_das_edicoes(c.get("edicoes")) if c.get("edicoes") else itens_ajuste(c["ajuste"])
@@ -3027,6 +3135,10 @@ def _produzir(item):
                 final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
                 leg_ia = pasta / "legenda_post_ia.txt"   # o Breu escreve a legenda do post junto com o roteiro
                 entregar_previa(c, final, previa, cid, leg_ia.read_text(encoding="utf-8") if leg_ia.exists() else "", pasta)
+                return
+            except SemFalante as e:   # o trecho não serve para o formato: volta para a produção com o motivo, sem render
+                log("corte", c["id"], "não produzido:", e)
+                srv("corte", id=c["id"], estado="reprovado", erro=str(e)[:500])
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
                 log("motor automático do corte", c["id"], "caiu para o modo Claude:", e)
