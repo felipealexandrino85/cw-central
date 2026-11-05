@@ -1,0 +1,149 @@
+{
+ "sobre": "Trilhas do Nanquim (cortes reflexivos P&B). Baixadas sob demanda para ~/.cache/nanquim. queda = grave e contida (dificuldade, perda); virada = crescente (ascensão, conquista); conselho = reflexiva neutra. Licença conferida em 05/11/2026 na página do Mixkit. Proibida: MokkaMusic \"Revolver\".",
+ "trilhas": [
+  {
+   "id": "mixkit-614",
+   "titulo": "Silent Descent",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/614/614.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-22",
+   "titulo": "Piano Reflections",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/22/22.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-714",
+   "titulo": "Classical 7",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/714/714.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-52",
+   "titulo": "The Long Road",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/52/52.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-606",
+   "titulo": "Drawing the Sky",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/606/606.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-71",
+   "titulo": "Slow Trail",
+   "clima": "queda",
+   "url": "https://assets.mixkit.co/music/71/71.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-587",
+   "titulo": "Discover",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/587/587.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-148",
+   "titulo": "Forest Mist Whispers",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/148/148.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-32",
+   "titulo": "Driving Ambition",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/32/32.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-31",
+   "titulo": "Dreaming Big",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/31/31.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-322",
+   "titulo": "Life's a Movie",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/322/322.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-598",
+   "titulo": "We Will Get It",
+   "clima": "virada",
+   "url": "https://assets.mixkit.co/music/598/598.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-545",
+   "titulo": "Rebecca on the Shore",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/545/545.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-92",
+   "titulo": "Time Out",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/92/92.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-184",
+   "titulo": "Vastness",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/184/184.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-712",
+   "titulo": "Classical 5",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/712/712.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-551",
+   "titulo": "Home",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/551/551.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  },
+  {
+   "id": "mixkit-310",
+   "titulo": "Alignment",
+   "clima": "conselho",
+   "url": "https://assets.mixkit.co/music/310/310.mp3",
+   "fonte": "https://mixkit.co/free-stock-music/",
+   "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)"
+  }
+ ]
+}

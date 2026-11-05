@@ -596,6 +596,23 @@ Responda APENAS com JSON: {{"resumo": "2-3 linhas sobre o episódio e o critéri
 "fim": segundos, "gancho": "primeira frase do corte", "motivo": "por que funciona"}}]}}"""
 
 
+SELECAO_NANQUIM = """
+
+FORMATO NANQUIM (cortes reflexivos em P&B, para outro dono de restaurante parar e se reconhecer). Vale ACIMA das regras gerais:
+- Escolha só trechos com PESO EMOCIONAL: quedas (quebrar, fechar loja, dívida, sócio que saiu, pandemia, perder tudo), viradas
+  (a primeira loja que deu certo, crescer do zero), momentos difíceis (solidão do dono, cansaço, família, medo de errar) e
+  pensamentos/conselhos para outros donos (mentalidade, liderança, disciplina, propósito). Dica técnica, número de marketing ou
+  explicação de ferramenta NÃO servem.
+- O trecho tem começo, meio e fim próprios numa ideia só: abre na primeira palavra com uma frase que faz o espectador se colocar
+  na história (pergunta direta ou frase forte, sem contexto antes), desenvolve com exemplos concretos, tem um ponto sentimental
+  e FECHA a ideia (de preferência retomando a palavra do começo). Sem fim natural, não serve.
+- Entre 35 e 60 segundos (os silêncios saem na edição, então o trecho bruto pode ter até ~70 s). Prefira cortar exemplos
+  repetidos do meio a cortar o gancho, a virada ou o fechamento.
+- Quem fala é UMA pessoa só, o trecho todo (convidado ou host contando a própria história): nada de pergunta do outro no meio,
+  "uhum", "caramba" ou fala por cima. O corte termina antes da reação de quem ouve.
+- No "motivo", diga em uma linha: o clima (queda, virada ou conselho) e qual é a frase da virada."""
+
+
 def selecionar(lote, ep, estilo=None):
     pasta = BASE / str(ep["id"])
     try:
@@ -610,12 +627,14 @@ def selecionar(lote, ep, estilo=None):
                        "transcrição = {}). Os cortes que você escolher vão ser produzidos nesse estilo:\n{}").format(
                 W, bruto, pasta / "transcricao.txt", receita(estilo, "EPISÓDIO"))
             extra = [W]
-        if formato_canal2(estilo) or formato_dark(estilo):   # Zeca e Breu: momentos que os outros canais ainda não usaram
+        if formato_nanquim(estilo):
+            prompt += SELECAO_NANQUIM.format(n=lote["quantidade"])
+        if formato_canal2(estilo) or formato_dark(estilo) or formato_nanquim(estilo):   # Zeca, Breu e Nanquim: momentos que os outros canais ainda não usaram
             usados = srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []
             if usados:
                 prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
                            "(segundos do episódio): " + json.dumps(usados))
-        n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) else 0
+        n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) or formato_nanquim(estilo) else 0
         if n_res:   # Zeca: reservas para trocar os trechos em que quem fala não aparece na imagem
             prompt += ("\n\nDepois dos {n}, escolha mais {r} RESERVAS (momentos bons e diferentes, mesmo formato) na chave \"reservas\" do "
                        "JSON. Prefira trechos em que quem fala aparece no vídeo (o canal mostra a câmera do episódio).").format(n=lote["quantidade"], r=n_res)
@@ -2454,6 +2473,11 @@ def formato_dark(estilo):
     return "formato: dark" in ((estilo or {}).get("receita") or "").lower()
 
 
+def formato_nanquim(estilo):
+    """Estilo do Nanquim (marca na receita: "FORMATO: NANQUIM"): cortes reflexivos P&B, motor scripts/nanquim.py."""
+    return "formato: nanquim" in ((estilo or {}).get("receita") or "").lower()
+
+
 def formato_02(estilo):
     """O estilo escolhido no pedido é o "Padrão #02"? (marca na receita: "FORMATO: PADRÃO #02")."""
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
@@ -2588,7 +2612,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 if r.is_dir()), HOME / ".claude" / "skills" / "cw-estilo-cw-cast-timeu" / "references")
     env = dict(os.environ, PATH="/usr/local/bin:" + os.environ.get("PATH", ""))
     epj = W / "work" / "eps" / "ep" / "episodio.json"
-    if not formato_dark(estilo):   # o Breu mostra o vídeo horizontal inteiro: não precisa do mapa de câmeras
+    if not (formato_dark(estilo) or formato_nanquim(estilo)):   # Breu e Nanquim usam o vídeo do episódio inteiro: sem mapa de câmeras
         preparar_episodio_estilo(ep, W, janelas, passo)
 
     def rodar(nome, args, ok=(0,), tempo=900):
@@ -2609,6 +2633,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             fim = novo_fim
     if formato_dark(estilo):
         return produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo)
+    if formato_nanquim(estilo):
+        return produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo)
     if formato_canal2(estilo) and not c.get("ajuste") and not estilo.get("teste"):   # Zeca: quem fala aparece? (antes de gastar Claude e render)
         passo("Quem fala aparece na imagem?")
         fora = checar_falante(bruto, ini, fim)
@@ -3028,6 +3054,156 @@ def produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo):
     return final, (previa if previa.exists() else final)
 
 
+PLANO_NANQUIM = """Você é o Nanquim, o editor de cortes reflexivos em P&B (para donos de restaurante pararem e se reconhecerem).
+Ninguém está olhando: decida e responda. Corte %%CID%% do episódio "%%EPISODIO%%", %%DUR%% s. Título da seleção: %%TITULO%%.
+Motivo da seleção: %%MOTIVO%%
+%%AJUSTE%%
+A legenda do corte já está dividida em FRASES (número | segundo do corte | texto, em CAIXA ALTA). Cada frase vira um bloco de
+legenda montado palavra por palavra, branco, na metade de baixo da imagem:
+%%FRASES%%
+
+Decida, frase a frase:
+- "grande": a PALAVRA-CHAVE da frase, que entra em tamanho grande (o substantivo ou verbo que carrega o sentido ou a emoção:
+  SUPERPODER, ALEGRIA, CONQUISTA, NINGUÉM, A OBRIGAÇÃO, RADAR SOCIAL). Copie EXATAMENTE como está na frase (1 a 2 palavras
+  seguidas). No máximo uma por frase; frase de ligação ("NÉ?", "POIS É", "E AÍ") fica sem. Em torno de 2 de cada 3 frases têm uma.
+- "medio": true só para frase curta de peso sem uma palavra única de destaque ("VIVER O MOMENTO", "PRECISA SER VISTA"); 0 a 3 no corte.
+- "virada": o segundo do corte em que acontece o ponto sentimental (a trilha cresce ali).
+- "clima": "queda" (dificuldade, perda, medo), "virada" (ascensão, conquista, recomeço) ou "conselho" (pensamento para outros donos).
+- "legenda_post": legenda para o Instagram, 2 a 3 linhas no tom do corte + 3 hashtags, sem citar Cardápio Web nem CW Cast.
+Nada inventado: palavra-chave só se estiver na frase.
+Responda APENAS com JSON: {"blocos": [{"n": 0, "grande": "AMIGO"}, {"n": 4, "medio": true}, ...], "virada": 36.5, "clima": "queda",
+"legenda_post": "..."}"""
+
+
+def _trilha_nanquim(W, cid, clima, ordem):
+    """Trilha do catálogo do Nanquim no clima do corte, sem repetir a dos outros cortes do episódio neste estilo (se der)."""
+    import nanquim
+    cat = nanquim.catalogo()
+    if not cat:
+        return None
+    usadas = set()
+    for outro in (W / "work").glob("*/nanquim_plano.json"):
+        if outro.parent.name.split("_")[0] == cid:
+            continue
+        try:
+            usadas.add(((json.loads(outro.read_text(encoding="utf-8")).get("trilha") or {}).get("id")))
+        except (OSError, ValueError):
+            pass
+    doclima = [t for t in cat if t.get("clima") == clima] or cat
+    livres = [t for t in doclima if t["id"] not in usadas] or [t for t in cat if t["id"] not in usadas] or doclima
+    return dict(livres[int(ordem or 0) % len(livres)])
+
+
+def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo):
+    """Nanquim (cortes reflexivos P&B): a esteira prepara o trecho (pontas no vale do som, transcrição com pausas de 0,30–0,45 s
+    entre frases, revisão da legenda), confere se quem fala aparece, o Claude escolhe a palavra-chave de cada frase, a virada e o
+    clima da trilha, e o motor (scripts/nanquim.py) desenha o vertical quadro a quadro."""
+    import nanquim
+    work = W / "work" / cid
+    tr = work / "transcript.json"
+    roteiro = work / "nanquim_plano.json"
+    if not (c.get("ajuste") and tr.exists()):
+        if work.exists():   # tentativa anterior: guarda e começa limpo
+            shutil.move(str(work), str(W / "work" / "{}_antigo_{}".format(cid, int(time.time()))))
+        work.mkdir(parents=True)
+        ranges = "{}-{}".format(mmss_t(ini), mmss_t(fim))
+        saida = rodar("Pontas no vale do som", ["tools/pontas.py", "--src", bruto, "--ranges", ranges], ok=(0, 1))
+        linha = next((l for l in saida.splitlines() if l.startswith("RANGES:")), "")
+        sug = linha.split(":", 1)[1].strip() if linha else ""
+        medido = bool(sug) and not re.search(r"^FAIL", saida, re.M)
+        # molde: entre frases 0,30–0,45 s (pausa maior que 0,45 s sai e fica 0,35 s); hesitação dentro da frase sai
+        rodar("Transcrição do trecho", ["scripts/transcribe.py", "--src", bruto, "--ranges", sug if medido else ranges, "--out", "work/" + cid,
+                                        "--cut-silence", "0.45", "--cut-gaps", "0", "--keep-pause", "0.35", "--prompt", PROMPT_WHISPER]
+                                       + (["--no-snap-edges"] if medido else []), tempo=1200)
+        rodar("Revisão das legendas", [AQUI / "legendas.py", "revisar", "work/{}/transcript.json".format(cid),
+                                       "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"])], ok=(0, 1), tempo=300)
+    t = json.loads(tr.read_text(encoding="utf-8"))
+    rg = [(float(a), float(b)) for a, b in t.get("ranges") or []]
+    words = [w for w in t.get("words") or [] if (w.get("w") or "").strip()]
+    if not rg or not words:
+        raise Falhou("transcrição do corte sem trechos ou sem palavras")
+    dur = round(sum(b - a for a, b in rg), 3)
+    base = work / "base_nanquim.mov"
+    if not base.exists() or base.stat().st_mtime < tr.stat().st_mtime:   # trechos do bruto juntos em 1080p; o último com +0,6 s de imagem
+        passo("Vídeo horizontal do corte")
+        ins, fc = [], []
+        for k, (a, b) in enumerate(rg):
+            ult = k == len(rg) - 1
+            ins += ["-ss", "{:.3f}".format(a), "-t", "{:.3f}".format(b - a + (0.6 if ult else 0)), "-i", str(bruto)]
+            fc.append("[{k}:v]fps=30,scale=1920:1080:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[v{k}];[{k}:a]aformat=sample_rates=48000:"
+                      "channel_layouts=stereo,atrim=0:{d:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.02,afade=t=out:st={o:.3f}:d=0.02{pad}[a{k}]".format(
+                          k=k, d=b - a, o=max(0, b - a - 0.02), pad=",apad=whole_dur={:.3f}".format(b - a + 0.6) if ult else ""))
+        fc.append("".join("[v{k}][a{k}]".format(k=k) for k in range(len(rg))) + "concat=n={}:v=1:a=1[v][a]".format(len(rg)))
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y"] + ins + ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-f", "mov", str(base)],
+                           capture_output=True, text=True, timeout=2400)
+        if r.returncode or not base.exists():
+            raise Falhou("vídeo horizontal do corte: " + (r.stderr or "")[-300:])
+    # quem fala aparece? (o recorte segue o rosto de quem fala; se a imagem mostra só quem ouve, não vale produzir)
+    passo("Quem fala aparece na imagem?")
+    fal = work / "falante.json"
+    if not fal.exists() or fal.stat().st_mtime < base.stat().st_mtime:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--ate", "{:.2f}".format(dur), "--json", str(fal)],
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode:
+            log("Nanquim:", cid, "falante.py não rodou:", (r.stderr or "")[-200:])
+    try:
+        med = json.loads(fal.read_text(encoding="utf-8"))
+        fora = min(1.0, sum(b - a for a, b in med.get("fora_de_quadro") or []) / dur) if dur else 0
+    except (OSError, ValueError):
+        med, fora = None, None
+    if fora is not None and fora >= FORA_TUDO and not c.get("ajuste") and not (estilo or {}).get("teste"):
+        raise SemFalante("Não produzido: quem fala não aparece na imagem em {:.0%} do trecho (o vídeo do episódio mostra só quem "
+                         "ouve). Escolha outro trecho.".format(fora))
+    pal = work / "nanquim_palavras.json"
+    pal.write_text(json.dumps({"words": words}, ensure_ascii=False), encoding="utf-8")
+    ws = nanquim.palavras_do(pal)
+    ajuste = ""
+    if c.get("ajuste") and roteiro.exists():
+        ajuste = ("\nAJUSTE PEDIDO PELO EDITOR (o corte já foi feito; mude SÓ isto e mantenha o resto do plano anterior):\n"
+                  + texto_itens(itens_ajuste(c["ajuste"])) + "\nPLANO ANTERIOR:\n" + roteiro.read_text(encoding="utf-8")[:4000] + "\n")
+    prompt = (PLANO_NANQUIM.replace("%%CID%%", cid).replace("%%EPISODIO%%", ep["nome"]).replace("%%DUR%%", "{:.1f}".format(dur))
+              .replace("%%TITULO%%", c["titulo"]).replace("%%MOTIVO%%", c.get("motivo") or "(nenhum)").replace("%%AJUSTE%%", ajuste)
+              .replace("%%FRASES%%", nanquim.texto_frases(ws)))
+    passo("Palavras-chave e trilha (Nanquim)")
+    r = json_final(claude(prompt, work, "sonnet", ao_passo=passo, limite=600))
+    if not isinstance(r.get("blocos"), list):
+        raise Falhou("o plano do Nanquim veio sem os blocos da legenda")
+    clima = r.get("clima") if r.get("clima") in ("queda", "virada", "conselho") else "conselho"
+    try:
+        virada = min(max(0.0, float(r.get("virada"))), dur)
+    except (TypeError, ValueError):
+        virada = dur * 0.7
+    emendas, acc = [], 0.0
+    for a, b in rg[:-1]:
+        acc += b - a
+        emendas.append(round(acc, 3))
+    plano = {"video": str(base), "palavras": str(pal), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
+             "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima,
+             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima, c.get("ordem"))}
+    roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
+    (W / "saida").mkdir(exist_ok=True)
+    rodar("Render do Nanquim", [AQUI / "nanquim.py", roteiro], tempo=3600)
+    final = W / "saida" / "{}.mp4".format(cid)
+    previa = W / "saida" / "{}_preview.mp4".format(cid)
+    if not final.exists():
+        raise Falhou("o motor do Nanquim não gerou saida/{}.mp4".format(cid))
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                    "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+    leg = (r.get("legenda_post") or "").strip()
+    tr_us = json.loads(roteiro.read_text(encoding="utf-8")).get("trilha") or {}
+    if tr_us:   # a trilha vai registrada no relatório do corte (nome, fonte, licença e de onde ela começa)
+        (pasta / "trilha.txt").write_text("{titulo} ({id}) · {licenca} · {url} · começa em {ini} s · clima {clima}".format(
+            titulo=tr_us.get("titulo"), id=tr_us.get("id"), licenca=tr_us.get("licenca"), url=tr_us.get("url"),
+            ini=tr_us.get("ini_usado"), clima=clima), encoding="utf-8")
+    if leg:
+        (pasta / "legenda_post_ia.txt").write_text(leg, encoding="utf-8")
+    base.unlink(missing_ok=True)   # ~1 GB por corte; o disco do servidor anda cheio
+    log("Nanquim:", cid, "clima", clima, "· trilha", tr_us.get("titulo"), "· quem fala fora da imagem:",
+        "{:.0%}".format(fora) if fora is not None else "não medido")
+    return final, (previa if previa.exists() else final)
+
+
 PRODUCAO_REEL = """Você é o FabI.Ano, o editor de reels da Cardápio Web na esteira do CW Studios, sem ninguém olhando: não pergunte nada,
 decida e siga. Valem as regras e lições do time e o pedido abaixo.
 Reel {cid} "{titulo}": o material gravado está em {bruto} (a câmera e, se houver, a gravação de tela do OBS); veja {material}.
@@ -3141,6 +3317,8 @@ def _produzir(item):
                 srv("corte", id=c["id"], estado="reprovado", erro=str(e)[:500])
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
+                if formato_nanquim(estilo):   # o modo Claude sairia no estilo do Titeu: melhor parar com o motivo
+                    raise RuntimeError("Nanquim: " + str(e))
                 log("motor automático do corte", c["id"], "caiu para o modo Claude:", e)
                 passo("modo Claude (o automático parou em: {})".format(str(e)[:80]))
         texto = claude(PRODUCAO.format(cid=cid, inicio=float(c["inicio"]), fim=float(c["fim"]), bruto=bruto,
@@ -3282,7 +3460,8 @@ def entregar(item):
                                 "--legenda", leg.read_text(encoding="utf-8") if leg else c["titulo"], "--episodio", ep["nome"][:120]]
                                + (["--destino", "Instagram Cardapio Web"] if reel else [])
                                + (["--programa", "canal2"] if item.get("canal2") else [])   # Zeca: pasta e aba próprias
-                               + (["--programa", "dark"] if item.get("dark") else []),   # Breu: pasta e aba próprias
+                               + (["--programa", "dark"] if item.get("dark") else [])   # Breu: pasta e aba próprias
+                               + (["--programa", "nanquim"] if item.get("nanquim") else []),   # Nanquim: pasta e aba próprias
                                capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:

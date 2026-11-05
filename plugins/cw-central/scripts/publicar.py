@@ -29,6 +29,7 @@ PASTA_PADRAO = "CW Studios - Produção/CW Cast - Cortes"
 PARA_APROVAR = "2. PARA APROVAR"
 PARA_APROVAR_CANAL2 = "2. PARA APROVAR - Canal 2"   # Zeca: separado do CW Cast (não posta nas contas do CW Cast)
 PARA_APROVAR_DARK = "2. PARA APROVAR - Canal Dark"   # Breu: canal dark (@corte_sdelivery), também separado do CW Cast
+PARA_APROVAR_NANQUIM = "2. PARA APROVAR - Nanquim"   # Nanquim: cortes reflexivos P&B (canal próprio ainda não existe)
 SUBS = ("Drives compartilhados", "Unidades compartilhadas", "Shared drives", "Meu Drive", "My Drive", "")
 
 
@@ -128,7 +129,7 @@ def cmd_enviar(a):
     if not base:
         sys.exit("não achei o Google Drive do CW Studios nesta máquina (pasta 'CW Studios - Produção/CW Cast - Cortes'). "
                  "Confira se o Google Drive para computador está aberto e com o drive compartilhado disponível.")
-    sub = {"canal2": PARA_APROVAR_CANAL2, "dark": PARA_APROVAR_DARK}.get(a.programa, PARA_APROVAR)
+    sub = {"canal2": PARA_APROVAR_CANAL2, "dark": PARA_APROVAR_DARK, "nanquim": PARA_APROVAR_NANQUIM}.get(a.programa, PARA_APROVAR)
     destino_pasta = base / sub
     if not pode_gravar_drive(base):
         sys.exit("o Drive deste computador não deixa gravar em {}. Abra o Google Drive (ícone perto do relógio) › engrenagem › "
@@ -142,6 +143,8 @@ def cmd_enviar(a):
     if dur and dur > 90:
         avisos.append("Reels acima de 90 s não aparecem na aba Reels de quem não segue")
     imagem = previa(origem, dur)
+    if a.programa == "nanquim" and not destino_pasta.is_dir():   # pasta nova no drive compartilhado só com o OK da gestão
+        sys.exit("a pasta \"{}\" ainda não existe no Drive (CW Cast - Cortes). Crie a pasta e aprove o corte de novo.".format(sub))
     destino_pasta.mkdir(exist_ok=True)
     shutil.copy2(origem, destino_pasta / nome)
     redes = [r.strip() for r in (a.redes or "instagram,tiktok,youtube").split(",") if r.strip()]
@@ -206,8 +209,8 @@ def main():
     p.add_argument("--jira")
     p.add_argument("--redes")
     p.add_argument("--agendar")
-    p.add_argument("--programa", default="cwcast", choices=["cwcast", "canal2", "dark"],
-                   help="canal2 = Zeca, dark = Breu (pasta e aba próprias)")
+    p.add_argument("--programa", default="cwcast", choices=["cwcast", "canal2", "dark", "nanquim"],
+                   help="canal2 = Zeca, dark = Breu, nanquim = Nanquim (pasta e aba próprias)")
     p.add_argument("--destino", help="pasta da sprint (ex.: \"Instagram Cardapio Web\", \"CW Club\"); sem isso vai pelo kit do editor")
     sub.add_parser("minhas")
     sub.add_parser("pasta")
