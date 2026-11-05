@@ -44,6 +44,7 @@ ABRE = 27                           # quadros da abertura em fenda
 SEGURA = 0.6                        # respiro depois da última palavra
 CARD = 3.0                          # tela preta com o CTA e a trilha sumindo
 CTA = ["ME SIGA PARA MAIS", "CONTEÚDOS COMO ESTE"]
+CTA_KICKER = "GOSTOU DESSA HISTÓRIA?"
 FUNCAO = {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "no", "na", "nos", "nas", "e", "que", "pra", "pro",
           "em", "eu", "ele", "ela", "se", "me", "te", "lhe", "por", "com", "sem", "mas", "ou", "é", "tá", "isso", "esse", "essa"}
 
@@ -141,6 +142,16 @@ def sprite(txt, f, cor=(255, 255, 255)):
     return img, m, m
 
 
+def altura_maiuscula(tam):
+    b = fonte(tam).getbbox("H")
+    return b[3] - b[1]
+
+
+def topo_maiuscula(tam):
+    """Distância da origem do texto (topo do ascendente) até o topo da maiúscula."""
+    return fonte(tam).getbbox("H")[1]
+
+
 def quebra(palavras, f, max_w, max_n):
     """Linhas de até max_n palavras que cabem em max_w."""
     linhas, cur = [], []
@@ -187,9 +198,9 @@ def montar_bloco(ws, idx, grande, medio, alinhar, max_w):
     out, y = [], 0.0
     for n, (tam, ln) in enumerate(linhas):
         f = fonte(tam)
-        if n:
+        if n:   # uma linha embaixo da outra: maiúscula da anterior + folga para o acento da próxima (Felipe, 05/11: encostavam)
             ant = linhas[n - 1][0]
-            y += tam * 0.86 if tam > ant else ant * 0.95 if ant > tam else tam * 0.93   # entrelinha apertada, sem encostar
+            y += altura_maiuscula(ant) + 0.17 * ant + 0.22 * tam
         txt = " ".join(p["t"] for p in ln)
         lw = largura(txt, f)
         x0 = 0 if alinhar == "left" else -lw if alinhar == "right" else -lw / 2
@@ -246,8 +257,8 @@ def suaviza(x, sigma):
 
 def trilha_recorte(video, dur, emendas, falante=None):
     """Janela de recorte (x, y, largura, altura em px do vídeo 1920x1080) para cada quadro.
-    Dentro de um plano o recorte segue o rosto de quem fala devagar; em cada emenda/troca de câmera muda de posição e
-    escala (100% ↔ ~108%) para disfarçar o pulo, como na referência."""
+    Dentro de um trecho o recorte fica PARADO, no lugar mediano do rosto de quem fala; em cada emenda/troca de câmera muda
+    de posição e escala (100% ↔ ~108%) para disfarçar o pulo, como na referência."""
     rostos, cortes, n = detectar(video, dur)
     limites = sorted(set(cortes + [int(round(e * FPS)) for e in emendas if 0 < e * FPS < n] + [n]))
     jan = np.zeros((n, 4))
@@ -283,7 +294,7 @@ def trilha_recorte(video, dur, emendas, falante=None):
         idx = np.arange(b - a)
         cx = np.interp(idx, idx[ok], cx[ok])
         cy = np.interp(idx, idx[ok], cy[ok])
-        cx, cy = suaviza(cx, 0.55 * FPS), suaviza(cy, 0.55 * FPS)
+        cx[:], cy[:] = float(np.median(cx)), float(np.median(cy))   # câmera PARADA no trecho (Felipe, 05/11: sem acompanhar o rosto)
         # cabeça ≈ 1,45 × o rosto do detector; na referência a cabeça ocupa ~40% da altura da faixa
         z = clamp(1080.0 / (float(np.median(fh[ok])) * 1080 * 1.45 / 0.40), 1.0, ZOOM_MAX)
         if s % 2:   # trecho sim, trecho não: ~8% mais fechado (ou mais aberto, se já está no limite)
@@ -377,6 +388,92 @@ def monta_audio(video, voz_dur, total, trilha, virada, saida, tmp):
                     "-c:a", "pcm_s16le", str(saida)], check=True)
 
 
+# ---------------------------------------------------------------- card final
+def fundo_card(ultimo, janela, lut):
+    """Tela cheia 9:16 com o último quadro do corte (P&B), bem desfocado e escurecido, centrado em quem fala."""
+    if ultimo is None:
+        return Image.new("RGB", (W, H), (0, 0, 0))
+    x, y, cw, ch = janela
+    larg = 1080 * 9 / 16
+    x0 = clamp(x + cw / 2 - larg / 2, 0, 1920 - larg)
+    im = Image.fromarray(lut[ultimo]).crop((int(x0), 0, int(x0 + larg), 1080)).resize((W, H), Image.BILINEAR)
+    im = im.filter(ImageFilter.GaussianBlur(34)).point(lambda v: int(v * 0.38))
+    return Image.merge("RGB", (im, im, im))
+
+
+def _ease_back(p, c=1.7):
+    p -= 1
+    return 1 + (c + 1) * p ** 3 + c * p ** 2
+
+
+def texto_digitado(cv, linha, f, cx, y, u, t0, t1, cor=255):
+    """Uma linha centrada em cx, letra a letra entre t0 e t1 (cada letra de cinza para a cor em 2 quadros)."""
+    d = ImageDraw.Draw(cv)
+    lw = largura(linha, f)
+    x = cx - lw / 2
+    for k, ch in enumerate(linha):
+        t_l = t0 + (t1 - t0) * k / max(1, len(linha) - 1)
+        if u < t_l or ch == " ":
+            continue
+        q = clamp((u - t_l) / (2 / FPS))
+        v = int(110 + (cor - 110) * q)
+        d.text((x + f.getlength(linha[:k]) + TRACK * f.size * k, y), ch, font=f, fill=(v, v, v, 255))
+
+
+def desenha_card(fundo, u):
+    cv = Image.blend(Image.new("RGB", (W, H), (0, 0, 0)), fundo, clamp(u / 0.3)).convert("RGBA")
+    cx = W / 2
+    # pergunta pequena e cinza, depois o convite digitado, depois o botão
+    fk = fonte(38)
+    if u > 0.05:
+        k_img, dx, dy = sprite(CTA_KICKER, fk, (190, 190, 194))
+        k_img.putalpha(k_img.getchannel("A").point(lambda v: int(v * clamp((u - 0.05) / 0.25))))
+        cv.alpha_composite(k_img, dest=(round(cx - largura(CTA_KICKER, fk) / 2 - dx), round(H * 0.385 - dy)))
+    fc = fonte(66)
+    for li, linha in enumerate(CTA):
+        texto_digitado(cv, linha, fc, cx, H * 0.425 + li * 76, u, 0.3 + 0.45 * li, 0.7 + 0.45 * li)
+    # botão "+ SEGUIR": entra com um pulo, é "clicado" (afunda, onda) e vira "SEGUINDO"
+    t_bot, t_clique = 1.3, 2.0
+    if u >= t_bot:
+        bw, bh = 400, 104
+        p = clamp((u - t_bot) / 0.28)
+        esc = _ease_back(p) if p < 1 else 1.0
+        if t_clique <= u < t_clique + 0.16:
+            esc *= 1 - 0.07 * np.sin(np.pi * (u - t_clique) / 0.16)
+        seguindo = u >= t_clique + 0.08
+        bot = Image.new("RGBA", (bw + 8, bh + 8), (0, 0, 0, 0))
+        db = ImageDraw.Draw(bot)
+        if seguindo:
+            db.rounded_rectangle((4, 4, bw + 3, bh + 3), radius=bh // 2, fill=(0, 0, 0, 90), outline=(255, 255, 255, 255), width=4)
+            ft = fonte(40)
+            rot = "SEGUINDO"
+            tw = largura(rot, ft) + 50
+            x0 = (bw + 8 - tw) / 2
+            db.line([(x0, bh / 2 + 4), (x0 + 12, bh / 2 + 16), (x0 + 32, bh / 2 - 8)], fill=(255, 255, 255, 255), width=6, joint="curve")
+            for k, ch in enumerate(rot):
+                db.text((x0 + 50 + ft.getlength(rot[:k]) + TRACK * 40 * k, bh / 2 + 4), ch, font=ft, fill=(255, 255, 255, 255), anchor="lm")
+        else:
+            db.rounded_rectangle((4, 4, bw + 3, bh + 3), radius=bh // 2, fill=(255, 255, 255, 255))
+            ft = fonte(42)
+            rot = "+ SEGUIR"
+            tw = largura(rot, ft)
+            x0 = (bw + 8 - tw) / 2
+            for k, ch in enumerate(rot):
+                db.text((x0 + ft.getlength(rot[:k]) + TRACK * 42 * k, bh / 2 + 4), ch, font=ft, fill=(12, 12, 12, 255), anchor="lm")
+        if esc != 1.0:
+            bot = bot.resize((max(1, round(bot.width * esc)), max(1, round(bot.height * esc))), Image.BILINEAR)
+        by = H * 0.56
+        cv.alpha_composite(bot, dest=(round(cx - bot.width / 2), round(by + (bh + 8) / 2 - bot.height / 2)))
+        if t_clique <= u < t_clique + 0.5:   # onda do toque
+            q = (u - t_clique) / 0.5
+            onda = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            r = 30 + 150 * q
+            yy = by + (bh + 8) / 2
+            ImageDraw.Draw(onda).ellipse((cx + 60 - r, yy - r, cx + 60 + r, yy + r), outline=(255, 255, 255, int(170 * (1 - q))), width=4)
+            cv.alpha_composite(onda)
+    return cv.convert("RGB")
+
+
 # ---------------------------------------------------------------- render
 def render(plano_path):
     plano = json.loads(Path(plano_path).read_text(encoding="utf-8"))
@@ -422,9 +519,10 @@ def render(plano_path):
         max_w = FW * (0.80 if b["alinhar"] == "center" else 0.70)
         b["lay"] = montar_bloco(ws, b["idx"], b["grande"], b["medio"], b["alinhar"], max_w)
         if b["lay"]:
-            alt = max(p["y"] + p["tam"] * 0.95 for p in b["lay"])
-            base_y = FH * 0.87 - alt                     # o bloco termina a 87% da faixa (sobre o peito)
-            b["y0"] = max(FH * 0.50, base_y)
+            alt = max(p["y"] + altura_maiuscula(p["tam"]) for p in b["lay"])
+            # o bloco começa sempre na mesma altura (58% da faixa, no peito) e cresce para baixo, linha a linha;
+            # só sobe se não couber até 93%
+            b["y0"] = min(FH * 0.58, FH * 0.93 - alt)
             b["x0"] = {"left": FW * 0.13, "right": FW * 0.87, "center": FW / 2}[b["alinhar"]]
 
     _spr = {}
@@ -435,10 +533,7 @@ def render(plano_path):
             _spr[k] = sprite(t, fonte(tam))
         return _spr[k]
 
-    cta_f = fonte(PEQ)
-    cta_w = max(largura(l, cta_f) for l in CTA)
-    cta_x = (W - cta_w) / 2
-    cta_y = H * 0.46 - PEQ * 0.95
+    card = {}
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -487,7 +582,7 @@ def render(plano_path):
                         if u < 0:
                             continue
                         im, dx, dy = spr(p["t"], p["tam"])
-                        px, py = b["x0"] + p["x"] - dx, b["y0"] + p["y"] - dy
+                        px, py = b["x0"] + p["x"] - dx, b["y0"] + p["y"] - dy - topo_maiuscula(p["tam"])
                         if p["grande"]:   # desfoque que se resolve em ~4 quadros, com escala 105% → 100%
                             q = clamp(u / (4 / FPS))
                             if q < 1:
@@ -508,23 +603,10 @@ def render(plano_path):
                             faixa.alpha_composite(im.crop((max(0, -round(px)), max(0, -round(py)), im.width, im.height)),
                                                   dest=(max(0, round(px)), max(0, round(py))))
                 quadro[FY:FY + FH] = np.asarray(faixa.convert("RGB"))
-            else:   # card: preto com o CTA em máquina de escrever (letra a letra, de cinza para branco)
-                u = T - fim_img
-                cv = Image.new("RGB", (W, H), (0, 0, 0))
-                d = ImageDraw.Draw(cv)
-                total_l = sum(len(l) for l in CTA)
-                k_global = 0
-                for li, linha in enumerate(CTA):
-                    yy = cta_y + li * PEQ * 0.98
-                    for k, ch in enumerate(linha):
-                        t_l = 0.9 * k_global / max(1, total_l - 1)
-                        k_global += 1
-                        q = clamp((u - t_l) / (2 / FPS))
-                        if u < t_l or ch == " ":
-                            continue
-                        v = int(110 + 145 * q)
-                        d.text((cta_x + cta_f.getlength(linha[:k]) + TRACK * PEQ * k, yy), ch, font=cta_f, fill=(v, v, v))
-                quadro = np.asarray(cv)
+            else:   # card: o último quadro desfocado atrás, o convite em máquina de escrever e o botão "Seguir" sendo clicado
+                if "fundo" not in card:
+                    card["fundo"] = fundo_card(ultimo, jan[min(n_img, len(jan)) - 1], lut)
+                quadro = np.asarray(desenha_card(card["fundo"], T - fim_img))
             enc.stdin.write(quadro.tobytes())
             if n % 150 == 0:
                 print("quadro {}/{}".format(n, nframes), flush=True)
