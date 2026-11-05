@@ -732,7 +732,7 @@ def monta_audio(plano, video, dur_main, off, fim_dur, eventos, saida, tmp):
     ins = ["-i", str(video)]
     if g:
         filtros.append("[0:a]atrim={:.3f}:{:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.03,afade=t=out:st={:.3f}:d=0.06[g]".format(
-            g["de"], g["ate"], g["ate"] - g["de"] - 0.06))
+            g["de"], g["ate"], max(0.0, g["ate"] - g["de"] - 0.06)))
         filtros.append("anullsrc=r=48000:cl=stereo,atrim=0:{:.3f}[gap]".format(off - (g["ate"] - g["de"])))
         partes += ["[g]", "[gap]"]
     filtros.append("[0:a]atrim=0:{:.3f},asetpts=PTS-STARTPTS,afade=t=out:st={:.3f}:d=0.08[m]".format(dur_main, dur_main - 0.08))
@@ -830,8 +830,12 @@ def render(plano_path):
     saida.parent.mkdir(parents=True, exist_ok=True)
     pb = json.loads((raiz / plano["palavras"]).read_text(encoding="utf-8"))
     pb = pb.get("words", pb) if isinstance(pb, dict) else pb
-    palavras_brutas = [{"w": w.get("w") or w.get("word") or "", "i": float(w.get("i", w.get("start", 0))), "f": float(w.get("f", w.get("end", 0)))}
+    # start/end valem acima de i/f: na transcrição da esteira "i" é a POSIÇÃO da palavra (0, 1, 2…), não o tempo — lido como
+    # tempo, a legenda caía depois do fim do vídeo e o gancho cortava no meio da fala (Breu, lotes 22-23, 05/11/2026)
+    palavras_brutas = [{"w": w.get("w") or w.get("word") or "", "i": float(w["start"] if "start" in w else w.get("i", 0)),
+                        "f": float(w["end"] if "end" in w else w.get("f", 0))}
                        for w in pb if (w.get("w") or w.get("word") or "").strip()]
+    palavras_brutas.sort(key=lambda w: (w["i"], w["f"]))   # a transcrição pode trazer palavras coladas fora de ordem
     palavras = numeros(palavras_brutas)
     dur_main = float(plano.get("duracao") or subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)], capture_output=True, text=True).stdout)
@@ -869,7 +873,11 @@ def render(plano_path):
             fim = palavras_brutas[k1]["f"] + 0.25
             if k1 + 1 < len(palavras_brutas):
                 fim = min(fim, palavras_brutas[k1 + 1]["i"] - 0.02)
-            g = dict(g, de=round(max(0.0, ini), 3), ate=round(max(fim, palavras_brutas[k1]["f"] + 0.05), 3))
+            novo = dict(g, de=round(max(0.0, ini), 3), ate=round(max(fim, palavras_brutas[k1]["f"] + 0.05), 3))
+            # palavras sobrepostas podiam inverter as pontas (fim antes do começo): o ffmpeg recusava o fade e o corte inteiro
+            # caía no modo Claude, sem o Noir Motion (lotes 22 e 23, 04-05/11/2026). Gancho válido tem pelo menos 1 s.
+            if novo["ate"] - novo["de"] >= 1.0:
+                g = novo
             plano["gancho"] = g
             gdur = g["ate"] - g["de"]
             off = gdur + est_dur
