@@ -472,6 +472,11 @@ def devolver_higgs(arq):
         pass
 
 
+class Parado(BaseException):
+    """A produção pausou ou excluiu o corte na página (05/11/2026): o operário encerra o Claude e o render e pega o próximo.
+    BaseException de propósito: os `except Exception` do caminho não engolem a parada."""
+
+
 # consumo do Claude por corte (relatório dos agentes, 04/11/2026): cada operário soma o que as chamadas do corte gastaram
 _CONSUMO = threading.local()
 
@@ -2970,6 +2975,8 @@ def produzir(item):
     _CONSUMO.dados = {}
     try:
         _produzir(item)
+    except Parado as e:   # a página já marcou o corte (pausado/excluído); não vira erro
+        log(str(e), "— Claude e render encerrados")
     finally:   # o que o Claude gastou neste corte vai para o relatório dos agentes
         dados, _CONSUMO.dados = _CONSUMO.dados, None
         if dados:
@@ -2985,9 +2992,12 @@ def _produzir(item):
     pasta.mkdir(parents=True, exist_ok=True)
     def passo(t):   # andamento na página; falha momentânea da central não derruba o corte
         try:
-            srv("corte", id=c["id"], etapa=t)
+            r = srv("corte", id=c["id"], etapa=t)
         except Exception as e:
             log("andamento do corte", c["id"], "não foi:", e)
+            return
+        if isinstance(r, dict) and r.get("parar"):   # pausado ou excluído na página
+            raise Parado("corte {} parado pela produção".format(c["id"]))
     try:
         sincronizar_estilos()
         if ep.get("linha") == "reels":
