@@ -472,6 +472,22 @@ def devolver_higgs(arq):
         pass
 
 
+# consumo do Claude por corte (relatório dos agentes, 04/11/2026): cada operário soma o que as chamadas do corte gastaram
+_CONSUMO = threading.local()
+
+
+def _somar_consumo(ev):
+    dados = getattr(_CONSUMO, "dados", None)
+    if dados is None:
+        return
+    u = ev.get("usage") or {}
+    for k, v in (("custo_usd", ev.get("total_cost_usd")), ("tokens_entrada", u.get("input_tokens")), ("tokens_saida", u.get("output_tokens")),
+                 ("tokens_cache", (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)),
+                 ("segundos_claude", (ev.get("duration_ms") or 0) / 1000.0), ("chamadas", 1)):
+        if v:
+            dados[k] = round(dados.get(k, 0) + float(v), 6)
+
+
 def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), higgs=0, papel="video", trabalho="", higgs_lote=None):
     """Roda um Claude Code da esteira em 'pasta'. Devolve o texto final.
     modelo: "sonnet"/"opus"/"haiku" (ou "claude:sonnet"…) = conta Claude do CW Studios; "or:<id>" = modelo do OpenRouter pela
@@ -544,6 +560,7 @@ def claude(prompt, pasta, modelo, ao_passo=None, limite=1800, extra_dirs=(), hig
                             pass
             elif ev.get("type") == "result":
                 resultado = ev.get("result") or ""
+                _somar_consumo(ev)
                 if ev.get("is_error"):
                     raise RuntimeError("o Claude parou com erro: " + resultado[:300])
         proc.wait()
@@ -2922,6 +2939,19 @@ os.environ["PYTHONPATH"] = os.pathsep.join([str(AQUI / "groq_whisper")] + [p for
 
 
 def produzir(item):
+    _CONSUMO.dados = {}
+    try:
+        _produzir(item)
+    finally:   # o que o Claude gastou neste corte vai para o relatório dos agentes
+        dados, _CONSUMO.dados = _CONSUMO.dados, None
+        if dados:
+            try:
+                srv("consumo", id=item["corte"]["id"], dados=dados)
+            except Exception as e:
+                log("consumo do corte", item["corte"]["id"], "não foi:", e)
+
+
+def _produzir(item):
     c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
     pasta = BASE / str(ep["id"]) / "lote-{}".format(lote["id"]) / "corte-{:02d}".format(c["ordem"])
     pasta.mkdir(parents=True, exist_ok=True)
