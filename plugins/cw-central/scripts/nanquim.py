@@ -35,6 +35,7 @@ FY = (H - FH) // 2                  # 555
 AQUI = Path(__file__).resolve().parent
 FONTE = Path(os.environ.get("NANQUIM_FONTE", AQUI / "dark01" / "fonts" / "Montserrat-ExtraBold.ttf"))
 CATALOGO = AQUI / "nanquim" / "trilhas.json"
+ABERTURA = AQUI / "nanquim" / "abertura_charge.mp3"   # som da abertura escolhido pelo Felipe (05/11), −6 dB, no quadro 0
 CACHE = Path(os.environ.get("NANQUIM_CACHE", Path.home() / ".cache" / "nanquim"))
 
 PEQ, MED, GRA = 52, 74, 106         # altura de maiúscula ≈ 38 / 54 / 77 px (Montserrat: maiúscula ≈ 0,72 da fonte)
@@ -382,26 +383,6 @@ def boom(arq, sr=48000, dur=2.4):
     return arq
 
 
-def flash(arq, sr=48000, dur=0.9):
-    """Som de flash sintetizado para a abertura: estalo brilhante (ruído agudo) com um "ping" que cai e um brilho curto."""
-    t = np.arange(int(sr * dur)) / sr
-    rng = np.random.default_rng(11)
-    r = rng.standard_normal(len(t))
-    agudo = r - np.convolve(r, np.ones(6) / 6, "same")          # tira o grave: fica o chiado do flash
-    estalo = agudo * (1 - np.exp(-t * 900)) * np.exp(-t * 14) * 0.8
-    f = 1500 + 2600 * np.exp(-t * 18)
-    ping = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t * 9) * 0.35
-    x = estalo + ping
-    x = (x / np.abs(x).max() * 0.9 * 32767).astype(np.int16)
-    import wave
-    with wave.open(str(arq), "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        w.writeframes(np.repeat(x, 2).tobytes())
-    return arq
-
-
 def monta_audio(video, voz_dur, total, trilha, virada, saida, tmp, boom_em=None):
     """Voz do corte + trilha 12 dB abaixo desde o quadro 0, pico na virada, some até o silêncio no fim. −14 LUFS, −1 dBTP."""
     ins = ["-i", str(video)]
@@ -421,12 +402,12 @@ def monta_audio(video, voz_dur, total, trilha, virada, saida, tmp, boom_em=None)
         fc.append("[voz][mus]amix=inputs=2:normalize=0:duration=first[mx]")
         mix = "[mx]"
     n_in = 2 if trilha else 1
-    # flash na abertura: junto com a fenda (quadro 2)
-    ins += ["-i", str(flash(tmp / "flash.wav"))]
-    fc.append("[{}:a]volume=0.32,adelay=60|60,apad=whole_dur={:.3f}[fl]".format(n_in, total))
-    fc.append("{}[fl]amix=inputs=2:normalize=0:duration=first[mf]".format(mix))
-    mix = "[mf]"
-    n_in += 1
+    if ABERTURA.exists():   # som da abertura (charge) no começo do vídeo, 6 dB mais baixo que o arquivo
+        ins += ["-i", str(ABERTURA)]
+        fc.append("[{}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=-6dB,apad=whole_dur={:.3f}[ab]".format(n_in, total))
+        fc.append("{}[ab]amix=inputs=2:normalize=0:duration=first[ma]".format(mix))
+        mix = "[ma]"
+        n_in += 1
     if boom_em is not None:   # boom no corte seco para o CTA
         ins += ["-i", str(boom(tmp / "boom.wav"))]
         ms = round(boom_em * 1000)
