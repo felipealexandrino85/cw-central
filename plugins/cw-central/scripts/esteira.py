@@ -610,7 +610,20 @@ FORMATO NANQUIM (cortes reflexivos em P&B, para outro dono de restaurante parar 
   repetidos do meio a cortar o gancho, a virada ou o fechamento.
 - Quem fala é UMA pessoa só, o trecho todo (convidado ou host contando a própria história): nada de pergunta do outro no meio,
   "uhum", "caramba" ou fala por cima. O corte termina antes da reação de quem ouve.
-- No "motivo", diga em uma linha: o clima (queda, virada ou conselho) e qual é a frase da virada."""
+- TIPO de cada corte, decidido AGORA, pelo lugar onde a fala TERMINA:
+  REFLEXIVO = termina na dor, no peso, na reflexão (sai em P&B, trilha contida);
+  INSPIRADOR = termina na conquista, na ambição, na decisão de ir pra cima (sai em cor de filme, trilha épica).
+  Queda que termina em virada/vitória é INSPIRADOR. PELO MENOS METADE dos cortes tem que ser INSPIRADOR, e na lista os tipos
+  se alternam (nunca dois do mesmo tipo seguidos quando houver opção).
+- INSPIRADOR precisa de pelo menos 3 destes recursos: (1) gancho que é uma declaração de guerra, uma ambição sem pedir desculpa
+  ("eu não abri restaurante pra ser mais um"); (2) um adversário (o concorrente grande, o banco que negou, quem disse que não ia
+  dar certo, a própria preguiça); (3) hipérbole que amplia a escala; (4) uma imagem forte que dá nome à ideia; (5) exemplos
+  concretos que escalam; (6) antítese/repetição paralela ("não preciso que... / preciso que..."); (7) uma máxima citável;
+  (8) fechamento circular. Temas bons: primeira loja que deu certo, sair do zero, ser o número 1 da cidade, disciplina, visão,
+  liderança, voltar depois de quebrar, recusar o caminho fácil, padrão e excelência. Frase de coach sem história ("acredite em
+  você") NÃO serve: o épico vem de uma pessoa real falando de uma coisa concreta.
+- O "motivo" COMEÇA com o tipo entre colchetes ("[INSPIRADOR] ..." ou "[REFLEXIVO] ..."), depois o clima (queda, virada ou
+  conselho), a frase da virada e, no INSPIRADOR, os recursos que ele tem (ex.: "recursos 1, 2, 7")."""
 
 
 def selecionar(lote, ep, estilo=None):
@@ -3057,6 +3070,7 @@ def produzir_dark(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo):
 PLANO_NANQUIM = """Você é o Nanquim, o editor de cortes reflexivos em P&B (para donos de restaurante pararem e se reconhecerem).
 Ninguém está olhando: decida e responda. Corte %%CID%% do episódio "%%EPISODIO%%", %%DUR%% s. Título da seleção: %%TITULO%%.
 Motivo da seleção: %%MOTIVO%%
+TIPO DO CORTE: %%TIPO%%
 %%AJUSTE%%
 A legenda do corte já está dividida em FRASES (número | segundo do corte | texto, em CAIXA ALTA). Cada frase vira um bloco de
 legenda montado palavra por palavra, branco, na metade de baixo da imagem:
@@ -3074,6 +3088,8 @@ Decida, frase a frase:
   nem frase de ligação: número e fato podem ser "grande", mas não amarelos.
 - "virada": o segundo do corte em que acontece o ponto sentimental (a trilha cresce ali).
 - "clima": "queda" (dificuldade, perda, medo), "virada" (ascensão, conquista, recomeço) ou "conselho" (pensamento para outros donos).
+- No corte INSPIRADOR a palavra grande sai AMARELA: escolha nela a palavra da ambição, da conquista ou do adversário
+  (NÚMERO UM, DE FRENTE, PESSOAS CERTAS, SUPERPODER).
 - "legenda_post": legenda para o Instagram, 2 a 3 linhas no tom do corte + 3 hashtags, sem citar Cardápio Web nem CW Cast.
 Nada inventado: palavra-chave só se estiver na frase.
 Responda APENAS com JSON: {"blocos": [{"n": 0, "grande": "AMIGO"}, {"n": 2, "grande": "SUPERPODER", "impacto": true}, {"n": 4, "medio": true}, ...], "virada": 36.5, "clima": "queda",
@@ -3170,11 +3186,15 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
     prompt = (PLANO_NANQUIM.replace("%%CID%%", cid).replace("%%EPISODIO%%", ep["nome"]).replace("%%DUR%%", "{:.1f}".format(dur))
               .replace("%%TITULO%%", c["titulo"]).replace("%%MOTIVO%%", c.get("motivo") or "(nenhum)").replace("%%AJUSTE%%", ajuste)
               .replace("%%FRASES%%", nanquim.texto_frases(ws)))
+    tipo = "inspirador" if re.search(r"\[\s*INSPIRADOR", c.get("motivo") or "", re.I) else "reflexivo"   # decidido na seleção
+    prompt = prompt.replace("%%TIPO%%", tipo.upper() + (" (termina na conquista: cor de filme, palavra grande amarela, trilha épica)"
+                                                         if tipo == "inspirador" else " (termina na reflexão: P&B, trilha contida)"))
     passo("Palavras-chave e trilha (Nanquim)")
     r = json_final(claude(prompt, work, "sonnet", ao_passo=passo, limite=600))
     if not isinstance(r.get("blocos"), list):
         raise Falhou("o plano do Nanquim veio sem os blocos da legenda")
     clima = r.get("clima") if r.get("clima") in ("queda", "virada", "conselho") else "conselho"
+    clima_trilha = "epico" if tipo == "inspirador" else clima
     try:
         virada = min(max(0.0, float(r.get("virada"))), dur)
     except (TypeError, ValueError):
@@ -3184,8 +3204,8 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
         acc += b - a
         emendas.append(round(acc, 3))
     plano = {"video": str(base), "palavras": str(pal), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
-             "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima,
-             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima, c.get("ordem"))}
+             "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima, "tipo": tipo,
+             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem"))}
     roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
     (W / "saida").mkdir(exist_ok=True)
     rodar("Render do Nanquim", [AQUI / "nanquim.py", roteiro], tempo=3600)
@@ -3200,11 +3220,11 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
     if tr_us:   # a trilha vai registrada no relatório do corte (nome, fonte, licença e de onde ela começa)
         (pasta / "trilha.txt").write_text("{titulo} ({id}) · {licenca} · {url} · começa em {ini} s · clima {clima}".format(
             titulo=tr_us.get("titulo"), id=tr_us.get("id"), licenca=tr_us.get("licenca"), url=tr_us.get("url"),
-            ini=tr_us.get("ini_usado"), clima=clima), encoding="utf-8")
+            ini=tr_us.get("ini_usado"), clima=clima) + " · tipo " + tipo.upper(), encoding="utf-8")
     if leg:
         (pasta / "legenda_post_ia.txt").write_text(leg, encoding="utf-8")
     base.unlink(missing_ok=True)   # ~1 GB por corte; o disco do servidor anda cheio
-    log("Nanquim:", cid, "clima", clima, "· trilha", tr_us.get("titulo"), "· quem fala fora da imagem:",
+    log("Nanquim:", cid, tipo.upper(), "clima", clima, "· trilha", tr_us.get("titulo"), "· quem fala fora da imagem:",
         "{:.0%}".format(fora) if fora is not None else "não medido")
     return final, (previa if previa.exists() else final)
 

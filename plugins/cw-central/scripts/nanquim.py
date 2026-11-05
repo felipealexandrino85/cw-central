@@ -47,6 +47,7 @@ CARD = 3.0                          # tela preta com o CTA e a trilha sumindo
 CTA = ["ME SIGA PARA MAIS", "CONTEÚDOS COMO ESTE"]
 CTA_KICKER = "GOSTOU DESSA HISTÓRIA?"
 BRANCO, AMARELO = (255, 255, 255), (255, 212, 0)   # amarelo = frase de impacto (destaca bem no P&B; Felipe, 05/11)
+AMARELO_INSP = (255, 201, 40)   # INSPIRADOR: a palavra grande fica amarela (#FFC928), como na referência 2
 FUNCAO = {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "no", "na", "nos", "nas", "e", "que", "pra", "pro",
           "em", "eu", "ele", "ela", "se", "me", "te", "lhe", "por", "com", "sem", "mas", "ou", "é", "tá", "isso", "esse", "essa"}
 
@@ -167,7 +168,7 @@ def quebra(palavras, f, max_w, max_n):
     return linhas
 
 
-def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False):
+def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False, inspirador=False):
     """Layout fixo de um bloco: lista de (palavra, tempo, tamanho, x, y_base) em coordenadas da faixa, posição relativa."""
     ps = [{"t": limpa(ws[k]["w"]), "i": ws[k]["i"], "k": k} for k in idx]
     ps = [p for p in ps if p["t"]]
@@ -208,7 +209,8 @@ def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False):
         x0 = 0 if alinhar == "left" else -lw if alinhar == "right" else -lw / 2
         x = x0
         for p in ln:
-            cor = AMARELO if impacto else BRANCO   # frase de impacto: a frase inteira em amarelo (Felipe, 05/11)
+            # frase de impacto: a frase inteira em amarelo (Felipe, 05/11); INSPIRADOR: também a palavra grande
+            cor = AMARELO if impacto else AMARELO_INSP if inspirador and tam > MED else BRANCO
             out.append({"t": p["t"], "i": p["i"], "tam": tam, "x": x, "y": y, "grande": tam > MED, "cor": cor})
             x += largura(p["t"] + " ", f)
     return out
@@ -318,6 +320,34 @@ def lut_pb():
     y = np.where(y < 0.07, y * 0.4, y)            # pretos profundos
     y = 1 - (1 - y) ** 1.08                        # realce sem estourar
     return (np.clip(y, 0, 0.97) * 255).astype(np.uint8)
+
+
+def grade_cinema(arr, vinheta):
+    """INSPIRADOR: cor de filme (teal & orange). O roxo/magenta da luz do estúdio vira azul-petróleo, a pele fica quente e
+    dourada, a saturação cai para ~70%, o realce estourado do fundo é segurado, contraste alto com pretos densos (para conversar
+    com o P&B do mesmo canal) e uma vinheta leve. Calibrado no estúdio do CW Cast (05/11/2026)."""
+    import cv2
+    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV_FULL).astype(np.float32)
+    h, s, v = hsv[..., 0] * 360 / 256, hsv[..., 1] / 255, hsv[..., 2] / 255
+    roxo = np.clip(1 - np.abs(((h - 298 + 180) % 360) - 180) / 55, 0, 1)
+    h = h * (1 - roxo) + 196 * roxo
+    pele = np.clip(1 - np.abs(((h - 25 + 180) % 360) - 180) / 25, 0, 1) * 0.4
+    h = h * (1 - pele) + 28 * pele
+    s = s * 0.70 * (1 - 0.25 * roxo)
+    v = np.where(v > 0.7, 0.7 + (v - 0.7) * 0.78, v)
+    hsv = np.stack([(h % 360) * 256 / 360, np.clip(s, 0, 1) * 255, np.clip(v, 0, 1) * 255], -1).astype(np.uint8)
+    f = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB_FULL).astype(np.float32) / 255
+    luma = f[..., 0:1] * 0.299 + f[..., 1:2] * 0.587 + f[..., 2:3] * 0.114
+    f = np.clip((f - 0.5) * 1.18 + 0.5 - 0.02, 0, 1)
+    f = f + np.clip(1 - luma * 2.0, 0, 1) ** 1.3 * np.array([-0.04, 0.015, 0.05], np.float32)   # sombras azul-petróleo
+    f = np.where(luma < 0.07, f * 0.55, f) * vinheta
+    return (np.clip(f, 0, 1) * 255).astype(np.uint8)
+
+
+def mascara_vinheta():
+    yy, xx = np.mgrid[0:FH, 0:FW].astype(np.float32)
+    r2 = ((xx - FW / 2) / (FW / 2)) ** 2 + ((yy - FH / 2) / (FH / 2)) ** 2
+    return (1 - 0.16 * np.clip(r2 - 0.25, 0, None))[..., None].astype(np.float32)
 
 
 # ---------------------------------------------------------------- trilha
@@ -432,7 +462,7 @@ def fundo_card(faixa_pb):
     if faixa_pb is None:
         return Image.new("RGB", (FW, FH), (0, 0, 0))
     im = faixa_pb.filter(ImageFilter.GaussianBlur(26)).point(lambda v: int(v * 0.38))
-    return Image.merge("RGB", (im, im, im))
+    return im.convert("RGB") if im.mode == "RGB" else Image.merge("RGB", (im, im, im))
 
 
 def _ease_back(p, c=1.7):
@@ -529,6 +559,7 @@ def render(plano_path):
     nframes = int(round(total * FPS))
 
     # legenda: um bloco por frase; palavra-chave grande e frases médias vêm do plano (o Claude escolhe pelo número da frase)
+    inspirador = (plano.get("tipo") or "").lower() == "inspirador"   # INSPIRADOR: cor de filme e palavra grande amarela
     escolhas = {int(b["n"]): b for b in plano.get("blocos") or [] if isinstance(b, dict) and str(b.get("n", "")).lstrip("-").isdigit()}
     fr = frases(ws)
     blocos = []
@@ -553,7 +584,7 @@ def render(plano_path):
     for k, b in enumerate(blocos):
         b["alinhar"] = ordem[k % len(ordem)]
         max_w = FW * (0.80 if b["alinhar"] == "center" else 0.70)
-        b["lay"] = montar_bloco(ws, b["idx"], b["grande"], b["medio"], b["alinhar"], max_w, b["impacto"])
+        b["lay"] = montar_bloco(ws, b["idx"], b["grande"], b["medio"], b["alinhar"], max_w, b["impacto"], inspirador)
         if b["lay"]:
             alt = max(p["y"] + altura_maiuscula(p["tam"]) for p in b["lay"])
             # o bloco começa sempre na mesma altura (58% da faixa, no peito) e cresce para baixo, linha a linha;
@@ -580,7 +611,10 @@ def render(plano_path):
             plano["trilha"] = trilha
             Path(plano_path).write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
         dec = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-t", "{:.3f}".format(fim_img),
-                                "-vf", "fps={}".format(FPS), "-f", "rawvideo", "-pix_fmt", "gray", "-"], stdout=subprocess.PIPE)
+                                "-vf", "fps={}".format(FPS), "-f", "rawvideo", "-pix_fmt", "rgb24" if inspirador else "gray", "-"],
+                               stdout=subprocess.PIPE)
+        vinheta = mascara_vinheta() if inspirador else None
+        canais = 3 if inspirador else 1
         enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "{}x{}".format(W, H), "-r", str(FPS),
                                 "-i", "-", "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest", "-movflags", "+faststart", str(saida)],
@@ -591,13 +625,18 @@ def render(plano_path):
             T = n / FPS
             quadro = np.zeros((H, W, 3), np.uint8)
             if n < n_img:
-                buf = dec.stdout.read(sw * sh)
-                if len(buf) == sw * sh:
-                    ultimo = np.frombuffer(buf, np.uint8).reshape(sh, sw)
+                buf = dec.stdout.read(sw * sh * canais)
+                if len(buf) == sw * sh * canais:
+                    ultimo = np.frombuffer(buf, np.uint8).reshape((sh, sw, 3) if inspirador else (sh, sw))
                 if ultimo is not None:
                     x, y, cw, ch = jan[min(n, len(jan) - 1)]
-                    rec = Image.fromarray(lut[ultimo]).crop((int(x), int(y), int(x + cw), int(y + ch))).resize((FW, FH), Image.BILINEAR)
-                    faixa = Image.merge("RGB", (rec, rec, rec)).convert("RGBA")
+                    if inspirador:
+                        rec = Image.fromarray(ultimo[int(y):int(y + ch), int(x):int(x + cw)]).resize((FW, FH), Image.BILINEAR)
+                        rec = Image.fromarray(grade_cinema(np.asarray(rec), vinheta))
+                        faixa = rec.convert("RGBA")
+                    else:
+                        rec = Image.fromarray(lut[ultimo]).crop((int(x), int(y), int(x + cw), int(y + ch))).resize((FW, FH), Image.BILINEAR)
+                        faixa = Image.merge("RGB", (rec, rec, rec)).convert("RGBA")
                     card["ultima"] = rec   # fundo do CTA: o último quadro da faixa, sem legenda
                 else:
                     faixa = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
