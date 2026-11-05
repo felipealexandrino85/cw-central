@@ -3067,11 +3067,13 @@ Decida, frase a frase:
   SUPERPODER, ALEGRIA, CONQUISTA, NINGUÉM, A OBRIGAÇÃO, RADAR SOCIAL). Copie EXATAMENTE como está na frase (1 a 2 palavras
   seguidas). No máximo uma por frase; frase de ligação ("NÉ?", "POIS É", "E AÍ") fica sem. Em torno de 2 de cada 3 frases têm uma.
 - "medio": true só para frase curta de peso sem uma palavra única de destaque ("VIVER O MOMENTO", "PRECISA SER VISTA"); 0 a 3 no corte.
+- "impacto": true nas 2 a 4 frases MAIS impactantes do corte (a frase-bomba, a virada, o fechamento): a palavra-chave delas
+  fica AMARELA (sem palavra-chave, a frase inteira). Não marque frase de ligação nem exemplo comum.
 - "virada": o segundo do corte em que acontece o ponto sentimental (a trilha cresce ali).
 - "clima": "queda" (dificuldade, perda, medo), "virada" (ascensão, conquista, recomeço) ou "conselho" (pensamento para outros donos).
 - "legenda_post": legenda para o Instagram, 2 a 3 linhas no tom do corte + 3 hashtags, sem citar Cardápio Web nem CW Cast.
 Nada inventado: palavra-chave só se estiver na frase.
-Responda APENAS com JSON: {"blocos": [{"n": 0, "grande": "AMIGO"}, {"n": 4, "medio": true}, ...], "virada": 36.5, "clima": "queda",
+Responda APENAS com JSON: {"blocos": [{"n": 0, "grande": "AMIGO"}, {"n": 2, "grande": "SUPERPODER", "impacto": true}, {"n": 4, "medio": true}, ...], "virada": 36.5, "clima": "queda",
 "legenda_post": "..."}"""
 
 
