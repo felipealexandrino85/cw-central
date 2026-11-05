@@ -323,31 +323,31 @@ def lut_pb():
 
 
 def grade_cinema(arr, vinheta):
-    """INSPIRADOR: cor de filme (teal & orange). O roxo/magenta da luz do estúdio vira azul-petróleo, a pele fica quente e
-    dourada, a saturação cai para ~70%, o realce estourado do fundo é segurado, contraste alto com pretos densos (para conversar
-    com o P&B do mesmo canal) e uma vinheta leve. Calibrado no estúdio do CW Cast (05/11/2026)."""
+    """INSPIRADOR: cor de filme que PRESERVA o rosto e as cores da marca (Felipe, 05/11/2026: a versão teal & orange anterior
+    deixava a pele pálida e o logo azul). A pele fica natural e um pouco mais quente; só a luz roxa do estúdio fica mais
+    contida; curva em S com pretos densos (conversa com o P&B do canal), realce suave, sombras levemente frias e vinheta leve."""
     import cv2
     hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV_FULL).astype(np.float32)
     h, s, v = hsv[..., 0] * 360 / 256, hsv[..., 1] / 255, hsv[..., 2] / 255
-    roxo = np.clip(1 - np.abs(((h - 298 + 180) % 360) - 180) / 55, 0, 1)
-    h = h * (1 - roxo) + 196 * roxo
-    pele = np.clip(1 - np.abs(((h - 25 + 180) % 360) - 180) / 25, 0, 1) * 0.4
-    h = h * (1 - pele) + 28 * pele
-    s = s * 0.70 * (1 - 0.25 * roxo)
-    v = np.where(v > 0.7, 0.7 + (v - 0.7) * 0.78, v)
-    hsv = np.stack([(h % 360) * 256 / 360, np.clip(s, 0, 1) * 255, np.clip(v, 0, 1) * 255], -1).astype(np.uint8)
+    pele = np.clip(1 - np.abs(((h - 22 + 180) % 360) - 180) / 30, 0, 1) * np.clip((s - 0.10) / 0.15, 0, 1) * np.clip((v - 0.15) / 0.2, 0, 1)
+    pele = cv2.GaussianBlur(pele, (0, 0), 3)
+    roxo = np.clip(1 - np.abs(((h - 290 + 180) % 360) - 180) / 45, 0, 1) * (1 - pele)
+    s = s * (1 - roxo * 0.45) * 0.92 + pele * 0.04
+    v = np.where(v > 0.75, 0.75 + (v - 0.75) * 0.8, v)
+    hsv = np.stack([hsv[..., 0], np.clip(s, 0, 1) * 255, np.clip(v, 0, 1) * 255], -1).astype(np.uint8)
     f = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB_FULL).astype(np.float32) / 255
     luma = f[..., 0:1] * 0.299 + f[..., 1:2] * 0.587 + f[..., 2:3] * 0.114
-    f = np.clip((f - 0.5) * 1.18 + 0.5 - 0.02, 0, 1)
-    f = f + np.clip(1 - luma * 2.0, 0, 1) ** 1.3 * np.array([-0.04, 0.015, 0.05], np.float32)   # sombras azul-petróleo
-    f = np.where(luma < 0.07, f * 0.55, f) * vinheta
+    f = np.clip(0.5 + (f - 0.5) * 1.16, 0, 1) - 0.035 * np.clip(1 - luma * 3, 0, 1)
+    f = f + np.clip(1 - luma * 2.4, 0, 1) ** 1.5 * (1 - pele[..., None]) * np.array([-0.02, 0.006, 0.025], np.float32)
+    f = f + pele[..., None] * np.array([0.02, 0.007, -0.012], np.float32)
+    f = f * vinheta
     return (np.clip(f, 0, 1) * 255).astype(np.uint8)
 
 
 def mascara_vinheta():
     yy, xx = np.mgrid[0:FH, 0:FW].astype(np.float32)
     r2 = ((xx - FW / 2) / (FW / 2)) ** 2 + ((yy - FH / 2) / (FH / 2)) ** 2
-    return (1 - 0.16 * np.clip(r2 - 0.25, 0, None))[..., None].astype(np.float32)
+    return (1 - 0.12 * np.clip(r2 - 0.3, 0, None))[..., None].astype(np.float32)
 
 
 # ---------------------------------------------------------------- trilha
@@ -640,17 +640,6 @@ def render(plano_path):
                     card["ultima"] = rec   # fundo do CTA: o último quadro da faixa, sem legenda
                 else:
                     faixa = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
-                # abertura em fenda: máscara que revela, de 50 px até a faixa cheia, linear (quadros 0-1 pretos)
-                if n < 2 + ABRE:
-                    if n < 2:
-                        faixa = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
-                    else:
-                        h_ab = round(50 + (FH - 50) * (n - 2) / ABRE)
-                        m = Image.new("L", (FW, FH), 0)
-                        ImageDraw.Draw(m).rectangle((0, (FH - h_ab) // 2, FW, (FH + h_ab) // 2), fill=255)
-                        preto = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
-                        preto.paste(faixa, (0, 0), m)
-                        faixa = preto
                 b = next((b for b in blocos if b["de"] <= T < b["ate"] and b["lay"]), None)
                 if b:
                     for p in b["lay"]:
@@ -678,6 +667,18 @@ def render(plano_path):
                         faixa.alpha_composite(im, dest=(max(0, round(px)), max(0, round(py)))) if px >= 0 and py >= 0 else \
                             faixa.alpha_composite(im.crop((max(0, -round(px)), max(0, -round(py)), im.width, im.height)),
                                                   dest=(max(0, round(px)), max(0, round(py))))
+                # abertura em fenda: máscara que revela, de 50 px até a faixa cheia, linear (quadros 0-1 pretos). Vem DEPOIS da
+                # legenda: a abertura fica por cima de tudo, a legenda só aparece onde a fenda já abriu (Felipe, 05/11/2026)
+                if n < 2 + ABRE:
+                    if n < 2:
+                        faixa = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
+                    else:
+                        h_ab = round(50 + (FH - 50) * (n - 2) / ABRE)
+                        m = Image.new("L", (FW, FH), 0)
+                        ImageDraw.Draw(m).rectangle((0, (FH - h_ab) // 2, FW, (FH + h_ab) // 2), fill=255)
+                        preto = Image.new("RGBA", (FW, FH), (0, 0, 0, 255))
+                        preto.paste(faixa, (0, 0), m)
+                        faixa = preto
                 quadro[FY:FY + FH] = np.asarray(faixa.convert("RGB"))
             else:   # card: o último quadro desfocado atrás, o convite em máquina de escrever e o botão "Seguir" sendo clicado
                 if "fundo" not in card:
