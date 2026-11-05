@@ -35,8 +35,45 @@ PANE = {   # x, y, largura, opacidade, escala, borda
 }
 PANE_DA_CENA = {"tipografia": "hidden", "comparacao": "hidden", "icones": "split", "linha_tempo": "split",
                 "contador": "normal", "citacao": "normal"}
-SEM_LEGENDA = {"tipografia", "comparacao", "contador", "citacao"}
-LEGENDA_ALTA = {"icones", "linha_tempo"}
+SEM_LEGENDA = {"citacao"}   # a citação já mostra a frase dita; nas outras cenas a legenda continua (Felipe, 05/11/2026)
+LEGENDA_ALTA = {"icones", "linha_tempo", "tipografia"}
+
+
+FIM_FRASE = re.compile(r"[.?!…]['\")\]]*$")
+
+
+def frase_inteira(ws, k0, k1, folga=3.0, teto=10.0):
+    """Ajusta o gancho às frases (Felipe, 05/11/2026: o gancho terminava com "Claro" / "É" / "Só" da frase seguinte).
+    Fim: se já passou de um ponto final, corta nele; se não chegou, estica até o ponto (no máximo `folga` s).
+    Começo: se a frase vinha corrida da anterior, volta até o começo dela (no máximo `folga` s). O gancho fica com até `teto` s."""
+    fim_ok = lambda k: bool(FIM_FRASE.search(ws[k]["w"].strip()))
+    if not fim_ok(k1):
+        antes = [k for k in range(k0, k1) if fim_ok(k)]
+        if antes and ws[antes[-1]]["f"] - ws[k0]["i"] >= 2.0:
+            k1 = antes[-1]
+        else:
+            k = k1
+            while k + 1 < len(ws) and ws[k + 1]["f"] - ws[k1]["f"] <= folga and not fim_ok(k):
+                k += 1
+            if fim_ok(k) and ws[k]["f"] - ws[k0]["i"] <= teto:
+                k1 = k
+    if k0 and not fim_ok(k0 - 1) and ws[k0]["i"] - ws[k0 - 1]["f"] < 0.35:   # começou no meio da frase
+        k = k0
+        while k - 1 >= 0 and ws[k0]["i"] - ws[k - 1]["i"] <= folga and not fim_ok(k - 1):
+            k -= 1
+        if (k == 0 or fim_ok(k - 1)) and ws[k1]["f"] - ws[k]["i"] <= teto:
+            k0 = k
+    return k0, k1
+
+
+def lugar_legenda(ativa):
+    """(y, tamanho) da legenda na cena: embaixo do conteúdo e acima da onda de áudio, sem cobrir o motion."""
+    tipo = ativa["tipo"] if ativa else None
+    if tipo in LEGENDA_ALTA:
+        return 1418, 74
+    if tipo == "comparacao" or (tipo == "contador" and ativa.get("grafico")):
+        return 1462, 58
+    return 1245, 80
 
 
 # ---------------------------------------------------------------- utilidades
@@ -825,7 +862,7 @@ def render(plano_path):
     if g:   # encaixa o gancho nas palavras: começa no início da primeira e termina no fim da última, sem cortar a fala
         dentro = [k for k, w in enumerate(palavras_brutas) if g["de"] - 0.15 <= w["i"] < g["ate"]]
         if dentro:
-            k0, k1 = dentro[0], dentro[-1]
+            k0, k1 = frase_inteira(palavras_brutas, dentro[0], dentro[-1])
             ini = palavras_brutas[k0]["i"] - 0.12
             if k0:
                 ini = max(ini, palavras_brutas[k0 - 1]["f"] + 0.02)
@@ -947,9 +984,9 @@ def render(plano_path):
                 if not (ativa and ativa["tipo"] in SEM_LEGENDA):
                     blk = next((b for b in legendas if b[0] <= t < b[1]), None)
                     if blk:
-                        im, _ = cached(("leg", blk[2], bool(ativa and ativa["tipo"] in LEGENDA_ALTA)), lambda: rich(blk[2], fonte("mont", 74 if ativa and ativa["tipo"] in LEGENDA_ALTA else 80), 0.9 * W, sombra=True, entrelinha=1.06))
+                        y, tam = lugar_legenda(ativa)
+                        im, _ = cached(("leg", blk[2], tam), lambda: rich(blk[2], fonte("mont", tam), 0.9 * W, sombra=True, entrelinha=1.06))
                         u = t - blk[0]
-                        y = 1418 if ativa and ativa["tipo"] in LEGENDA_ALTA else 1245
                         put(cv, im, W / 2, y, clamp(0.3 + u / 0.16 * 0.7), 0.88 + 0.12 * ease_back(clamp(u / 0.16)))
                 # nome do convidado, no canto de baixo do vídeo
                 if nome is not None and est[3] > 0.5:
