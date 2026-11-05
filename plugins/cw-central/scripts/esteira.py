@@ -3131,6 +3131,13 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
     entre frases, revisão da legenda), confere se quem fala aparece, o Claude escolhe a palavra-chave de cada frase, a virada e o
     clima da trilha, e o motor (scripts/nanquim.py) desenha o vertical quadro a quadro."""
     import nanquim
+    import fcntl
+    trava = open(W / "work" / ".{}.trava".format(cid), "w") if (W / "work").is_dir() else None
+    if trava:   # uma produção por corte: duas ao mesmo tempo gravavam por cima do mesmo arquivo (cortes sem som/abertura, 05/11)
+        try:
+            fcntl.flock(trava, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Falhou("outra produção deste corte já está rodando")
     work = W / "work" / cid
     tr = work / "transcript.json"
     roteiro = work / "nanquim_plano.json"
@@ -3205,7 +3212,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
     if not isinstance(r.get("blocos"), list):
         raise Falhou("o plano do Nanquim veio sem os blocos da legenda")
     clima = r.get("clima") if r.get("clima") in ("queda", "virada", "conselho") else "conselho"
-    clima_trilha = "epico" if tipo == "inspirador" else clima
+    clima_trilha = "epico" if tipo == "inspirador" else "triste"   # pastas do time: épicas/inspiradoras × tristes/dramáticas
     try:
         virada = min(max(0.0, float(r.get("virada"))), dur)
     except (TypeError, ValueError):

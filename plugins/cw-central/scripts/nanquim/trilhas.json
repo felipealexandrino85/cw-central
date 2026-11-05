@@ -1,10 +1,10 @@
 {
- "sobre": "Trilhas do Nanquim. Principal: as faixas que o time escolheu na pasta do Drive (copiadas para /home/cw-esteira/.cache/nanquim/drive/); as do Mixkit (reserva: true) só entram se o arquivo do Drive não estiver na máquina. Fora: as com letra cantada (BIA, David Kushner, Narvent Fainted, Memory Reboot). queda/virada/conselho = REFLEXIVO; epico = INSPIRADOR.",
+ "sobre": "Reserva do Nanquim (Mixkit). As trilhas principais são as pastas do Drive do time, copiadas para ~/.cache/nanquim/drive/: 'Épicas e inspiradoras' = INSPIRADOR (clima epico); 'Tristes' e 'Dramáticas e melodramáticas' = REFLEXIVO (clima triste). O motor lê as pastas na hora (scripts/nanquim.py, catalogo()); faixa com letra cantada fica de fora.",
  "trilhas": [
   {
    "id": "mixkit-614",
    "titulo": "Silent Descent",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/614/614.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -13,7 +13,7 @@
   {
    "id": "mixkit-22",
    "titulo": "Piano Reflections",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/22/22.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -22,7 +22,7 @@
   {
    "id": "mixkit-714",
    "titulo": "Classical 7",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/714/714.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -31,7 +31,7 @@
   {
    "id": "mixkit-52",
    "titulo": "The Long Road",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/52/52.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -40,7 +40,7 @@
   {
    "id": "mixkit-606",
    "titulo": "Drawing the Sky",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/606/606.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -49,7 +49,7 @@
   {
    "id": "mixkit-71",
    "titulo": "Slow Trail",
-   "clima": "queda",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/71/71.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -58,7 +58,7 @@
   {
    "id": "mixkit-587",
    "titulo": "Discover",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/587/587.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -67,7 +67,7 @@
   {
    "id": "mixkit-148",
    "titulo": "Forest Mist Whispers",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/148/148.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -76,7 +76,7 @@
   {
    "id": "mixkit-32",
    "titulo": "Driving Ambition",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/32/32.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -85,7 +85,7 @@
   {
    "id": "mixkit-31",
    "titulo": "Dreaming Big",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/31/31.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -94,7 +94,7 @@
   {
    "id": "mixkit-322",
    "titulo": "Life's a Movie",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/322/322.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -103,7 +103,7 @@
   {
    "id": "mixkit-598",
    "titulo": "We Will Get It",
-   "clima": "virada",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/598/598.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -112,7 +112,7 @@
   {
    "id": "mixkit-545",
    "titulo": "Rebecca on the Shore",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/545/545.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -121,7 +121,7 @@
   {
    "id": "mixkit-92",
    "titulo": "Time Out",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/92/92.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -130,7 +130,7 @@
   {
    "id": "mixkit-184",
    "titulo": "Vastness",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/184/184.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -139,7 +139,7 @@
   {
    "id": "mixkit-712",
    "titulo": "Classical 5",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/712/712.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -148,7 +148,7 @@
   {
    "id": "mixkit-551",
    "titulo": "Home",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/551/551.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -157,7 +157,7 @@
   {
    "id": "mixkit-310",
    "titulo": "Alignment",
-   "clima": "conselho",
+   "clima": "triste",
    "url": "https://assets.mixkit.co/music/310/310.mp3",
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
@@ -243,270 +243,6 @@
    "fonte": "https://mixkit.co/free-stock-music/",
    "licenca": "Mixkit Stock Music Free License (uso comercial, sem atribuição)",
    "reserva": true
-  },
-  {
-   "id": "drive-01",
-   "titulo": "Avengers Endgame · Main on End",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Alan_Silvestri_-_Main_on_End_From_Avengers_-_Endgame_Audio_Only [4B3gCHbDu94].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-02",
-   "titulo": "Avengers Endgame · Portals",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Alan_Silvestri_-_Portals_From_Avengers_-_Endgame_Audio_Only [F_mhWxOjxp4].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-03",
-   "titulo": "Audiomachine · Breath and Life",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Audiomachine_Breath_and_Life_Extended_Version [C0xZ-H2KYWw].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-04",
-   "titulo": "Chevaliers de Sangreal",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Chevaliers_De_Sangreal_From_The_Da_Vinci_Code_Original_Motion_Picture_Soundtrack [CpHkMZxNLV0].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-05",
-   "titulo": "Destroyer of Worlds",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Destroyer_Of_Worlds [Pswx6OQp1Ks].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-06",
-   "titulo": "Born A Legend",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Epic_Motivational_Music_-_Born_A_Legend [tzBEpdfCRqw].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-07",
-   "titulo": "Hans Zimmer · Dream Is Collapsing",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Hans_Zimmer_-_Dream_Is_Collapsing_Official_Audio [OzLhXesNkCI].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-08",
-   "titulo": "Hans Zimmer · Flight",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Hans_Zimmer_-_Flight_Man_of_Steel [w4OdIOGBW2Q].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-09",
-   "titulo": "Hans Zimmer · Mountains",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Hans_Zimmer_-_Mountains_Interstellar_Soundtrack [o_Ay_iDRAbc].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-10",
-   "titulo": "Hans Zimmer · No Time For Caution",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Hans_Zimmer_-_No_Time_For_Caution_Interstellar_Soundtrack_Docking_Interstellar_OST [m3zvVGJrTP8].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-11",
-   "titulo": "He's a Pirate",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/He_s_a_Pirate [BuYf0taXoNw].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-12",
-   "titulo": "Heart of Courage",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Heart_of_Courage [K2iC1aCPbKA].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-13",
-   "titulo": "I Can Do Anything (Finale)",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/I_Can_Do_Anything_Finale [RGvKLa0CYzE].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-14",
-   "titulo": "Thomas Bergersen · Final Frontier",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Thomas_Bergersen_-_Final_Frontier_Interstellar_Trailer_3_Music [BAzCf0ascW8].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-15",
-   "titulo": "Two Steps From Hell · Protectors of the Earth",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Two_Steps_From_Hell_-_Protectors_of_the_Earth [ASj81daun5Q].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-16",
-   "titulo": "Two Steps From Hell · Victory",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Two_Steps_From_Hell_-_Victory [hKRUPYrAQoE].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-17",
-   "titulo": "Light of the Seven",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Ramin_Djawadi_-_Light_of_the_Seven_Game_of_Thrones_Music_from_the_HBO_Series_-_Season_6 [QJHPlKPOc78].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-18",
-   "titulo": "Westworld · Main Title",
-   "clima": "epico",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Westworld_S1_Official_Soundtrack_Main_Title_Theme_-_Ramin_Djawadi_WaterTower [rYelEUVQ50g].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-19",
-   "titulo": "The Last of Us · Main Theme",
-   "clima": "queda",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Gustavo_Santaolalla_-_The_Last_of_Us_Main_Theme_The_Last_of_Us_Video_Game_Soundtrack [Pt1pOY3_W64].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-20",
-   "titulo": "Hand Covers Bruise",
-   "clima": "queda",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Hand_Covers_Bruise_HD_-_From_the_Soundtrack_to_The_Social_Network [9SBNCYkSceU].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-21",
-   "titulo": "Lux Aeterna",
-   "clima": "queda",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Clint_Mansell_-_Lux_Aeterna_Requiem_for_a_Dream [CZMuDbaXbC8].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-22",
-   "titulo": "Dune · Paul's Dream",
-   "clima": "queda",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Dune_Official_Soundtrack_Paul_s_Dream_Hans_Zimmer_WaterTower [BdtiYwSP9ko].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-23",
-   "titulo": "On the Nature of Daylight",
-   "clima": "queda",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Max_Richter_-_On_the_Nature_of_Daylight [rVN1B-tUpgs].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-24",
-   "titulo": "Interstellar · Cornfield Chase",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Interstellar_Official_Soundtrack_Cornfield_Chase_Hans_Zimmer_WaterTower [JuSsvM8B4Jc].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-25",
-   "titulo": "Einaudi · Experience",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Ludovico_Einaudi_-_Experience_Official_Visualizer [1e9B31FLT-s].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-26",
-   "titulo": "Arrival of the Birds",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/The_Cinematic_Orchestra_Arrival_of_the_Birds_Transformation [MqoANESQ4cQ].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-27",
-   "titulo": "A Origem · Time",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Musica_do_filme_A_Origem [Shmid9Vt_ao].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-28",
-   "titulo": "Can You Hear The Music",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Can_You_Hear_The_Music [4JZ-o3iAJv4].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-29",
-   "titulo": "Interstellar · Main Theme",
-   "clima": "virada",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Interstellar_Main_Theme_-_Extra_Extended_-_Soundtrack_by_Hans_Zimmer [UDVtMYqUAyw].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-30",
-   "titulo": "Einaudi · Nuvole Bianche",
-   "clima": "conselho",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Ludovico_Einaudi_-_Nuvole_Bianche [4VR-6AS0-l4].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-31",
-   "titulo": "Interstellar · S.T.A.Y.",
-   "clima": "conselho",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Interstellar_Official_Soundtrack_S.T.A.Y._Hans_Zimmer_WaterTower [Ia3eQ7QD9Z0].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-32",
-   "titulo": "Gladiator · Now We Are Free",
-   "clima": "conselho",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Gladiator_Now_We_Are_Free_Hans_Zimmer_Lisa_Gerrard [mQQKZ5cgybU].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
-  },
-  {
-   "id": "drive-33",
-   "titulo": "Comptine d'un autre été",
-   "clima": "conselho",
-   "arquivo": "/home/cw-esteira/.cache/nanquim/drive/Yann_Tiersen_-_Comptine_d_un_autre_ete_-_l_apres-midi [NvryolGa19A].mp3",
-   "fonte": "pasta do Drive do time (1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy)",
-   "licenca": "escolhida pelo time (risco de claim/mute aceito)"
   }
  ]
 }

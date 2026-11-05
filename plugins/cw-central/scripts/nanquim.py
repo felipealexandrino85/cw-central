@@ -351,16 +351,30 @@ def mascara_vinheta():
 
 
 # ---------------------------------------------------------------- trilha
+PASTA_TIME = CACHE / "drive"   # cópia das pastas de música do time (Drive 1GFrIyATM_GSxkgZO_FhMuLtrc32odcQy), feita pelo servidor
+LETRA = re.compile(r"BIA_-_WE_ON_GO|David_Kushner|Narvent|Memory_Reboot", re.I)   # letra cantada compete com a fala: fora
+
+
 def catalogo():
-    """Trilhas do catálogo. As do time (pasta do Drive, com "arquivo") valem primeiro; as de reserva (Mixkit) só entram quando
-    não há nenhuma do time na máquina para aquele clima."""
+    """Trilhas do Nanquim. Principal: as pastas do time, lidas na hora ("Épicas e inspiradoras" = epico, para o INSPIRADOR;
+    "Tristes" e "Dramáticas e melodramáticas" = triste, para o REFLEXIVO). Reserva (Mixkit, trilhas.json) só entra quando
+    não há nenhuma faixa do time na máquina para aquele clima."""
+    time_ = []
+    if PASTA_TIME.is_dir():
+        for arq in sorted(PASTA_TIME.rglob("*.mp3")):
+            if LETRA.search(arq.name):
+                continue
+            pasta = arq.parent.name if arq.parent != PASTA_TIME else ""
+            clima = "epico" if re.search(r"[ée]pica|inspira", pasta, re.I) else "triste"
+            titulo = re.sub(r"\s*\[[^\]]*\]$", "", arq.stem).replace("_", " ")
+            time_.append({"id": "time-" + re.sub(r"[^a-z0-9]+", "-", titulo.lower()).strip("-")[:60], "titulo": titulo, "clima": clima,
+                          "arquivo": str(arq), "fonte": "pasta do time: " + pasta, "licenca": "escolhida pelo time"})
     try:
-        cat = json.loads(CATALOGO.read_text(encoding="utf-8"))["trilhas"]
+        reserva = [t for t in json.loads(CATALOGO.read_text(encoding="utf-8"))["trilhas"]]
     except (OSError, ValueError, KeyError):
-        return []
-    tem = lambda t: bool(t.get("arquivo")) and Path(t["arquivo"]).exists()
-    climas_time = {t["clima"] for t in cat if not t.get("reserva") and tem(t)}
-    return [t for t in cat if (not t.get("reserva") and tem(t)) or (t.get("reserva") and t["clima"] not in climas_time)]
+        reserva = []
+    climas_time = {t["clima"] for t in time_}
+    return time_ + [t for t in reserva if t["clima"] not in climas_time]
 
 
 def arquivo_trilha(tr):
@@ -432,8 +446,12 @@ def monta_audio(video, voz_dur, total, trilha, virada, saida, tmp, boom_em=None)
             ini = max(0.0, dur_tr - total - 0.5)
         trilha["ini_usado"] = round(ini, 2)
         ins += (["-stream_loop", "-1"] if dur_tr < total else []) + ["-ss", "{:.3f}".format(ini), "-i", str(arq)]
+        # como nas referências: começa ~8 dB abaixo do nível cheio e cresce com a fala até a virada (Felipe, 05/11/2026:
+        # "está começando muito alta e sem sentido"); depois segura e some no card
+        sobe = max(6.0, min(float(virada or 0) or total * 0.6, total - CARD - 1))
         fc.append("[1:a]atrim=0:{:.3f},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,loudnorm=I=-27:TP=-8:LRA=11,"
-                  "afade=t=in:d=0.04,afade=t=out:st={:.3f}:d={:.3f}[mus]".format(total, total - CARD, CARD))
+                  "volume='pow(10,(-8+8*min(1,t/{:.3f}))/20)':eval=frame,"
+                  "afade=t=in:d=0.6,afade=t=out:st={:.3f}:d={:.3f}[mus]".format(total, sobe, total - CARD, CARD))
         fc.append("[voz][mus]amix=inputs=2:normalize=0:duration=first[mx]")
         mix = "[mx]"
     n_in = 2 if trilha else 1
