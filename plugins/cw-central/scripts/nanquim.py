@@ -352,10 +352,15 @@ def mascara_vinheta():
 
 # ---------------------------------------------------------------- trilha
 def catalogo():
+    """Trilhas do catálogo. As do time (pasta do Drive, com "arquivo") valem primeiro; as de reserva (Mixkit) só entram quando
+    não há nenhuma do time na máquina para aquele clima."""
     try:
-        return json.loads(CATALOGO.read_text(encoding="utf-8"))["trilhas"]
+        cat = json.loads(CATALOGO.read_text(encoding="utf-8"))["trilhas"]
     except (OSError, ValueError, KeyError):
         return []
+    tem = lambda t: bool(t.get("arquivo")) and Path(t["arquivo"]).exists()
+    climas_time = {t["clima"] for t in cat if not t.get("reserva") and tem(t)}
+    return [t for t in cat if (not t.get("reserva") and tem(t)) or (t.get("reserva") and t["clima"] not in climas_time)]
 
 
 def arquivo_trilha(tr):
