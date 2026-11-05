@@ -383,6 +383,8 @@ def executar(E, item):
         if refs:
             extra.append(pasta / "refs")
         higgs = int(a.get("higgs") or 0)
+        if "higgs" in ent:   # o pedido pode limitar (capa automática do Titeu vai com 0: sem geração paga)
+            higgs = min(higgs, int(ent.get("higgs") or 0))
         # estilo de edição: o escolhido no pedido ou o padrão do agente (o processo das etapas é o mesmo)
         estilos = a.get("estilos") or []
         escolhido = (ent.get("estilo") or {}).get("nome")
