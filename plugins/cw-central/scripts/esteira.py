@@ -1376,6 +1376,31 @@ def _cruza(js, a, b, folga=0.2):
     return any(a < z - folga and b > x + folga for x, z in js)
 
 
+def limpar_shots(work):
+    """Tira planos de câmera que começam no fim do vídeo ou colados no anterior (o render para com "shot N com duracao
+    zero/negativa" e o corte caía no modo Claude, sem o motion do Zeca: l20c06 e l20c08, 04-05/11/2026)."""
+    try:
+        plan, tr = work / "plan.json", work / "transcript.json"
+        pl, t = json.loads(plan.read_text(encoding="utf-8")), json.loads(tr.read_text(encoding="utf-8"))
+        dur = sum(float(b) - float(a) for a, b in t.get("ranges") or []) or float(t.get("duration") or 0)
+        shots = pl.get("shots") or []
+        if not dur or not shots:
+            return 0
+        bons = []
+        for sh in sorted(shots, key=lambda x: float(x.get("start") or 0)):
+            ini = float(sh.get("start") or 0)
+            if bons and (ini >= dur - 0.25 or ini - float(bons[-1].get("start") or 0) < 0.1):
+                continue
+            bons.append(sh)
+        if len(bons) != len(shots):
+            pl["shots"] = bons
+            plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        return len(shots) - len(bons)
+    except (OSError, ValueError, TypeError) as e:
+        log("limpar planos de câmera:", e)
+        return 0
+
+
 def respeitar_editor(work):
     """Tira do plano e do motion o visual que caiu num trecho que o editor esvaziou. Devolve o que tirou (para o log)."""
     js = decisoes_editor(work).get("sem_visual") or []
@@ -2641,6 +2666,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
         rodar("Revisão técnica", ["tools/plan_validate.py", "work/{}/plan.json".format(cid), "--root", ".", "--saida-prefixo", "saida/"], ok=(0, 1))
         respeitar_editor(work)
+        if limpar_shots(work):
+            log("planos de câmera do", cid, "colados ou no fim do vídeo: tirados antes do render")
         rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
         rodar("Revisão técnica", ["tools/gates.py", "work/{}/plan.json".format(cid), "--root", ".", "--video", "saida/{}_rascunho.mp4".format(cid),
                                   "--json", "work/{}/gates.json".format(cid), "--replay"], ok=(0, 1, 2))
@@ -2667,6 +2694,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         broll_ok()
     sem_logo()
     respeitar_editor(work)
+    limpar_shots(work)
     rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
     rodar("Revisão técnica", ["tools/final_probe.py", "saida/{}.mov".format(cid), "--perfil", "final"], ok=(0, 1))
     final, previa = W / "saida" / "{}.mov".format(cid), W / "saida" / "{}_preview.mp4".format(cid)
