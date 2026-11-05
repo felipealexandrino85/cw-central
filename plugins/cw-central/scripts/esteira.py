@@ -659,7 +659,8 @@ def selecionar(lote, ep, estilo=None):
             raise RuntimeError("nenhum corte válido na seleção")
         resumo = r.get("resumo") or ""
         if n_res:
-            cortes, resumo = mapa_falante(pasta, cortes, [c for c in r.get("reservas") or [] if valido(c)], int(lote["quantidade"]), resumo)
+            cortes, resumo = mapa_falante(pasta, cortes, [c for c in r.get("reservas") or [] if valido(c)], int(lote["quantidade"]), resumo,
+                                          confia_close=formato_nanquim(estilo))
         srv("lista", lote=lote["id"], cortes=cortes, resumo=resumo)
         log("lote", lote["id"], "com", len(cortes), "cortes para conferir")
     except Exception as e:
@@ -667,7 +668,7 @@ def selecionar(lote, ep, estilo=None):
         srv("lote", id=lote["id"], estado="erro", erro=str(e)[:500])
 
 
-def mapa_falante(pasta, cortes, reservas, n, resumo):
+def mapa_falante(pasta, cortes, reservas, n, resumo, confia_close=False):
     """Zeca: confere cada trecho escolhido (e as reservas) no vídeo do episódio. Trecho em que quem fala não aparece na imagem
     (uma pessoa só na tela enquanto outra fala) troca por uma reserva boa; sem reserva, fica com o aviso no motivo. Se isso
     acontece em boa parte do episódio, o lote chega com o alerta no resumo (Felipe, 05/11/2026: Ep.6-005 foi descartado inteiro)."""
@@ -677,7 +678,7 @@ def mapa_falante(pasta, cortes, reservas, n, resumo):
         return cortes, resumo
     todos = cortes + reservas
     with ThreadPoolExecutor(3) as ex:
-        chk = list(ex.map(lambda c: checar_falante(bruto, float(c["inicio"]), float(c["fim"])), todos))
+        chk = list(ex.map(lambda c: checar_falante(bruto, float(c["inicio"]), float(c["fim"]), confia_close=confia_close), todos))
     ruim = lambda k: (chk[k] or 0) >= FORA_TUDO
     bons = [c for k, c in enumerate(cortes) if not ruim(k)]
     res_boas = [c for k, c in enumerate(reservas, len(cortes)) if not ruim(k)]
@@ -741,7 +742,15 @@ FORA_TUDO = 0.93   # boca × voz dizendo "ninguém na tela fala" em quase o trec
 # na tela dá 96–100% (l20c01/03/04/05/11/13, descartados pelo time).
 
 
-def checar_falante(video, de=0.0, ate=None, tempo=900):
+def fora_dos_planos(planos, dur, confia_close=False):
+    """Parte (0–1) dos planos marcados "fora_de_quadro". confia_close: plano com UMA pessoa só na tela não conta (Nanquim:
+    o close de quem conta a história; a boca × voz falhou com o Renan falando na imagem, lote 30, 05/11/2026)."""
+    tot = sum(float(p["fim"]) - float(p["ini"]) for p in planos or []
+              if p.get("estado") == "fora_de_quadro" and not (confia_close and len(p.get("rostos") or []) == 1))
+    return min(1.0, tot / dur) if dur > 0 else None
+
+
+def checar_falante(video, de=0.0, ate=None, tempo=900, confia_close=False):
     """Parte do trecho (0–1) em que há voz e ninguém na tela está falando (falante.py, boca × voz). None se não mediu."""
     try:
         r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video), "--de", "{:.2f}".format(float(de or 0))]
@@ -754,6 +763,8 @@ def checar_falante(video, de=0.0, ate=None, tempo=900):
     if not planos:
         return None
     dur = (float(ate) - float(de or 0)) if ate else max(float(p.get("fim") or 0) for p in planos)
+    if confia_close:
+        return fora_dos_planos(planos, dur, True)
     return min(1.0, sum(b - a for a, b in res.get("fora_de_quadro") or []) / dur) if dur > 0 else None
 
 
@@ -3170,7 +3181,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
             log("Nanquim:", cid, "falante.py não rodou:", (r.stderr or "")[-200:])
     try:
         med = json.loads(fal.read_text(encoding="utf-8"))
-        fora = min(1.0, sum(b - a for a, b in med.get("fora_de_quadro") or []) / dur) if dur else 0
+        fora = fora_dos_planos(med.get("planos"), dur, confia_close=True) or 0
     except (OSError, ValueError):
         med, fora = None, None
     if fora is not None and fora >= FORA_TUDO and not c.get("ajuste") and not (estilo or {}).get("teste"):
@@ -3295,6 +3306,60 @@ def produzir(item):
                 log("consumo do corte", item["corte"]["id"], "não foi:", e)
 
 
+TROCA_TRECHO = """Você escolhe UM trecho novo para um corte da esteira do CW Studios (CW Cast). O trecho anterior deste corte não serviu:
+%%MOTIVO%%
+Nesta pasta estão transcricao.txt (linhas com [hh:mm:ss]) e transcricao.json (tempo por palavra). Título do corte anterior: %%TITULO%%.
+Escolha outro momento do MESMO episódio, no mesmo formato, que NÃO se sobreponha a nenhum destes trechos (segundos):
+%%USADOS%%
+Prefira um trecho em que quem fala é a pessoa que aparece na imagem (o convidado contando a própria história) e que a fala
+seja de uma pessoa só do começo ao fim. Confira os tempos exatos em transcricao.json. Começa e termina em frase completa.
+%%CRITERIO%%
+Responda APENAS com JSON: {"titulo": "...", "inicio": segundos, "fim": segundos, "gancho": "primeira frase", "motivo": "..."}"""
+
+
+def _usados_no_episodio(ep, lote, W, extra=()):
+    """Trechos do episódio que não podem ser repetidos: dos outros canais (central) + os deste lote (transcrições já feitas)."""
+    usados = [[float(a), float(b)] for a, b in (srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []) if b is not None] if ep else []
+    for tr in (W / "work").glob("l{}c*/transcript.json".format(lote["id"])):
+        try:
+            rg = json.loads(tr.read_text(encoding="utf-8")).get("ranges") or []
+            if rg:
+                usados.append([float(rg[0][0]), float(rg[-1][1])])
+        except (OSError, ValueError, TypeError, IndexError):
+            pass
+    return usados + [list(x) for x in extra]
+
+
+def trocar_trecho(c, lote, ep, estilo, W, motivo, tentados):
+    """Corte barrado (quem fala não aparece): o Claude escolhe outro trecho do episódio, a esteira confere quem fala nele e grava
+    no corte. Devolve o corte com o trecho novo, ou None se não achou (Felipe, 05/11/2026: "deveria procurar outro corte já")."""
+    pasta = BASE / str(ep["id"])
+    usados = _usados_no_episodio(ep, lote, W, tentados)
+    criterio = SELECAO_NANQUIM.format(n=1) if formato_nanquim(estilo) else "Mesmo critério do canal: gancho forte, faz sentido sozinho, 25 a 90 s."
+    prompt = (TROCA_TRECHO.replace("%%MOTIVO%%", motivo).replace("%%TITULO%%", c.get("titulo") or "")
+              .replace("%%USADOS%%", json.dumps(usados)).replace("%%CRITERIO%%", criterio))
+    try:
+        r = json_final(claude(prompt, pasta, "sonnet", limite=900))
+        ini, fim = float(r["inicio"]), float(r["fim"])
+    except Exception as e:
+        log("troca de trecho do corte", c["id"], "não saiu:", e)
+        return None
+    if fim - ini < 15 or any(ini < b and fim > a for a, b in usados):
+        log("troca de trecho do corte", c["id"], "veio sobreposta ou curta:", ini, fim)
+        return None
+    bruto = next(pasta.glob("bruto.*"), None)
+    fora = checar_falante(bruto, ini, fim, confia_close=formato_nanquim(estilo)) if bruto else None
+    if fora is not None and fora >= FORA_TUDO:
+        log("troca de trecho do corte", c["id"], "também com quem fala fora:", ini, fim)
+        tentados.append((ini, fim))
+        return None
+    novo = dict(c, titulo=(r.get("titulo") or c["titulo"])[:200], inicio=ini, fim=fim, gancho=r.get("gancho") or "",
+                motivo="↻ trecho trocado (o anterior: quem fala não aparecia). " + (r.get("motivo") or ""))
+    srv("corte_trecho", id=c["id"], titulo=novo["titulo"], inicio=ini, fim=fim, gancho=novo["gancho"], motivo=novo["motivo"])
+    log("corte", c["id"], "trocou de trecho:", c.get("inicio"), "→", ini, "-", fim, novo["titulo"])
+    return novo
+
+
 def _produzir(item):
     c, lote, ep, estilo = item["corte"], item["lote"], item["episodio"], item.get("estilo")
     pasta = BASE / str(ep["id"]) / "lote-{}".format(lote["id"]) / "corte-{:02d}".format(c["ordem"])
@@ -3333,7 +3398,22 @@ def _produzir(item):
         if estilo and estilo.get("motor") == "timeu" and extra:
             try:
                 janelas = "" if estilo.get("teste") else (item.get("janelas") or "")   # teste de estilo: usa o mapa de câmeras que já existe
-                final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
+                tentados = []
+                while True:
+                    try:
+                        final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
+                        break
+                    except SemFalante as e:   # Nanquim/Zeca: procura outro trecho do episódio e produz no lugar (até 2 trocas)
+                        tentados.append((float(c["inicio"]), float(c["fim"])))
+                        if c.get("ajuste") or len(tentados) > 2 or not (formato_nanquim(estilo) or formato_canal2(estilo)):
+                            raise
+                        passo("Trecho sem quem fala na imagem: procurando outro")
+                        novo = trocar_trecho(c, lote, ep, estilo, extra[0], str(e), tentados)
+                        if not novo:
+                            raise
+                        c = novo
+                        item["corte"] = c
+                cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
                 leg_ia = pasta / "legenda_post_ia.txt"   # o Breu escreve a legenda do post junto com o roteiro
                 entregar_previa(c, final, previa, cid, leg_ia.read_text(encoding="utf-8") if leg_ia.exists() else "", pasta)
                 return
