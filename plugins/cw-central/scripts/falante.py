@@ -12,10 +12,11 @@ atraso de 0 a 80 ms. Quem mexe a boca no compasso das sílabas está falando; ri
 Calibrado no CW Cast #51: quem fala tem mediana 0,36–0,48; quem ouve, −0,3 a 0,2.
 
 Devolve JSON:
-  {"planos": [{"ini", "fim", "rostos": [{"cx", "cy", "larg", "sync", "janelas"}], "falante": índice|null,
+  {"v": 2, "planos": [{"ini", "fim", "rostos": [{"cx", "cy", "larg", "sync", "janelas", "serie"}], "falante": índice|null,
                "estado": "falando"|"fora_de_quadro"|"incerto"}],
    "fora_de_quadro": [[ini, fim], ...]}   trechos com voz em que ninguém na tela está falando
-cx/cy = centro do rosto em fração do quadro horizontal (0–1).
+cx/cy = centro do rosto em fração do quadro horizontal (0–1). serie = [[segundo do meio da janela, sync], ...] (janela de 2 s a
+cada 1 s): quem fala JANELA A JANELA, para o recorte trocar de pessoa quando a fala passa de um para o outro no mesmo plano.
 """
 import argparse
 import json
@@ -126,7 +127,7 @@ def medir(video, de=0.0, ate=None):
         for t in trilhas:
             m = np.array([t["mov"].get(i, np.nan) for i in range(a, b)], dtype=float)
             ok = ~np.isnan(m)
-            jan = []
+            jan, serie = [], []
             for j0 in range(0, max(1, len(m) - PASSO), PASSO):
                 j1 = min(len(m), j0 + JANELA)
                 okj = ok[j0:j1]
@@ -140,8 +141,9 @@ def medir(video, de=0.0, ate=None):
                         cs.append(float(np.corrcoef(mj, v2)[0, 1]))
                 if cs:
                     jan.append(max(cs))
+                    serie.append([round(de + (a + (j0 + j1) / 2) / FPS, 2), round(max(cs), 2)])
             rostos.append({"cx": round(float(t["cx"]), 3), "cy": round(float(t["cy"]), 3), "larg": int(np.median(t["lg"])),
-                           "sync": round(float(np.median(jan)), 2) if jan else None, "janelas": len(jan)})
+                           "sync": round(float(np.median(jan)), 2) if jan else None, "janelas": len(jan), "serie": serie})
         voz_plano = float(tem_voz[a:b].mean())
         medidos = [r for r in rostos if r["sync"] is not None]
         falante, estado = None, "incerto"
@@ -160,7 +162,7 @@ def medir(video, de=0.0, ate=None):
                 fora[-1][1] = fim
             else:
                 fora.append([ini, fim])
-    return {"planos": planos, "fora_de_quadro": fora}
+    return {"v": 2, "planos": planos, "fora_de_quadro": fora}
 
 
 # ------------------------------------------------------------------ quem fala pela VOZ + quem aparece pelo ROSTO (02/11/2026)

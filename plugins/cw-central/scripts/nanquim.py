@@ -47,7 +47,9 @@ CARD = 3.0                          # tela preta com o CTA e a trilha sumindo
 CTA = ["ME SIGA PARA MAIS", "CONTEÚDOS COMO ESTE"]
 CTA_KICKER = "GOSTOU DESSA HISTÓRIA?"
 BRANCO = (255, 255, 255)
-DESTAQUE = (176, 98, 255)   # roxo da marca, um pouco mais claro para ler sobre o P&B (Felipe, 05/11/2026: destaques em roxo, não amarelo)
+DESTAQUE = (109, 40, 217)   # #6D28D9 (Felipe, 06/11/2026; antes 05/11: roxo em vez de amarelo)
+MAX_IMPACTO = 2             # frases em destaque por corte (Felipe, 06/11: destacar menos vezes)
+MAX_ROXO_INSP = 2           # INSPIRADOR: palavras grandes em destaque por corte
 FUNCAO = {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "no", "na", "nos", "nas", "e", "que", "pra", "pro",
           "em", "eu", "ele", "ela", "se", "me", "te", "lhe", "por", "com", "sem", "mas", "ou", "é", "tá", "isso", "esse", "essa"}
 
@@ -168,7 +170,7 @@ def quebra(palavras, f, max_w, max_n):
     return linhas
 
 
-def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False, inspirador=False):
+def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False, roxo=False):
     """Layout fixo de um bloco: lista de (palavra, tempo, tamanho, x, y_base) em coordenadas da faixa, posição relativa."""
     ps = [{"t": limpa(ws[k]["w"]), "i": ws[k]["i"], "k": k} for k in idx]
     ps = [p for p in ps if p["t"]]
@@ -209,8 +211,8 @@ def montar_bloco(ws, idx, grande, medio, alinhar, max_w, impacto=False, inspirad
         x0 = 0 if alinhar == "left" else -lw if alinhar == "right" else -lw / 2
         x = x0
         for p in ln:
-            # frase de impacto: a frase inteira em destaque (Felipe, 05/11); INSPIRADOR: também a palavra grande
-            cor = DESTAQUE if impacto or (inspirador and tam > MED) else BRANCO
+            # frase de impacto: a frase inteira em destaque (Felipe, 05/11); INSPIRADOR: a palavra grande escolhida ("roxo")
+            cor = DESTAQUE if impacto or (roxo and tam > MED) else BRANCO
             out.append({"t": p["t"], "i": p["i"], "tam": tam, "x": x, "y": y, "grande": tam > MED, "cor": cor})
             x += largura(p["t"] + " ", f)
     return out
@@ -260,34 +262,100 @@ def suaviza(x, sigma):
     return np.convolve(pad, k, "valid")
 
 
-def trilha_recorte(video, dur, emendas, falante=None):
+FALA_BOCA = 0.30     # sync boca × voz (falante.py) a partir do qual o rosto está falando naquela janela
+TROCA_MIN = 2        # janelas seguidas (≈ 2 s) de outra pessoa falando para o recorte trocar de pessoa no mesmo plano
+
+
+def falas_boca(falante):
+    """Quem fala janela a janela (falante.py v2): [(segundo, cx, sync)] com o rosto de boca mais sincronizada com a voz."""
+    melhor = {}
+    for p in (falante or {}).get("planos") or []:
+        for r in p.get("rostos") or []:
+            for t, sy in r.get("serie") or []:
+                if sy is not None and sy >= FALA_BOCA and (t not in melhor or sy > melhor[t][1]):
+                    melhor[t] = (r["cx"], sy)
+    return sorted((t, cx, sy) for t, (cx, sy) in melhor.items())
+
+
+def falante_do_plano(falante, t0, t1):
+    """cx de quem fala no plano [t0, t1) pela medida do plano inteiro (boca × voz): o falante marcado ou, se o falante.py ficou
+    em dúvida, o rosto de boca mais sincronizada (se passar de 0,2). None se não mediu."""
+    melhor, peso = None, 0.0
+    for p in (falante or {}).get("planos") or []:
+        sob = min(p["fim"], t1) - max(p["ini"], t0)
+        if sob <= 0 or not p.get("rostos"):
+            continue
+        if p.get("falante") is not None:
+            cx, conf = p["rostos"][p["falante"]]["cx"], 1.0
+        else:
+            r = max(p["rostos"], key=lambda r: r["sync"] if r.get("sync") is not None else -9)
+            if r.get("sync") is None or r["sync"] < 0.2:
+                continue
+            cx, conf = r["cx"], 0.5
+        if sob * conf > peso:
+            melhor, peso = cx, sob * conf
+    return melhor
+
+
+def trilha_recorte(video, dur, emendas, falante=None, ws=None):
     """Janela de recorte (x, y, largura, altura em px do vídeo 1920x1080) para cada quadro.
-    Enquadramento SEMPRE o mesmo (Felipe, 05/11/2026: sem zoom e sem mudança de enquadramento): um zoom só para o corte todo e
-    o rosto de quem fala centrado. Só muda quando o próprio episódio troca de câmera (aí a imagem já é outra); nas emendas
-    (jump cuts) da mesma câmera o recorte não se mexe."""
+    Enquadramento SEMPRE o mesmo (Felipe, 05/11/2026: sem zoom e sem mudança de enquadramento): um zoom só para o corte todo,
+    sem movimento. QUEM aparece é decidido pela BOCA de quem fala (Felipe, 06/11/2026), em todo plano: falante.py mede a boca
+    de cada rosto × a voz janela a janela; o recorte fica em quem fala e, se no mesmo plano a fala passa para a outra pessoa
+    (≥ 2 s), corta seco para ela na pausa entre as palavras. Só sem medida de boca é que vale o rosto maior."""
     rostos, cortes, n = detectar(video, dur)
     limites = sorted(set(cortes + [n]))   # só troca de câmera; emenda não muda o recorte
     jan = np.zeros((n, 4))
+    serie = falas_boca(falante)
+    pausas = [(a["f"] + b["i"]) / 2 for a, b in zip(ws or [], (ws or [])[1:]) if b["i"] - a["f"] >= 0.08]
     planos, alturas = [], []
+
+    def rosto_em(a, b, alvo_cx):
+        amostras = [r for i in range(a, b) if rostos[i] for r in rostos[i]]
+        if not amostras:
+            return None
+        if alvo_cx is None:   # sem medida de boca: o rosto maior do plano
+            alvo_cx = max(amostras, key=lambda r: r[2])[0]
+        perto = [r for r in amostras if abs(r[0] - alvo_cx) < 0.12] or amostras
+        return tuple(float(np.median([r[k] for r in perto])) for k in range(3))
+
     for a, b in zip(limites[:-1], limites[1:]):
         if b <= a:
             continue
-        alvo_cx = None
-        if falante:   # quem fala no meio do plano (falante.py), quando a medida existe
-            t = (a + b) / 2 / FPS
-            p = next((p for p in falante.get("planos") or [] if p["ini"] <= t < p["fim"]), None)
-            if p and p.get("falante") is not None:
-                alvo_cx = p["rostos"][p["falante"]]["cx"]
-        amostras = [r for i in range(a, b) if rostos[i] for r in rostos[i]]
-        if not amostras:
-            planos.append((a, b, None))
-            continue
-        if alvo_cx is None:   # o rosto maior do plano
-            alvo_cx = max(amostras, key=lambda r: r[2])[0]
-        perto = [r for r in amostras if abs(r[0] - alvo_cx) < 0.12]
-        cx, cy, fh = (float(np.median([r[k] for r in perto])) for k in range(3))
-        planos.append((a, b, (cx, cy)))
-        alturas += [fh] * (b - a)
+        t0, t1 = a / FPS, b / FPS
+        base_cx = falante_do_plano(falante, t0, t1)
+        # quem fala janela a janela dentro do plano; troca de pessoa só se a outra fala por TROCA_MIN janelas seguidas
+        jj = [(t, cx) for t, cx, _ in serie if t0 <= t < t1]
+        trechos = []   # [(quadro inicial, cx)]
+        atual = base_cx if base_cx is not None else (jj[0][1] if jj else None)
+        k = 0
+        while k < len(jj):
+            t, cx = jj[k]
+            if atual is None or abs(cx - atual) < 0.12:
+                atual = atual if atual is not None else cx
+                k += 1
+                continue
+            m = k
+            while m < len(jj) and abs(jj[m][1] - cx) < 0.12:
+                m += 1
+            if m - k >= TROCA_MIN:
+                tt = max(t0, t - 0.5)   # a janela é de 2 s: a fala nova começa por volta de meio segundo antes do meio dela
+                perto = [p for p in pausas if abs(p - tt) <= 0.8 and t0 + 1.0 <= p <= t1 - 1.0]
+                if perto:
+                    tt = min(perto, key=lambda p: abs(p - tt))
+                if t0 + 1.0 <= tt <= t1 - 1.0:
+                    trechos.append((int(round(tt * FPS)), cx))
+                    atual = cx
+            k = m
+        bordas = [a] + [q for q, _ in trechos] + [b]
+        alvos = [base_cx if base_cx is not None else (jj[0][1] if jj else None)] + [cx for _, cx in trechos]
+        for (qa, qb), alvo in zip(zip(bordas[:-1], bordas[1:]), alvos):
+            if qb <= qa:
+                continue
+            c = rosto_em(qa, qb, alvo)
+            planos.append((qa, qb, None if c is None else c[:2]))
+            if c is not None:
+                alturas += [c[2]] * (qb - qa)
     # um zoom só para o corte todo: cabeça ≈ 1,45 × o rosto do detector, ocupando ~40% da altura da faixa
     z = clamp(1080.0 / (float(np.median(alturas)) * 1080 * 1.45 / 0.40), 1.0, ZOOM_MAX) if alturas else 1.0
     ch = 1080.0 / z
@@ -578,7 +646,20 @@ def render(plano_path):
     for n, idx in enumerate(fr):
         e = escolhas.get(n, {})
         blocos.append({"de": ws[idx[0]]["i"] - 0.04, "idx": idx, "grande": (e.get("grande") or "").strip(), "medio": bool(e.get("medio")),
-                       "impacto": bool(e.get("impacto"))})
+                       "impacto": bool(e.get("impacto")), "roxo": bool(e.get("roxo"))})
+    # destaque é raro (Felipe, 06/11): no máximo MAX_IMPACTO frases, as mais perto da virada; INSPIRADOR: MAX_ROXO_INSP palavras
+    virada = float(plano.get("virada") or 0)
+    marcadas = sorted((b for b in blocos if b["impacto"]), key=lambda b: abs(b["de"] - virada))
+    for b in marcadas[MAX_IMPACTO:]:
+        b["impacto"] = False
+    if inspirador:
+        cand = [b for b in blocos if b["grande"] and not b["impacto"]]
+        if not any(b["roxo"] for b in cand) and cand:   # plano antigo sem "roxo": as palavras mais espaçadas
+            passo_r = max(1, len(cand) // (MAX_ROXO_INSP + 1))
+            for b in cand[passo_r::passo_r][:MAX_ROXO_INSP]:
+                b["roxo"] = True
+        for b in [b for b in cand if b["roxo"]][MAX_ROXO_INSP:]:
+            b["roxo"] = False
     for k, b in enumerate(blocos):
         b["ate"] = blocos[k + 1]["de"] if k + 1 < len(blocos) else fim_img + 1 / FPS
 
@@ -588,7 +669,7 @@ def render(plano_path):
             falante = json.loads((raiz / plano["falante"]).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             falante = None
-    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante)
+    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante, ws)
     lut = lut_pb()
 
     # alinhamento: alterna entre os blocos (o recorte já põe o rosto entre 46% e 56%; a legenda fica embaixo, no peito)
@@ -596,7 +677,7 @@ def render(plano_path):
     for k, b in enumerate(blocos):
         b["alinhar"] = ordem[k % len(ordem)]
         max_w = FW * (0.80 if b["alinhar"] == "center" else 0.70)
-        b["lay"] = montar_bloco(ws, b["idx"], b["grande"], b["medio"], b["alinhar"], max_w, b["impacto"], inspirador)
+        b["lay"] = montar_bloco(ws, b["idx"], b["grande"], b["medio"], b["alinhar"], max_w, b["impacto"], inspirador and b["roxo"])
         if b["lay"]:
             alt = max(p["y"] + altura_maiuscula(p["tam"]) for p in b["lay"])
             # o bloco começa sempre na mesma altura (58% da faixa, no peito) e cresce para baixo, linha a linha;

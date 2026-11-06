@@ -1873,9 +1873,134 @@ def _base_do_corte(W, cid):
     return destino
 
 
+def _recorte_pela_boca(pl, med, rid, dur):
+    """Em TODO plano de câmera com 2+ rostos o recorte fica em quem fala (Felipe, 06/11/2026: na troca de câmera o corte ficava
+    entre as duas pessoas ou com as duas separadas). Quem fala sai da boca × voz (falante.medir v2, janela a janela); se a boca
+    não decide (rosto pequeno no plano aberto), continua em quem estava falando no plano anterior (identidade do rosto pelo
+    SFace) ou, no começo, em quem fala no próximo; por último, o rosto maior. Nunca o meio. Divide o shot na troca de câmera e
+    quando a fala passa para a outra pessoa (≥ 2 s). Devolve quantos trechos mudaram."""
+    planos = med.get("planos") or []
+
+    def ident(p, r):
+        labs = [l for t, cx, cy, l in rid if p["ini"] <= t < p["fim"] and abs(cx - r["cx"]) < 0.08]
+        return max(set(labs), key=labs.count) if labs else None
+
+    def quem(p):   # índice do rosto que fala no plano todo, ou None
+        rs = p.get("rostos") or []
+        if p.get("falante") is not None:
+            return p["falante"]
+        med_ = [j for j, r in enumerate(rs) if r.get("sync") is not None]
+        if med_:
+            k = max(med_, key=lambda j: rs[j]["sync"])
+            if rs[k]["sync"] >= 0.2 and (len(med_) == 1 or rs[k]["sync"] - max(rs[j]["sync"] for j in med_ if j != k) >= 0.1):
+                return k
+        return None
+
+    certo = []   # identidade de quem fala, por plano (None se não se sabe)
+    for p in planos:
+        k = quem(p)
+        rs = p.get("rostos") or []
+        if k is None and len(rs) == 1 and p.get("estado") != "fora_de_quadro":
+            k = 0   # close de uma pessoa só, sem sinal de que ela só ouve
+        certo.append(ident(p, rs[k]) if k is not None else None)
+    decis = []   # (ini, fim, cx)
+    for n, p in enumerate(planos):
+        rs = p.get("rostos") or []
+        if len(rs) < 2:
+            continue
+        k = quem(p)
+        if k is None:   # continuidade: quem falava antes da troca de câmera (ou, no começo, quem fala depois)
+            alvo = next((certo[m] for m in range(n - 1, -1, -1) if certo[m] is not None), None)
+            if alvo is None:
+                alvo = next((certo[m] for m in range(n + 1, len(planos)) if certo[m] is not None), None)
+            k = next((j for j, r in enumerate(rs) if alvo is not None and ident(p, r) == alvo), None)
+        if k is None:
+            k = max(range(len(rs)), key=lambda j: rs[j].get("larg") or 0)
+        # quem fala janela a janela (a fala pode passar para a outra pessoa sem troca de câmera)
+        jan = {}
+        for j, r in enumerate(rs):
+            for t, sy in r.get("serie") or []:
+                if sy is not None and sy >= 0.30 and (t not in jan or sy > jan[t][1]):
+                    jan[t] = (j, sy)
+        seq = sorted((t, j) for t, (j, _) in jan.items())
+        trechos, atual, i = [[p["ini"], k]], k, 0
+        while i < len(seq):
+            t, j = seq[i]
+            m = i
+            while m < len(seq) and seq[m][1] == j:
+                m += 1
+            if j != atual and m - i >= 2:
+                tt = max(p["ini"], t - 0.5)
+                if p["ini"] + 1.0 <= tt <= p["fim"] - 1.0:
+                    trechos.append([tt, j])
+                    atual = j
+            i = m
+        for q, (ta, j) in enumerate(trechos):
+            tb = trechos[q + 1][0] if q + 1 < len(trechos) else p["fim"]
+            decis.append((ta, tb, rs[j]["cx"]))
+        certo[n] = ident(p, rs[atual]) or certo[n]
+    if not decis:
+        return 0
+    mexeu = 0
+    for chave in ("shots", "_base_shots"):
+        shots = sorted(pl.get(chave) or [], key=lambda s: float(s.get("start") or 0))
+        if not shots:
+            continue
+        pontos = sorted({round(float(s.get("start") or 0), 3) for s in shots} |
+                        {round(x, 3) for a, b, _ in decis for x in (a, b) if 0 < x < dur})
+        novos = []
+        for i, x in enumerate(pontos):
+            y = pontos[i + 1] if i + 1 < len(pontos) else dur
+            if y - x <= 0.04:
+                continue
+            sh = [s for s in shots if float(s.get("start") or 0) <= x + 0.001]
+            sh = sh[-1] if sh else shots[0]
+            d = next((d for d in decis if d[0] <= (x + y) / 2 < d[1]), None)
+            proprio = abs(float(sh.get("start") or 0) - x) < 0.002
+            novo = dict(sh) if proprio else {k: v for k, v in sh.items() if k not in ("punch", "on_word")}
+            novo["start"] = x
+            if d is not None and (novo.get("stack") or abs(float(novo.get("cx") or 0.5) - d[2]) > 0.06):
+                novo.pop("stack", None)
+                novo["cx"] = round(d[2], 3)
+                mexeu += chave == "shots"
+            ant = novos[-1] if novos else None
+            if ant is not None and not proprio and ant.get("cx") == novo.get("cx") and bool(ant.get("stack")) == bool(novo.get("stack")) \
+                    and ant.get("camera") == novo.get("camera"):
+                continue   # mesmo enquadramento: não divide à toa
+            novos.append(novo)
+        pl[chave] = novos
+    return mexeu
+
+
+def enquadrar_quem_fala(W, cid, plan, passo, trava):
+    """Passo final do enquadramento de TODOS os agentes de corte: cada troca de câmera é conferida pela boca de quem fala."""
+    if trava and trava.livres is not None and "enquadramento" not in trava.areas:
+        return
+    base = _base_do_corte(W, cid)
+    if not base or not plan.exists():
+        return
+    passo("Enquadramento em quem fala (boca, a cada troca de câmera)")
+    try:
+        import falante
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base)], capture_output=True, text=True, timeout=900)
+        med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+        if not any(len(p.get("rostos") or []) >= 2 for p in med.get("planos") or []):
+            return   # nenhum plano aberto: nada a decidir
+        rid, _ = falante.rostos_id(base)
+        pl = json.loads(plan.read_text(encoding="utf-8"))
+        mexeu = _recorte_pela_boca(pl, med, rid, ffprobe_dur(base) or 0)
+        if mexeu:
+            plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("enquadramento do", cid, ": recorte em quem fala (boca) em", mexeu, "trecho(s) de plano aberto")
+    except Exception as e:
+        log("enquadramento do", cid, "pela boca não rodou:", e)
+
+
 def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
     try:
-        return _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id)
+        r = _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id)
+        enquadrar_quem_fala(W, cid, plan, passo, trava)
+        return r
     finally:   # o vídeo montado só para medir tem ~1 GB: não fica no disco
         (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
 
@@ -3094,13 +3219,13 @@ Decida, frase a frase:
 - "medio": true só para frase curta de peso sem uma palavra única de destaque ("VIVER O MOMENTO", "PRECISA SER VISTA"); 0 a 3 no corte.
 - "impacto": true nas frases do ÁPICE EMOCIONAL do corte: a frase inteira fica em DESTAQUE (roxo). São as DECISÕES, CONFISSÕES e VIRADAS
   da história, ditas em primeira pessoa e com sentimento: "NÃO QUERO MAIS EMPRESA", "MAS EU VOU INVESTIR NAQUILO QUE / EU SEMPRE
-  QUIS", "EU PERDI TUDO", "FOI AÍ QUE EU ENTENDI". Quando a ideia ocupa duas frases seguidas, marque as duas. 2 a 4 momentos por
-  corte. NUNCA marque fato, número, lugar, tempo ou descrição ("CINCO ANOS", "UM HAMBÚRGUER POR SEMANA", "CHAPINHA DE 60 CM"),
+  QUIS", "EU PERDI TUDO", "FOI AÍ QUE EU ENTENDI". Destaque é RARO: UM momento por corte (o ápice), no máximo 2 frases no total
+  (só quando a mesma ideia ocupa duas frases seguidas). Na dúvida, não marque. NUNCA marque fato, número, lugar, tempo ou descrição ("CINCO ANOS", "UM HAMBÚRGUER POR SEMANA", "CHAPINHA DE 60 CM"),
   nem frase de ligação: número e fato podem ser "grande", mas não ficam em destaque.
 - "virada": o segundo do corte em que acontece o ponto sentimental (a trilha cresce ali).
 - "clima": "queda" (dificuldade, perda, medo), "virada" (ascensão, conquista, recomeço) ou "conselho" (pensamento para outros donos).
-- No corte INSPIRADOR a palavra grande sai em DESTAQUE (roxo): escolha nela a palavra da ambição, da conquista ou do adversário
-  (NÚMERO UM, DE FRENTE, PESSOAS CERTAS, SUPERPODER).
+- No corte INSPIRADOR, só 2 palavras grandes no corte todo saem em DESTAQUE (roxo): marque "roxo": true nelas, nas palavras da
+  ambição, da conquista ou do adversário (NÚMERO UM, DE FRENTE, PESSOAS CERTAS, SUPERPODER); as outras palavras grandes ficam brancas.
 - "legenda_post": legenda para o Instagram, 2 a 3 linhas no tom do corte + 3 hashtags, sem citar Cardápio Web nem CW Cast.
 Nada inventado: palavra-chave só se estiver na frase.
 Responda APENAS com JSON: {"blocos": [{"n": 0, "grande": "AMIGO"}, {"n": 2, "grande": "SUPERPODER", "impacto": true}, {"n": 4, "medio": true}, ...], "virada": 36.5, "clima": "queda",
@@ -3181,7 +3306,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
     # quem fala aparece? (o recorte segue o rosto de quem fala; se a imagem mostra só quem ouve, não vale produzir)
     passo("Quem fala aparece na imagem?")
     fal = work / "falante.json"
-    if not fal.exists() or fal.stat().st_mtime < base.stat().st_mtime:
+    if not fal.exists() or fal.stat().st_mtime < base.stat().st_mtime or '"v": 2' not in fal.read_text(encoding="utf-8")[:20]:
         r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--ate", "{:.2f}".format(dur), "--json", str(fal)],
                            capture_output=True, text=True, timeout=1800)
         if r.returncode:

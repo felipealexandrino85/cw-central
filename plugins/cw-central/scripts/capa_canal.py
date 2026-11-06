@@ -31,7 +31,7 @@ MIOLO = (240, 1680)   # faixa de 1440 px que o perfil mostra (3:4)
 CANAIS = {
     "canal2": {"arroba": "@cortescw.delivery", "fonte": "Montserrat-ExtraBold.ttf", "destaque": (60, 255, 140), "cor": "foto"},
     "dark": {"arroba": "@corte_sdelivery", "fonte": "Anton-Regular.ttf", "destaque": (229, 35, 43), "cor": "escura"},
-    "nanquim": {"arroba": "@mentalidaderestaurante", "fonte": "Montserrat-ExtraBold.ttf", "destaque": (176, 98, 255), "cor": "pb"},
+    "nanquim": {"arroba": "@mentalidaderestaurante", "fonte": "Montserrat-ExtraBold.ttf", "destaque": (109, 40, 217), "cor": "pb"},
 }
 
 
