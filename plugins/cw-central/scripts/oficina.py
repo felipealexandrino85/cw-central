@@ -341,6 +341,16 @@ def dados_do_corte(local):
         out["trechos_do_bruto"] = [[round(float(a), 2), round(float(b), 2)] for a, b in tr.get("ranges") or []]
     except (OSError, ValueError, TypeError):
         pass
+    if not out.get("bruto"):   # Zeca/Breu/Nanquim sem plan.json do Titeu: o bruto do episódio e os trechos da transcrição do corte
+        try:
+            W = final.parent.parent
+            bruto = next(W.parent.glob("bruto.*"), None)
+            tr = json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8"))
+            if bruto:
+                out["bruto"] = str(bruto)
+                out["trechos_do_bruto"] = [[round(float(a), 2), round(float(b), 2)] for a, b in tr.get("ranges") or []]
+        except (OSError, ValueError, TypeError, StopIteration):
+            pass
     return out
 
 
@@ -377,6 +387,13 @@ def executar(E, item):
             extra.append(Path(ent["bruto"]).parent)
         if ent.get("headline"):
             entrada_txt += "Headline do vídeo: {}\n".format(ent["headline"])
+        if ent.get("canal"):   # capa de um canal (Tarsila): o script de capa no visual do canal
+            entrada_txt += ("Canal da capa: {canal}{tipo} · {arroba}. Script de capa (use SEMPRE): python3 {script} candidatos --video <bruto> "
+                            "--trechos '<trechos>' --out cand  e  python3 {script} montar --canal {canal}{tipo_arg} --video <bruto> --t <segundo> "
+                            "--titulo \"... *palavra-chave* ...\" --out saida/capa_<n>/capa.png\n").format(
+                canal=ent["canal"], arroba=ent.get("arroba") or "", script=AQUI / "capa_canal.py",
+                tipo=" ({})".format(ent["tipo"].upper()) if ent.get("tipo") else "",
+                tipo_arg=" --tipo {}".format(ent["tipo"]) if ent.get("tipo") else "")
         passo("baixando o material")
         refs = E._baixar_referencias({"referencias": ent.get("referencias") or [], "links": ent.get("links") or []}, pasta / "refs")
         prints = E.baixar_prints({"ajuste_imagens": t.get("ajuste_imagens") or []}, pasta) if t.get("ajuste") else []
