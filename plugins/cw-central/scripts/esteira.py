@@ -923,6 +923,8 @@ def lados_pedidos(itens):
         if "enquadramento" not in i["areas"] and not re.search(r"fala|aparece|pessoa|convidad|apresentador|host|recorte|c[âa]mera|\b[oa] d[ao] (?:esquerda|direita)\b",
                                                           texto, re.I):
             continue
+        if re.search(r"\bmais (?:para|pra|à|a)\b|centraliz|ombro|\bcortad|\bborda|\bmeio da tela", texto, re.I):
+            continue   # posição dentro do quadro ("ele tá mais para a esquerda, centraliza"), não quem fala: vai para o plano normal
         lados = set()
         for m in LADO_RX.finditer(texto):
             if re.search(r"\b(n[ãa]o|nunca|nem)\b[^.,;]{0,25}$", texto[:m.start()], re.I):
