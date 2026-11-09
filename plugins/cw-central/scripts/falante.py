@@ -277,17 +277,8 @@ def medir_voz(video):
     acerto = max(reto, cruz) / tot if tot else 0
     amostras = [{"t": t, "rostos": por_t[t]} for t in sorted(por_t)]
     if tot < 10 or acerto < 0.8 or min(sum(1 for _, v in vz if v == j) for j in (0, 1)) < 0.1 * len(vz):
-        # vozes não separam (quase sempre: uma pessoa falando o corte todo e o k-means partindo a mesma voz em dois). Quem conduz
-        # é quem o episódio mostra SOZINHO a maior parte do tempo; no plano aberto o recorte fica nele (l19c03: o convidado falava
-        # e o plano aberto mostrava o apresentador ouvindo)
-        sozinho = [q[0][2] for q in por_t.values() if len(q) == 1]
-        if len(sozinho) >= 10:
-            pr = max((0, 1), key=sozinho.count)
-            if sozinho.count(pr) >= 0.75 * len(sozinho):
-                return {"ok": True, "modo": "principal", "acerto": round(acerto, 2), "semelhanca_rostos": round(sim, 2),
-                        "falas": [[0.0, round(max(t for t, _ in vz) + 1, 2), pr]], "amostras": amostras,
-                        "motivo": "vozes não separam ({:.0%}); recorte em quem conduz (sozinho em {:.0%} dos closes)".format(
-                            acerto, sozinho.count(pr) / len(sozinho))}
+        # vozes não separam: não chuta. O modo "principal" (quem aparece sozinho mais tempo fala o corte todo) errava o plano
+        # aberto da abertura (l31c02, 06/11/2026: o apresentador falava e o recorte ficou no convidado); quem decide é a boca
         return {"ok": False, "motivo": "vozes não batem com quem aparece ({:.0%} em {} amostras)".format(acerto, tot)}
     pv = [0, 1] if reto >= cruz else [1, 0]   # voz -> pessoa
     # falas contínuas por pessoa (trocas curtas são absorvidas)
@@ -318,6 +309,38 @@ def quem_fala_em(med, t0, t1):
         if s > 0:
             tempo[p] = tempo.get(p, 0) + s
     return max(tempo, key=tempo.get) if tempo else None
+
+
+def rosto_do_lado(cxs, lado):
+    """Índice do rosto daquele lado da imagem (cxs = centro x de cada rosto, 0–1), para o lado pedido pelo editor
+    (esquerda/direita/meio). None se não dá para dizer (um rosto só; "meio" com menos de 3)."""
+    if len(cxs) < 2:
+        return None
+    ordem = sorted(range(len(cxs)), key=lambda j: cxs[j])
+    if lado == "esquerda":
+        return ordem[0]
+    if lado == "direita":
+        return ordem[-1]
+    return ordem[len(ordem) // 2] if len(cxs) >= 3 else None
+
+
+def trechos_do_lado(lados, ini, fim):
+    """Partes [a, b, lado] do plano [ini, fim) cobertas pelo lado pedido ({"t0", "t1", "lado"}; t0 None = o corte todo;
+    t1 vazio ou igual a t0 = o plano de câmera daquele momento)."""
+    out = []
+    for l in lados or []:
+        t0, t1 = l.get("t0"), l.get("t1")
+        if t0 is None:
+            a, b = ini, fim
+        elif t1 is None or t1 <= t0:
+            if not ini <= t0 < fim:
+                continue
+            a, b = ini, fim
+        else:
+            a, b = max(ini, t0), min(fim, t1)
+        if b - a > 0.2:
+            out.append([a, b, l["lado"]])
+    return out
 
 
 def main():

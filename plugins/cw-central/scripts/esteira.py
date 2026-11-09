@@ -909,6 +909,45 @@ def areas_do_ajuste(itens):
     return set().union(*[i["areas"] for i in itens]) if itens else {"outro"}
 
 
+LADO_RX = re.compile(r"\b(?:(esquerd[ao])|(direit[ao])|(?:pessoa|convidad[oa]|apresentadora?|host|o|a)\s+do\s+(?:meio|centro))\b", re.I)
+
+
+def lados_pedidos(itens):
+    """Lado de quem fala pedido pelo editor ("quem fala é a pessoa à esquerda", "[enquadramento · 0:12] o da direita"):
+    [{"t0", "t1", "lado"}] com lado esquerda/direita/meio (t0/t1 None = o corte todo; t0 == t1 = o plano daquele momento).
+    O recorte obedece sem passar pelo detector (Felipe, 09/11/2026: o pedido de lado era refeito pelo detector e saía igual).
+    Ignora o lado negado ("nunca no meio das duas", "não é o da esquerda")."""
+    out = []
+    for i in itens or []:
+        texto = i.get("pedido") or ""
+        if "enquadramento" not in i["areas"] and not re.search(r"fala|aparece|pessoa|convidad|apresentador|host|recorte|c[âa]mera|\b[oa] d[ao] (?:esquerda|direita)\b",
+                                                          texto, re.I):
+            continue
+        lados = set()
+        for m in LADO_RX.finditer(texto):
+            if re.search(r"\b(n[ãa]o|nunca|nem)\b[^.,;]{0,25}$", texto[:m.start()], re.I):
+                continue
+            lados.add("esquerda" if m.group(1) else "direita" if m.group(2) else "meio")
+        if len(lados) == 1:
+            out.append({"t0": i["t0"], "t1": i["t1"], "lado": lados.pop()})
+    return out
+
+
+def _sobrepor(segs, a, b, cx):
+    """segs [(ini, fim, cx)] com [a, b) trocado por cx."""
+    out = []
+    for s0, s1, c in segs:
+        if s1 <= a or s0 >= b:
+            out.append((s0, s1, c))
+            continue
+        if s0 < a:
+            out.append((s0, a, c))
+        out.append((max(s0, a), min(s1, b), cx))
+        if s1 > b:
+            out.append((b, s1, c))
+    return out
+
+
 def chaves_livres(areas):
     if areas & LIVRE:
         return None   # sem trava
@@ -1873,12 +1912,15 @@ def _base_do_corte(W, cid):
     return destino
 
 
-def _recorte_pela_boca(pl, med, rid, dur):
+def _recorte_pela_boca(pl, med, rid, dur, lados=None, voz_ok=False):
     """Em TODO plano de câmera com 2+ rostos o recorte fica em quem fala (Felipe, 06/11/2026: na troca de câmera o corte ficava
-    entre as duas pessoas ou com as duas separadas). Quem fala sai da boca × voz (falante.medir v2, janela a janela); se a boca
-    não decide (rosto pequeno no plano aberto), continua em quem estava falando no plano anterior (identidade do rosto pelo
-    SFace) ou, no começo, em quem fala no próximo; por último, o rosto maior. Nunca o meio. Divide o shot na troca de câmera e
-    quando a fala passa para a outra pessoa (≥ 2 s). Devolve quantos trechos mudaram."""
+    entre as duas pessoas ou com as duas separadas). Ordem: 1) o lado pedido pelo editor no ajuste (lados_pedidos), sem passar
+    pelo detector; 2) a boca × voz (falante.medir v2, plano inteiro e janela a janela); 3) continuidade: quem falava no plano
+    ANTERIOR (identidade do rosto pelo SFace). Sem nada disso NÃO chuta (09/11/2026: o "plano seguinte" e o "rosto maior" punham
+    a pessoa errada na abertura do l31c02): o trecho fica como está e entra em "duvidas" (aviso na prévia), a não ser que a voz
+    já tenha decidido (voz_ok). Divide o shot na troca de câmera e quando a fala passa para a outra pessoa (≥ 2 s).
+    Devolve {"mexeu", "duvidas": [[ini, fim]], "impostos": [[ini, fim, lado]]}."""
+    import falante
     planos = med.get("planos") or []
 
     def ident(p, r):
@@ -1903,19 +1945,15 @@ def _recorte_pela_boca(pl, med, rid, dur):
         if k is None and len(rs) == 1 and p.get("estado") != "fora_de_quadro":
             k = 0   # close de uma pessoa só, sem sinal de que ela só ouve
         certo.append(ident(p, rs[k]) if k is not None else None)
-    decis = []   # (ini, fim, cx)
+    decis, duvidas, impostos = [], [], []   # decis: (ini, fim, cx)
     for n, p in enumerate(planos):
         rs = p.get("rostos") or []
         if len(rs) < 2:
             continue
         k = quem(p)
-        if k is None:   # continuidade: quem falava antes da troca de câmera (ou, no começo, quem fala depois)
+        if k is None:   # continuidade: quem falava antes da troca de câmera
             alvo = next((certo[m] for m in range(n - 1, -1, -1) if certo[m] is not None), None)
-            if alvo is None:
-                alvo = next((certo[m] for m in range(n + 1, len(planos)) if certo[m] is not None), None)
             k = next((j for j, r in enumerate(rs) if alvo is not None and ident(p, r) == alvo), None)
-        if k is None:
-            k = max(range(len(rs)), key=lambda j: rs[j].get("larg") or 0)
         # quem fala janela a janela (a fala pode passar para a outra pessoa sem troca de câmera)
         jan = {}
         for j, r in enumerate(rs):
@@ -1931,17 +1969,34 @@ def _recorte_pela_boca(pl, med, rid, dur):
                 m += 1
             if j != atual and m - i >= 2:
                 tt = max(p["ini"], t - 0.5)
-                if p["ini"] + 1.0 <= tt <= p["fim"] - 1.0:
+                if atual is None and tt < p["ini"] + 1.0:
+                    trechos[-1][1] = atual = j   # sem decisão no começo do plano: a boca decide desde o início
+                elif p["ini"] + 1.0 <= tt <= p["fim"] - 1.0:
                     trechos.append([tt, j])
                     atual = j
             i = m
-        for q, (ta, j) in enumerate(trechos):
-            tb = trechos[q + 1][0] if q + 1 < len(trechos) else p["fim"]
-            decis.append((ta, tb, rs[j]["cx"]))
-        certo[n] = ident(p, rs[atual]) or certo[n]
+        segs = [(ta, trechos[q + 1][0] if q + 1 < len(trechos) else p["fim"], None if j is None else rs[j]["cx"])
+                for q, (ta, j) in enumerate(trechos)]
+        for a, b, lado in falante.trechos_do_lado(lados, p["ini"], p["fim"]):
+            kl = falante.rosto_do_lado([r["cx"] for r in rs], lado)
+            if kl is not None:
+                segs = _sobrepor(segs, a, b, rs[kl]["cx"])
+                impostos.append([round(a, 2), round(b, 2), lado])
+                if b >= p["fim"] - 0.05:
+                    atual = kl
+        for a, b, cx in segs:
+            if cx is not None:
+                decis.append((a, b, cx))
+            elif not voz_ok and b - a >= 0.5:
+                if duvidas and a - duvidas[-1][1] <= 0.1:
+                    duvidas[-1][1] = round(b, 2)
+                else:
+                    duvidas.append([round(a, 2), round(b, 2)])
+        if atual is not None:
+            certo[n] = ident(p, rs[atual]) or certo[n]
+    res = {"mexeu": 0, "duvidas": duvidas, "impostos": impostos}
     if not decis:
-        return 0
-    mexeu = 0
+        return res
     for chave in ("shots", "_base_shots"):
         shots = sorted(pl.get(chave) or [], key=lambda s: float(s.get("start") or 0))
         if not shots:
@@ -1962,36 +2017,74 @@ def _recorte_pela_boca(pl, med, rid, dur):
             if d is not None and (novo.get("stack") or abs(float(novo.get("cx") or 0.5) - d[2]) > 0.06):
                 novo.pop("stack", None)
                 novo["cx"] = round(d[2], 3)
-                mexeu += chave == "shots"
+                res["mexeu"] += chave == "shots"
             ant = novos[-1] if novos else None
             if ant is not None and not proprio and ant.get("cx") == novo.get("cx") and bool(ant.get("stack")) == bool(novo.get("stack")) \
                     and ant.get("camera") == novo.get("camera"):
                 continue   # mesmo enquadramento: não divide à toa
             novos.append(novo)
         pl[chave] = novos
-    return mexeu
+    return res
+
+
+def guardar_enquadramento(W, cid, duvidas=None, impostos=None):
+    """work/<cid>/enquadramento.json: trechos de plano aberto sem decisão de quem fala (vão como aviso na prévia) e os que
+    seguiram o lado pedido pelo editor (vão para a conferência do ajuste)."""
+    arq = W / "work" / cid / "enquadramento.json"
+    if not duvidas and not impostos:
+        arq.unlink(missing_ok=True)
+        return
+    arq.write_text(json.dumps({"duvidas": duvidas or [], "impostos": impostos or []}, ensure_ascii=False), encoding="utf-8")
+
+
+def aviso_enquadramento(work):
+    """Texto do aviso da prévia (e da conferência) a partir de work/<cid>/enquadramento.json."""
+    try:
+        e = json.loads((Path(work) / "enquadramento.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "", ""
+    seg = lambda a, b: ("o corte todo" if a is None else "{:.0f} s".format(a) if b is None or b <= a
+                        else "{:.0f}–{:.0f} s".format(a, b))
+    duv = ("enquadramento em dúvida em " + ", ".join(seg(a, b) for a, b in e.get("duvidas") or [])
+           + " (plano aberto sem sinal claro de quem fala; se estiver errado, peça o ajuste dizendo o lado: esquerda/direita)"
+           if e.get("duvidas") else "")
+    imp = ("recorte no lado pedido pelo editor em " + ", ".join("{} ({})".format(seg(a, b), l) for a, b, l in e.get("impostos") or [])
+           if e.get("impostos") else "")
+    return duv, imp
 
 
 def enquadrar_quem_fala(W, cid, plan, passo, trava):
-    """Passo final do enquadramento de TODOS os agentes de corte: cada troca de câmera é conferida pela boca de quem fala."""
+    """Passo final do enquadramento de TODOS os agentes de corte: cada troca de câmera é conferida pela boca de quem fala,
+    e o lado pedido pelo editor no ajuste ("quem fala é a pessoa à direita") manda sobre o detector."""
     if trava and trava.livres is not None and "enquadramento" not in trava.areas:
         return
     base = _base_do_corte(W, cid)
     if not base or not plan.exists():
         return
+    lados = lados_pedidos(trava.itens) if trava else []
+    try:
+        voz_ok = json.loads((W / "work" / cid / "quem_fala.json").read_text(encoding="utf-8")).get("modo") == "voz"
+    except (OSError, ValueError):
+        voz_ok = False
     passo("Enquadramento em quem fala (boca, a cada troca de câmera)")
     try:
         import falante
         r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base)], capture_output=True, text=True, timeout=900)
         med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
         if not any(len(p.get("rostos") or []) >= 2 for p in med.get("planos") or []):
+            guardar_enquadramento(W, cid)
+            if lados:
+                log("enquadramento do", cid, ": lado pedido", lados, "mas nenhum plano aberto (só closes): reenquadrar não resolve")
             return   # nenhum plano aberto: nada a decidir
         rid, _ = falante.rostos_id(base)
         pl = json.loads(plan.read_text(encoding="utf-8"))
-        mexeu = _recorte_pela_boca(pl, med, rid, ffprobe_dur(base) or 0)
-        if mexeu:
+        res = _recorte_pela_boca(pl, med, rid, ffprobe_dur(base) or 0, lados, voz_ok)
+        if res["mexeu"]:
             plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
-        log("enquadramento do", cid, ": recorte em quem fala (boca) em", mexeu, "trecho(s) de plano aberto")
+        guardar_enquadramento(W, cid, res["duvidas"], res["impostos"])
+        log("enquadramento do", cid, ": recorte em quem fala (boca) em", res["mexeu"], "trecho(s) de plano aberto",
+            "· lado pedido em {}".format(res["impostos"]) if res["impostos"] else "",
+            "· em dúvida em {}".format(res["duvidas"]) if res["duvidas"] else "")
     except Exception as e:
         log("enquadramento do", cid, "pela boca não rodou:", e)
 
@@ -2341,6 +2434,13 @@ def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript, extra)
     leg = legendas_que_sairam(Path(transcript).parent) if transcript and "legenda" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))) else ""
     med = medicoes(video, c.get("ajuste"))
+    work = Path(transcript).parent if transcript else Path(video).parent.parent / "work" / Path(video).stem
+    duv, imp = aviso_enquadramento(work)
+    if imp:   # o lado pedido foi aplicado direto no recorte: o detector de boca não decide se o pedido foi atendido
+        med += ("\nENQUADRAMENTO PELO LADO PEDIDO: " + imp + ". Nesses trechos o recorte foi posto na pessoa do lado pedido, sem o "
+                "detector; julgue pelos quadros se a pessoa daquele lado está na tela, e não pela medição de quem fala.")
+    if duv:
+        med += "\nAVISO: " + duv + "."
     try:
         r = json_final(claude(CONFERE.format(titulo=c["titulo"], pedido=c.get("ajuste"), prints=texto_prints(prints),
                                              quadros=", ".join(str(q) for q in quadros))
@@ -3348,7 +3448,8 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
         emendas.append(round(acc, 3))
     plano = {"video": str(base), "palavras": str(pal), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
              "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima, "tipo": tipo, "arroba": arroba_do_estilo(estilo),
-             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem"))}
+             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem")),
+             "lados": lados_pedidos(itens_ajuste(c["ajuste"])) if c.get("ajuste") else []}   # lado pedido pelo editor manda no recorte
     roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
     (W / "saida").mkdir(exist_ok=True)
     rodar("Render do Nanquim", [AQUI / "nanquim.py", roteiro], tempo=3600)
@@ -3638,6 +3739,9 @@ def produzir_reel(item, pasta, passo):
 def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
     """Prévia leve no bucket (player da página) + final no Drive "2. PARA APROVAR/Prévias da IA"; o corte vai para 'previa'."""
     srv("corte", id=c["id"], etapa="Prévia")
+    duv, _ = aviso_enquadramento(Path(final).parent.parent / "work" / cid)
+    if duv:   # plano aberto sem decisão de quem fala: vai para a prévia com o aviso, em vez de um palpite calado
+        aviso = duv + ("; " + aviso if aviso else "")
     caminho = subir_previa(previa, c)
     PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
     nome = "{}_{}{}".format(cid, re.sub(r"[^A-Za-z0-9]+", "-", c["titulo"])[:60].strip("-"), final.suffix)

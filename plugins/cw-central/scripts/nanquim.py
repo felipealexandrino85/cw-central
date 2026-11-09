@@ -297,12 +297,15 @@ def falante_do_plano(falante, t0, t1):
     return melhor
 
 
-def trilha_recorte(video, dur, emendas, falante=None, ws=None):
+def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvidas=None):
     """Janela de recorte (x, y, largura, altura em px do vídeo 1920x1080) para cada quadro.
     Enquadramento SEMPRE o mesmo (Felipe, 05/11/2026: sem zoom e sem mudança de enquadramento): um zoom só para o corte todo,
     sem movimento. QUEM aparece é decidido pela BOCA de quem fala (Felipe, 06/11/2026), em todo plano: falante.py mede a boca
     de cada rosto × a voz janela a janela; o recorte fica em quem fala e, se no mesmo plano a fala passa para a outra pessoa
-    (≥ 2 s), corta seco para ela na pausa entre as palavras. Só sem medida de boca é que vale o rosto maior."""
+    (≥ 2 s), corta seco para ela na pausa entre as palavras. O lado pedido pelo editor no ajuste (lados: [{"t0", "t1", "lado"}],
+    Felipe, 09/11/2026) manda sobre a boca. Só sem medida de boca é que vale o rosto maior, e no plano aberto esse trecho vai para
+    "duvidas" (lista [ini, fim] em s, aviso na prévia) em vez de passar calado."""
+    import falante as fal_mod
     rostos, cortes, n = detectar(video, dur)
     limites = sorted(set(cortes + [n]))   # só troca de câmera; emenda não muda o recorte
     jan = np.zeros((n, 4))
@@ -349,9 +352,35 @@ def trilha_recorte(video, dur, emendas, falante=None, ws=None):
             k = m
         bordas = [a] + [q for q, _ in trechos] + [b]
         alvos = [base_cx if base_cx is not None else (jj[0][1] if jj else None)] + [cx for _, cx in trechos]
-        for (qa, qb), alvo in zip(zip(bordas[:-1], bordas[1:]), alvos):
+        segs = [(qa, qb, alvo) for (qa, qb), alvo in zip(zip(bordas[:-1], bordas[1:]), alvos)]
+        abertos = [sorted(r[0] for r in rostos[i]) for i in range(a, b) if rostos[i] and len(rostos[i]) >= 2]
+        medidos = sum(1 for i in range(a, b) if rostos[i] is not None)
+        aberto = bool(medidos) and len(abertos) >= 0.5 * medidos
+        if aberto:
+            for la, lb, lado in fal_mod.trechos_do_lado(lados, t0, t1):   # o lado pedido pelo editor
+                cxs = [cs[k] for cs in abertos for k in [fal_mod.rosto_do_lado(cs, lado)] if k is not None]
+                if cxs:
+                    alvo_l = float(np.median(cxs))
+                    qa_l, qb_l = int(round(la * FPS)), int(round(lb * FPS))
+                    novos = []
+                    for qa, qb, alvo in segs:
+                        if qb <= qa_l or qa >= qb_l:
+                            novos.append((qa, qb, alvo))
+                            continue
+                        if qa < qa_l:
+                            novos.append((qa, qa_l, alvo))
+                        novos.append((max(qa, qa_l), min(qb, qb_l), alvo_l))
+                        if qb > qb_l:
+                            novos.append((qb_l, qb, alvo))
+                    segs = novos
+        for qa, qb, alvo in segs:
             if qb <= qa:
                 continue
+            if alvo is None and aberto and duvidas is not None and (qb - qa) / FPS >= 0.5:
+                if duvidas and qa / FPS - duvidas[-1][1] <= 0.1:
+                    duvidas[-1][1] = round(qb / FPS, 2)
+                else:
+                    duvidas.append([round(qa / FPS, 2), round(qb / FPS, 2)])
             c = rosto_em(qa, qb, alvo)
             planos.append((qa, qb, None if c is None else c[:2]))
             if c is not None:
@@ -669,7 +698,10 @@ def render(plano_path):
             falante = json.loads((raiz / plano["falante"]).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             falante = None
-    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante, ws)
+    duvidas = []
+    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante, ws, plano.get("lados"), duvidas)
+    impostos = [[l.get("t0"), l.get("t1"), l["lado"]] for l in plano.get("lados") or []]
+    (raiz / "enquadramento.json").write_text(json.dumps({"duvidas": duvidas, "impostos": impostos}, ensure_ascii=False), encoding="utf-8")
     lut = lut_pb()
 
     # alinhamento: alterna entre os blocos (o recorte já põe o rosto entre 46% e 56%; a legenda fica embaixo, no peito)
