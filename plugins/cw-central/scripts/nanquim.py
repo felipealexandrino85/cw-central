@@ -305,6 +305,8 @@ def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvid
     (≥ 2 s), corta seco para ela na pausa entre as palavras. O lado pedido pelo editor no ajuste (lados: [{"t0", "t1", "lado"}],
     Felipe, 09/11/2026) manda sobre a boca. Só sem medida de boca é que vale o rosto maior, e no plano aberto esse trecho vai para
     "duvidas" (lista [ini, fim] em s, aviso na prévia) em vez de passar calado."""
+    if str(AQUI) not in sys.path:   # a esteira roda com python -I, que não põe a pasta do script no caminho (cortes 203/205, 09/11)
+        sys.path.insert(0, str(AQUI))
     import falante as fal_mod
     rostos, cortes, n = detectar(video, dur)
     limites = sorted(set(cortes + [n]))   # só troca de câmera; emenda não muda o recorte
