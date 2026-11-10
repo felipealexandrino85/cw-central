@@ -626,9 +626,28 @@ FORMATO NANQUIM (cortes reflexivos em P&B, para outro dono de restaurante parar 
   conselho), a frase da virada e, no INSPIRADOR, os recursos que ele tem (ex.: "recursos 1, 2, 7")."""
 
 
+_LOCK_BRUTO = threading.Lock()
+
+
+def garantir_bruto(ep):
+    """Episódio cuja pasta foi limpa no servidor: copia o bruto do Drive e refaz o preparo antes de usar (Felipe, 10/11/2026)."""
+    pasta = BASE / str(ep["id"])
+    if ep.get("linha") == "reels" or (next(pasta.glob("bruto.*"), None) and (pasta / "transcricao.json").exists()):
+        return
+    if not ep.get("arquivo") or not (DRIVE / ep["arquivo"]).is_file():
+        raise RuntimeError("o vídeo deste episódio não está mais no servidor nem no Drive ({}); envie o episódio de novo".format(ep.get("arquivo") or "sem arquivo"))
+    with _LOCK_BRUTO:   # vários cortes do mesmo episódio chegam juntos: só um copia
+        if not (next(pasta.glob("bruto.*"), None) and (pasta / "transcricao.json").exists()):
+            log("episódio", ep["id"], "sem o bruto no servidor: copiando do Drive de novo")
+            preparar(ep)
+    if not next(pasta.glob("bruto.*"), None) or not (pasta / "transcricao.json").exists():
+        raise RuntimeError("o vídeo deste episódio tinha saído do servidor e não consegui copiar do Drive de novo; veja o erro do episódio")
+
+
 def selecionar(lote, ep, estilo=None):
     pasta = BASE / str(ep["id"])
     try:
+        garantir_bruto(ep)
         sincronizar_estilos()
         prompt = SELECAO.format(n=lote["quantidade"], instrucoes=lote.get("instrucoes") or "(nenhum)")
         extra = []
@@ -655,8 +674,16 @@ def selecionar(lote, ep, estilo=None):
         r = json_final(texto)
         valido = lambda c: float(c.get("fim", 0)) > float(c.get("inicio", 0))
         cortes = [c for c in r.get("cortes") or [] if valido(c)]
+        if not cortes:   # critério apertado num episódio já muito usado: pede de novo, aceitando o melhor possível
+            log("seleção do lote", lote["id"], "veio vazia, pedindo de novo:", (r.get("resumo") or "")[:200])
+            texto = claude(prompt + ("\n\nUMA TENTATIVA ANTERIOR NÃO TROUXE NENHUM CORTE (o que ela disse: {}). Traga os {} melhores momentos "
+                                     "possíveis deste episódio, mesmo que alguns fiquem abaixo do ideal do formato, e diga no \"motivo\" de "
+                                     "cada um o que falta. Lista vazia não serve.").format((r.get("resumo") or "sem explicação")[:600], lote["quantidade"]),
+                           pasta, "opus", limite=2400, extra_dirs=extra)
+            r = json_final(texto)
+            cortes = [c for c in r.get("cortes") or [] if valido(c)]
         if not cortes:
-            raise RuntimeError("nenhum corte válido na seleção")
+            raise RuntimeError("nenhum corte válido na seleção, nem pedindo de novo: " + (r.get("resumo") or "")[:400])
         resumo = r.get("resumo") or ""
         if n_res:
             cortes, resumo = mapa_falante(pasta, cortes, [c for c in r.get("reservas") or [] if valido(c)], int(lote["quantidade"]), resumo,
@@ -664,8 +691,8 @@ def selecionar(lote, ep, estilo=None):
         srv("lista", lote=lote["id"], cortes=cortes, resumo=resumo)
         log("lote", lote["id"], "com", len(cortes), "cortes para conferir")
     except Exception as e:
-        log("seleção do lote", lote["id"], "falhou:", e)
-        srv("lote", id=lote["id"], estado="erro", erro=str(e)[:500])
+        log("seleção do lote", lote["id"], "falhou:", traceback.format_exc()[-600:])
+        srv("lote", id=lote["id"], estado="erro", erro=(str(e) or type(e).__name__)[:500])
 
 
 def mapa_falante(pasta, cortes, reservas, n, resumo, confia_close=False):
@@ -3781,6 +3808,7 @@ def _produzir(item):
         if ep.get("linha") == "reels":
             produzir_reel(item, pasta, passo)
             return
+        garantir_bruto(ep)
         bruto = next((BASE / str(ep["id"])).glob("bruto.*"))
         ini, fim = max(0.0, float(c["inicio"]) - 1), float(c["fim"]) + 1
         segs = json.loads((BASE / str(ep["id"]) / "transcricao.json").read_text())
