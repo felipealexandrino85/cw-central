@@ -3796,7 +3796,10 @@ def _produzir(item):
             subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(ini), "-i", str(bruto), "-t", str(fim - ini),
                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(pasta / "trecho.mp4")], check=True)
             w = "\nNa pasta do corte: trecho.mp4 (com 1 s de folga) e palavras.json (tempos a partir do começo do trecho)."
-        cid = "l{}c{:02d}".format(lote["id"], c["ordem"])
+        if _ja_tentou(c):   # tentativa automática: quem produz sabe o que quebrou da outra vez
+            w += ("\nA TENTATIVA ANTERIOR DESTE CORTE FALHOU com: " + _motivo_anterior(c)
+                  + "\nCorrija a causa (parta dos arquivos que já existem na pasta, se servirem) e não repita o mesmo caminho.")
+        cid ="l{}c{:02d}".format(lote["id"], c["ordem"])
         higgs = higgs_do_lote(lote)
         prints = baixar_prints(c, pasta) if c.get("ajuste") else []
         if estilo and estilo.get("motor") == "timeu" and extra:
@@ -3807,9 +3810,9 @@ def _produzir(item):
                     try:
                         final, previa = produzir_timeu(c, lote, ep, extra[0], pasta, passo, higgs, janelas, estilo)
                         break
-                    except SemFalante as e:   # Nanquim/Zeca: procura outro trecho do episódio e produz no lugar (até 2 trocas)
+                    except SemFalante as e:   # procura outro trecho do episódio e produz no lugar (até 2 trocas; Titeu também desde 10/11/2026)
                         tentados.append((float(c["inicio"]), float(c["fim"])))
-                        if c.get("ajuste") or len(tentados) > 2 or not (formato_nanquim(estilo) or formato_canal2(estilo)):
+                        if c.get("ajuste") or len(tentados) > 2:
                             raise
                         passo("Trecho sem quem fala na imagem: procurando outro")
                         novo = trocar_trecho(c, lote, ep, estilo, extra[0], str(e), tentados)
@@ -3821,9 +3824,9 @@ def _produzir(item):
                 leg_ia = pasta / "legenda_post_ia.txt"   # o Breu escreve a legenda do post junto com o roteiro
                 entregar_previa(c, final, previa, cid, leg_ia.read_text(encoding="utf-8") if leg_ia.exists() else "", pasta)
                 return
-            except SemFalante as e:   # o trecho não serve para o formato: volta para a produção com o motivo, sem render
+            except SemFalante as e:   # nem o trecho original nem os trocados servem: volta para a produção com o motivo, sem render
                 log("corte", c["id"], "não produzido:", e)
-                srv("corte", id=c["id"], estado="reprovado", erro=str(e)[:500])
+                srv("corte", id=c["id"], estado="reprovado", erro=("Tentei 2 outros trechos do episódio e nenhum serviu. " if not c.get("ajuste") else "") + str(e)[:440])
                 return
             except Falhou as e:   # passo mecânico quebrou: este corte vai pelo modo antigo (o Claude faz tudo)
                 if formato_nanquim(estilo):   # o modo Claude sairia no estilo do Titeu: melhor parar com o motivo
@@ -3845,7 +3848,7 @@ def _produzir(item):
         if final and not final.is_absolute():
             final = (extra[0] if extra else pasta) / final
         if not final.is_file():
-            srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
+            nao_saiu(c, r.get("motivo") or "sem vídeo final")
             return
         previa = Path(r.get("previa") or final)
         if not previa.is_absolute():
@@ -3858,7 +3861,34 @@ def _produzir(item):
                         aviso=None if r.get("aprovado") else (r.get("motivo") or "a conferência automática apontou problemas"))
     except Exception as e:
         log("corte", c["id"], "falhou:", traceback.format_exc()[-600:])
-        srv("corte", id=c["id"], estado="erro", erro=str(e)[:500])
+        nao_saiu(c, str(e), estado="erro")
+
+
+AUTO_TENTATIVAS = 2   # erro ou corte sem vídeo: a esteira corrige e tenta de novo sozinha até 2 vezes antes de parar (Felipe, 10/11/2026)
+_MARCA_AUTO = re.compile(r"^↻ tentativa automática (\d+)/\d+: ")
+
+
+def _ja_tentou(c):
+    m = _MARCA_AUTO.match(c.get("erro") or "")
+    return int(m.group(1)) if m else 0
+
+
+def _motivo_anterior(c):
+    return _MARCA_AUTO.sub("", c.get("erro") or "")
+
+
+def nao_saiu(c, motivo, estado="reprovado"):
+    """Corte que quebrou ou saiu sem vídeo: volta para a fila com o motivo (a próxima tentativa recebe o motivo para corrigir).
+    Esgotadas as tentativas automáticas, fica no estado com o motivo, para uma pessoa decidir."""
+    n = _ja_tentou(c) + 1
+    if n <= AUTO_TENTATIVAS:
+        log("corte", c["id"], "volta para a fila (tentativa automática {}/{}):".format(n, AUTO_TENTATIVAS), motivo[:200])
+        time.sleep(60)   # falha passageira (rede, disco, Claude) tem tempo de passar
+        srv("corte", id=c["id"], estado="na_fila", etapa="↻ corrigindo e tentando de novo ({}/{})".format(n, AUTO_TENTATIVAS),
+            erro=("↻ tentativa automática {}/{}: ".format(n, AUTO_TENTATIVAS) + motivo)[:500])
+        return
+    srv("corte", id=c["id"], estado=estado,
+        erro=(("Tentei {} vezes sozinho. ".format(n) if n > 1 else "") + motivo)[:500])
 
 
 def produzir_reel(item, pasta, passo):
@@ -3895,7 +3925,7 @@ def produzir_reel(item, pasta, passo):
     if final and not final.is_absolute():
         final = pasta / final
     if not final.is_file():
-        srv("corte", id=c["id"], estado="reprovado", erro=(r.get("motivo") or "sem vídeo final")[:500])
+        nao_saiu(c, r.get("motivo") or "sem vídeo final")
         return
     previa = Path(r.get("previa") or final)
     if not previa.is_absolute():
