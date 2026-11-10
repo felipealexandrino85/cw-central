@@ -2,7 +2,7 @@
 """Checagens objetivas do vídeo final da esteira (31/10/2026), medidas e não estimadas:
 
 - flash: quadros brancos de 1 a 3 frames nas transições (fim do gancho, entrada de b-roll). O time lia como "bug de frame na
-  transição" (cortes 69 e 78). `tirar_flash` troca esses quadros pelo quadro anterior (corte seco; tempo e som não mudam).
+  transição" (cortes 69 e 78). Desde 09/11/2026 também os quadros soltos de 1–2 frames entre dois cortes secos (sobras do Zeca). `tirar_flash` troca esses quadros pelo quadro anterior (corte seco; tempo e som não mudam).
 - fim: a voz vai até o último instante do arquivo? ("o final cortou o que a pessoa ia falar", cortes 30, 31, 47, 71).
 
   python3 qc_video.py flash <video> [--corrigir]
@@ -44,7 +44,40 @@ def flashes(video):
             grupos[-1][1] = i
         else:
             grupos.append([i, i])
-    return [(a, b) for a, b in grupos if b - a <= 2 and a > 0]
+    brancos = [(a, b) for a, b in grupos if b - a <= 2 and a > 0]
+    try:
+        soltos = intrusos(video)
+    except Exception:
+        soltos = []
+    junta = sorted(set(brancos) | set(soltos))
+    out = []
+    for a, b in junta:   # sem sobreposição (o freezeframes troca cada grupo uma vez)
+        if out and a <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def intrusos(video, lado=64):
+    """Quadros soltos de 1–2 frames entre dois cortes secos: sobra do plano anterior, de uma foto ou do vídeo de baixo que vaza na
+    transição ("sobras de frame em momentos de transição", Zeca, lotes 20 e 31). Nenhum plano editado dura 2 quadros (0,08 s)."""
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-an", "-vf", "scale={0}:{0},format=gray".format(lado),
+                        "-f", "rawvideo", "-"], capture_output=True, timeout=900)
+    n = lado * lado
+    fr = [r.stdout[i:i + n] for i in range(0, len(r.stdout) - n + 1, n)]
+    if len(fr) < 10:
+        return []
+    def dif(x, y):
+        return sum(abs(a - b) for a, b in zip(x[::4], y[::4])) / (n / 4)
+    d = [0.0] + [dif(fr[i - 1], fr[i]) for i in range(1, len(fr))]   # d[i]: corte entre i-1 e i
+    corte = [i for i in range(1, len(d)) if d[i] >= 28]
+    out = []
+    for k in range(len(corte) - 1):
+        a, b = corte[k], corte[k + 1]
+        if 1 <= b - a <= 2 and a > 1 and b < len(fr) - 1:
+            out.append((a, b - 1))   # quadros a..b-1 são o intruso
+    return out
 
 
 def tirar_flash(video):

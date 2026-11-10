@@ -1107,7 +1107,7 @@ REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempr
     "é um arquivo e uma cena diferentes, e é proibido usar arquivo que já entrou em outro corte. (3) A cena mostra exatamente o que está "
     "sendo dito naquele trecho, num restaurante/delivery brasileiro real. (4) Sem tela de celular ou notebook com texto, número ou gráfico "
     "(a IA escreve letras sem sentido): se precisar de celular, mostre a pessoa e a reação, com a tela de costas; sem logo, marca ou pessoa real. "
-    "Ritmo: um momento visual (b-roll ou P&B) em cada janela de 10 s depois do gancho, b-roll de 1,5–3 s; nunca nos últimos 2 s nem sobre frase de impacto. "
+    "Ritmo: um momento visual (b-roll ou P&B) em cada janela de 12 s depois do gancho, b-roll de 1,5–3 s; nunca nos últimos 2 s nem sobre frase de impacto. "
     "{pexels}Gere no Higgsfield (cw-studios › gerar; SEM limite de gerações): uma imagem realista 9:16 sem texto em /higgsfield-ai/soul/v2/standard "
     "e anime com /kling-video/v2.6/pro/image-to-video (\"duration\": 5, número inteiro: só aceita 5 ou 10) com um prompt de AÇÃO (o que se "
     "move na cena); ou direto em /kling-video/v2.5-turbo/pro/text-to-video. Acompanhe com status e baixe o mp4 em broll/ com um nome que diga "
@@ -1115,7 +1115,7 @@ REGRAS_BROLL = ("REGRAS DO TIME PARA B-ROLL (obrigatórias): (1) b-roll é sempr
     "combinar com a fala e não estiver na lista de proibidos. Proibidos (já usados em outros cortes): {proibidos}.")
 
 RITMO = """No corte {cid} (pasta {W}), work/{cid}/plan.json está sem MOMENTO VISUAL nestas janelas: {janelas}.
-A regra do estilo é um momento visual a cada 10 s depois do gancho. Para CADA janela, ponha UM: um b-roll de VÍDEO de 1,5–3 s na fala que
+A regra do estilo é um momento visual a cada 12 s depois do gancho. Para CADA janela, ponha UM: um b-roll de VÍDEO de 1,5–3 s na fala que
 cita algo mostrável daquela janela (veja work/{cid}/transcript.txt), ou, se a fala ali for uma frase de impacto sem nada mostrável,
 P&B ("bw": true) no shot daquele trecho (crie um shot com o mesmo enquadramento começando na frase, se precisar).
 Não mexa no resto do plano. {regras}
@@ -1124,8 +1124,9 @@ NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "notas": 
 TROCA_BROLL = """No corte {cid} (pasta {W}), estes b-rolls de work/{cid}/plan.json não podem ficar:
 {lista}
 Troque cada um por um VÍDEO NOVO, diferente de todos os outros, ligado ao que é falado naquele trecho (veja work/{cid}/transcript.txt),
-mantendo start e dur. Se a lista citar a FOTO DO GANCHO, gere outra foto (Higgsfield, realista, sem texto, combinando com a headline),
-salve com nome novo em work/{cid}/ e troque hook.media. {regras}
+mantendo start e dur. Se a lista citar a FOTO DO GANCHO, troque por outra foto que mostre a coisa concreta da headline (o motivo
+diz o que faltou): {banco}gere no Higgsfield (realista, sem texto); abra a foto antes de usar; salve com nome novo em work/{cid}/ e troque
+hook.media. {regras}
 Mexa só nesses itens de "broll". NÃO renderize nem rode gates. Responda APENAS com JSON: {{"ok": true, "trocou": "uma linha"}}"""
 
 def _bancos():
@@ -1707,8 +1708,11 @@ def aplicar_edicoes_diretas(W, cid, plan, transcript, ops, ep_id):
     return feitas, ia
 
 
+RITMO_S = 12   # um momento visual por janela (era 10 s até 09/11/2026: o time tirava 1–5 momentos de quase todo corte)
+
+
 def ritmo_faltando(plan, transcript):
-    """Janelas de 10 s (depois do gancho, até 2 s do fim) sem nenhum momento visual: b-roll ou P&B. Devolve [(início, fim)]."""
+    """Janelas de RITMO_S s (depois do gancho, até 2 s do fim) sem nenhum momento visual: b-roll ou P&B. Devolve [(início, fim)]."""
     try:
         pl = json.loads(Path(plan).read_text(encoding="utf-8"))
         dur = float(json.loads(Path(transcript).read_text(encoding="utf-8")).get("duration") or 0)
@@ -1719,10 +1723,10 @@ def ritmo_faltando(plan, transcript):
     faltam, t = [], ini
     vazios = decisoes_editor(Path(plan).parent).get("sem_visual") or []   # o editor tirou a imagem dali: o ritmo não põe de volta
     while t < dur - 4:   # janela final curta (menos de 4 s) não cobra
-        fim = min(t + 10, dur - 2)
+        fim = min(t + RITMO_S, dur - 2)
         if not any(t - 0.5 <= m < fim for m in marcas) and not _cruza(vazios, t, fim, 0):
             faltam.append((round(t, 1), round(fim, 1)))
-        t += 10
+        t += RITMO_S
     return faltam
 
 
@@ -1814,9 +1818,25 @@ def _sem_cobertura(fora, pl):
     return resta
 
 
-def _recorte_na_voz(pl, med, dur):
+def pausas_do_corte(work):
+    """Instantes de pausa entre palavras (≥ 0,08 s) do corte, em s na linha do tempo do corte."""
+    try:
+        ws = json.loads((Path(work) / "transcript.json").read_text(encoding="utf-8")).get("words") or []
+        return [(float(a["end"]) + float(b["start"])) / 2 for a, b in zip(ws, ws[1:]) if float(b["start"]) - float(a["end"]) >= 0.08]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _na_pausa(t, pausas, folga=0.7):
+    """A troca de pessoa no meio do plano cai na pausa entre palavras mais perto (Felipe, 09/11/2026: "antes da transição você
+    troca a câmera pro host enquanto o convidado continua a falar"); sem pausa perto, fica onde a voz mediu."""
+    perto = [x for x in pausas if abs(x - t) <= folga]
+    return min(perto, key=lambda x: abs(x - t)) if perto else t
+
+
+def _recorte_na_voz(pl, med, dur, pausas=()):
     """Plano aberto (2+ rostos): o recorte vai para o rosto de QUEM FALA (falante.medir_voz), dividindo o shot quando a fala troca
-    de pessoa no meio. Devolve (shots mexidos, trechos [ini, fim] com close de quem NÃO está falando)."""
+    de pessoa no meio (na pausa entre palavras). Devolve (shots mexidos, trechos [ini, fim] com close de quem NÃO está falando)."""
     import falante
     am = med.get("amostras") or []
     fora, mexeu = [], 0
@@ -1855,6 +1875,8 @@ def _recorte_na_voz(pl, med, dur):
                 novos.append(sh)
                 continue
             partes[0][0] = a
+            for x in partes[1:]:
+                x[0] = min(max(_na_pausa(x[0], pausas), a + 0.5), b - 0.5)
             for j, (pa, pb, p) in enumerate(partes):
                 cxs = sorted(r[0] for x in abertos if pa <= x["t"] < pb for r in x["rostos"] if r[2] == p) \
                     or sorted(r[0] for x in abertos for r in x["rostos"] if r[2] == p)
@@ -1930,6 +1952,8 @@ def _recorte_pela_boca(pl, med, rid, dur, lados=None, voz_ok=False):
         return max(set(labs), key=labs.count) if labs else None
 
     def quem(p):   # índice do rosto que fala no plano todo, ou None
+        if voz_ok:   # a voz (mapa do episódio ou do corte) já pôs o recorte: a boca, fraca no plano aberto, não desfaz (09/11/2026)
+            return None
         rs = p.get("rostos") or []
         if p.get("falante") is not None:
             return p["falante"]
@@ -1953,12 +1977,12 @@ def _recorte_pela_boca(pl, med, rid, dur, lados=None, voz_ok=False):
         if len(rs) < 2:
             continue
         k = quem(p)
-        if k is None:   # continuidade: quem falava antes da troca de câmera
+        if k is None and not voz_ok:   # continuidade: quem falava antes da troca de câmera
             alvo = next((certo[m] for m in range(n - 1, -1, -1) if certo[m] is not None), None)
             k = next((j for j, r in enumerate(rs) if alvo is not None and ident(p, r) == alvo), None)
         # quem fala janela a janela (a fala pode passar para a outra pessoa sem troca de câmera)
         jan = {}
-        for j, r in enumerate(rs):
+        for j, r in enumerate([] if voz_ok else rs):
             for t, sy in r.get("serie") or []:
                 if sy is not None and sy >= 0.30 and (t not in jan or sy > jan[t][1]):
                     jan[t] = (j, sy)
@@ -2052,7 +2076,64 @@ def aviso_enquadramento(work):
            if e.get("duvidas") else "")
     imp = ("recorte no lado pedido pelo editor em " + ", ".join("{} ({})".format(seg(a, b), l) for a, b, l in e.get("impostos") or [])
            if e.get("impostos") else "")
+    if e.get("errada"):   # medido no vídeo que saiu (voz × rosto pelo mapa do episódio)
+        duv = "; ".join(x for x in [duv, "pessoa errada na tela em " + ", ".join(seg(a, b) for a, b in e["errada"])
+                                                      + " (quem aparece não é quem fala; peça o ajuste se incomodar)"] if x)
     return duv, imp
+
+
+def mapa_do_episodio(pasta_ep):
+    """Caminho do mapa de quem é quem no episódio (falante.mapa_episodio), calculado uma vez por episódio (o primeiro operário
+    calcula, os outros esperam a trava). None se o episódio não tem mapa confiável (uma pessoa só, vozes que não separam)."""
+    import fcntl
+    pasta_ep = Path(pasta_ep)
+    arq = pasta_ep / "mapa_falantes.json"
+    bruto = next((b for b in pasta_ep.glob("bruto.*") if b.suffix != ".parcial"), None)
+    if not arq.exists() and bruto:
+        with open(pasta_ep / ".mapa_falantes.lock", "w") as trava_:
+            fcntl.flock(trava_, fcntl.LOCK_EX)
+            if not arq.exists():
+                try:
+                    r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(bruto), "--criar-mapa", "--mapa", str(arq)],
+                                       capture_output=True, text=True, timeout=3600)
+                    log("mapa de quem é quem do episódio", pasta_ep.name, ":", (r.stdout.strip().splitlines() or [r.stderr[-300:]])[-1][:400])
+                except Exception as e:
+                    log("mapa do episódio", pasta_ep.name, "não saiu:", e)
+                    arq.write_text(json.dumps({"ok": False, "motivo": str(e)[:200]}), encoding="utf-8")
+    try:
+        return arq if json.loads(arq.read_text(encoding="utf-8")).get("ok") else None
+    except (OSError, ValueError):
+        return None
+
+
+ERRADA_TRAVA = 0.25   # pessoa errada na tela em mais que isso do corte: não vai para a prévia (Felipe, 09/11/2026)
+
+
+def pessoa_errada(video, mapa):
+    """Mede NO VÍDEO QUE SAIU (vertical) os trechos com uma pessoa conhecida na tela enquanto OUTRA fala (voz e rosto contra o
+    mapa do episódio). Devolve (fração do corte, [[ini, fim]]) ou None se não deu para medir."""
+    import falante
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video), "--voz", "--mapa", str(mapa), "--confia-mapa"],
+                           capture_output=True, text=True, timeout=1500)
+        med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+    except Exception as e:
+        log("conferência de quem aparece não rodou:", e)
+        return None
+    if med.get("modo") != "mapa":
+        return None
+    trechos = []
+    for x in med.get("amostras") or []:
+        rs = [r_ for r_ in x["rostos"] if r_[2] >= 0]
+        quem = falante.quem_fala_em(med, x["t"] - 0.25, x["t"] + 0.25)
+        if len(rs) == 1 and quem is not None and rs[0][2] != quem:
+            if trechos and x["t"] - trechos[-1][1] <= 0.6:
+                trechos[-1][1] = x["t"] + 0.5
+            else:
+                trechos.append([x["t"], x["t"] + 0.5])
+    trechos = [[round(a, 1), round(b, 1)] for a, b in trechos if b - a >= 1.0]   # um quadro solto não conta
+    dur = ffprobe_dur(video) or 0
+    return (sum(b - a for a, b in trechos) / dur if dur else 0.0), trechos
 
 
 def enquadrar_quem_fala(W, cid, plan, passo, trava):
@@ -2065,7 +2146,7 @@ def enquadrar_quem_fala(W, cid, plan, passo, trava):
         return
     lados = lados_pedidos(trava.itens) if trava else []
     try:
-        voz_ok = json.loads((W / "work" / cid / "quem_fala.json").read_text(encoding="utf-8")).get("modo") == "voz"
+        voz_ok = json.loads((W / "work" / cid / "quem_fala.json").read_text(encoding="utf-8")).get("modo") in ("voz", "mapa")
     except (OSError, ValueError):
         voz_ok = False
     passo("Enquadramento em quem fala (boca, a cada troca de câmera)")
@@ -2125,13 +2206,15 @@ def _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
     so_registra = formato_canal2(estilo) or (trava and trava.livres is not None and "broll" not in trava.areas)
     passo("Quem está falando (voz + rosto)")
     try:
-        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz"], capture_output=True, text=True, timeout=1500)
+        mapa = mapa_do_episodio(W.parent)
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz"] + (["--mapa", str(mapa)] if mapa else []),
+                           capture_output=True, text=True, timeout=1500)
         med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {"ok": False, "motivo": (r.stderr or "sem saída")[-200:]}
     except Exception as e:
         med = {"ok": False, "motivo": str(e)[:200]}
     if med.get("ok"):
         pl = json.loads(plan.read_text(encoding="utf-8"))
-        mexeu, fora = _recorte_na_voz(pl, med, bd)
+        mexeu, fora = _recorte_na_voz(pl, med, bd, pausas_do_corte(W / "work" / cid))
         if mexeu and pode_recortar:
             plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
         log("quem fala do", cid, "(voz + rosto, {}, acerto {}):".format(med.get("modo"), med.get("acerto")), "recorte movido para quem fala em",
@@ -2194,16 +2277,71 @@ def _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
         _cobrir_fora(W, cid, pl, resta, [[p["ini"], p["fim"]] for p in planos if p.get("estado") == "falando"], passo, higgs, lote_id)
 
 
+CONFERE_GANCHO = """Abra com Read a imagem {foto} — é a FOTO DO GANCHO de um corte de podcast para donos de restaurante e delivery
+(ela aparece em tela cheia nos primeiros segundos, junto com a headline).
+Headline: "{headline}"
+Começo da fala: "{fala}"
+Reprove (ok=false) se QUALQUER uma valer:
+- não mostra a coisa concreta da headline/fala (se citam iFood, pizza, entregador, cardápio, cozinha, motoboy, a foto mostra ISSO);
+- é foto genérica de banco (aperto de mão, escritório, gráfico, pessoa sorrindo para a câmera) quando a fala cita algo concreto;
+- tem texto legível, logo de outra marca, marca d'água, moldura ou cara de imagem gerada (dedos/rostos deformados);
+- é um rosto em close que pode ser confundido com alguém do podcast.
+Responda APENAS com JSON: {{"ok": true|false, "motivo": "uma linha dizendo o que a foto mostra e por que serve ou não"}}"""
+
+
+def conferir_gancho(W, cid, plan):
+    """Problema da foto do gancho (texto) ou None: falta a foto ou ela não combina com a headline/fala (o Claude olha a foto).
+    Felipe, 09/11/2026: "trocar a foto do gancho" foi o pedido de ajuste mais repetido da semana (7×), mais "sem foto no início"."""
+    try:
+        pl = json.loads(Path(plan).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    hook = pl.get("hook") or {}
+    if not hook or not float(hook.get("duration") or 0):
+        return None   # formato sem gancho com foto
+    g = _foto_gancho(plan, W)
+    if not g or not g.is_file():
+        return "FOTO DO GANCHO: falta (o corte começa sem foto; ponha uma foto que mostre o assunto da headline)"
+    cache = W / "work" / cid / "gancho_conferido.json"
+    h = _sha_arq(g)
+    try:
+        c = json.loads(cache.read_text(encoding="utf-8"))
+        if c.get("sha") == h:
+            return c.get("problema")
+    except (OSError, ValueError):
+        pass
+    try:
+        ws = json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8")).get("words") or []
+        fala = " ".join(w.get("w") or "" for w in ws[:30])
+    except (OSError, ValueError):
+        fala = ""
+    try:
+        r = json_final(claude(CONFERE_GANCHO.format(foto=g, headline=(pl.get("headline") or "").replace("|", " "), fala=fala),
+                              W, "sonnet", limite=300, trabalho="conferir_gancho"))
+    except Exception as e:
+        log("conferência da foto do gancho do", cid, "não rodou:", e)
+        return None
+    prob = None if r.get("ok", True) else "FOTO DO GANCHO ({}): não combina — {}".format(g.name, r.get("motivo") or "")
+    cache.write_text(json.dumps({"sha": h, "problema": prob, "motivo": r.get("motivo")}, ensure_ascii=False), encoding="utf-8")
+    if prob:
+        log("foto do gancho do", cid, "reprovada:", r.get("motivo"))
+    return prob
+
+
 def garantir_broll(W, cid, plan, passo, higgs, lote_id):
-    """Troca (com o Claude) o b-roll repetido ou parado; o que ainda sobrar sai do plano: sem b-roll é melhor que repetido ou foto."""
-    for _ in range(2 if higgs else 0):
+    """Troca (com o Claude) o b-roll repetido ou parado e a foto do gancho que não combina; o b-roll que ainda sobrar sai do
+    plano: sem b-roll é melhor que repetido ou foto."""
+    for _ in range(2 if (higgs or _bancos()) else 0):   # sem Higgsfield, a troca usa o banco grátis
         probs = problemas_broll(W, cid, plan)
+        pg = conferir_gancho(W, cid, plan)
+        if pg:
+            probs.append((None, pg))
         if not probs:
             return
         passo("Trocando b-roll repetido ou parado")
         log("b-roll do", cid + ":", "; ".join(x for _, x in probs)[:600])
         try:
-            claude(TROCA_BROLL.format(cid=cid, W=W, lista="\n".join("- " + x for _, x in probs),
+            claude(TROCA_BROLL.format(cid=cid, W=W, lista="\n".join("- " + x for _, x in probs), banco=foto_banco(),
                                       regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
                    W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote_id)
         except Exception as e:
@@ -2662,7 +2800,7 @@ edição BÁSICA e diferente da oficial: a pessoa falando com a legenda e, em al
 SEM FRASES ANIMADAS (Felipe, 31/10/2026: nada de frase grande com palavra verde): nenhuma cena "tipo": "frase".
 Arquivos: {pal} (cada palavra com o instante, em segundos), {fala} (a fala por blocos), vídeo {video} ({dur:.1f} s).
 Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "cenas": [...] depois de {evitar:.1f} s:
-- {n_broll} B-ROLLS (UM A CADA ~8–10 s de corte, sem buraco de mais de 12 s sem imagem), de 1,5 a 3 s cada, nos momentos em que a
+- {n_broll} B-ROLLS (UM A CADA ~12 s de corte, sem buraco de mais de 16 s sem imagem), de 1,5 a 3 s cada, nos momentos em que a
   fala descreve algo que dá para MOSTRAR (cozinha cheia, motoboy saindo, cliente pedindo no celular, dinheiro, fila, embalagem...).
   Entre um b-roll e outro, pelo menos 4 s de pessoa falando; nunca cubra a frase mais forte do corte (o rosto vende) e, somados,
   no máximo 40% do corte.
@@ -2699,8 +2837,9 @@ Se a fala daquele trecho não tiver nada que dê para mostrar, deixe sem. Nada r
 NÃO renderize. Responda APENAS com JSON: {{"ok": true, "acrescentadas": n}}"""
 
 
-def _buracos_canal2(cenas, evitar, dur, maximo=12.0):
-    """Trechos do corte (depois do gancho e antes dos 2 s finais) com mais de 12 s sem nenhuma imagem do motion."""
+def _buracos_canal2(cenas, evitar, dur, maximo=16.0):
+    """Trechos do corte (depois do gancho e antes dos 2 s finais) com mais de 16 s sem nenhuma imagem do motion (era 12 s até
+    09/11/2026: o time tirava momentos de quase todo corte)."""
     try:
         cs = sorted((float(c.get("t0") or 0), float(c.get("t1") or c.get("t0") or 0))
                     for c in json.loads(cenas.read_text(encoding="utf-8")).get("cenas") or [])
@@ -2809,12 +2948,12 @@ def motion_fluido(cid, W, work, final, previa, pasta, passo, lote, plan_hook=0.0
                                    saida=cenas, evitar=evitar, objeto3d=lib / "objeto3d.py", motor=motor, quadros=quadros,
                                    catalogo=lib / "infografico.py", foto_real=lib.parent.parent / "scripts" / "foto_real.py",
                                    imagem_web=lib / "imagem_web.py", banco=foto_banco(), videos=videos_banco(), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum",
-                                   fora=_fora_canal2(work) if tema == "canal2" else "", n_broll=max(3, round((dur - evitar) / 9)),
+                                   fora=_fora_canal2(work) if tema == "canal2" else "", n_broll=max(3, round((dur - evitar) / 12)),
                                    brolls=", ".join("{:.1f}–{:.1f} s".format(float(b.get("start") or 0), float(b.get("start") or 0) + float(b.get("dur") or 0))
                                                     for b, _ in _broll_do_plano(work / "plan.json", W)) or "nenhum"),
                W, "sonnet", ao_passo=passo, limite=1500, higgs=higgs, higgs_lote=lote["id"])
         buracos = _buracos_canal2(cenas, evitar, dur) if tema == "canal2" and antigas is None else []
-        if buracos:   # Zeca: imagem no ritmo (uma a cada ~10 s); uma rodada para completar os buracos (Felipe, 05/11/2026)
+        if buracos:   # Zeca: imagem no ritmo (uma a cada ~12 s); uma rodada para completar os buracos (Felipe, 05/11/2026)
             log("motion do", cid, "sem imagem em:", buracos)
             passo("Motion (completando as imagens)")
             claude(COMPLETA_CANAL2.format(cid=cid, saida=cenas, fala=work / "fala_final.txt", pal=work / "palavras_final.json",
@@ -2963,8 +3102,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             "Nunca tela de celular/notebook com texto, número ou gráfico (a IA escreve letras sem sentido): mostre a pessoa e a reação, com a tela de costas.".format(cid)
             if higgs else "use uma foto de assets/ganchos que combine com a descrição; se nenhuma servir, deixe a descrição e diga nas notas.")
     prints = baixar_prints(c, pasta) if c.get("ajuste") else []
-    broll = ("RITMO (regra do Felipe, 28/10/2026): um MOMENTO VISUAL a cada 10 s depois do gancho (corte de 50 s = 5 momentos), um em cada "
-             "janela de 10 s. Momento visual = b-roll de VÍDEO de 1,5–3 s na fala que cita algo mostrável, ou P&B (\"bw\": true no shot) numa frase "
+    broll = ("RITMO (regra do Felipe, 28/10/2026; de 10 para 12 s em 09/11/2026, o time tirava ~2 momentos por corte): um MOMENTO VISUAL "
+             "a cada 12 s depois do gancho (corte de 50 s = 4 momentos), um em cada janela de 12 s, nunca dois na mesma janela. Momento visual = b-roll de VÍDEO de 1,5–3 s na fala que cita algo mostrável, ou P&B (\"bw\": true no shot) numa frase "
              "de impacto. O código confere janela por janela antes do render. "
              + REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")
              + " Ponha em plan.json \"broll\": [{\"file\": \"broll/arquivo.mp4\", \"start\": s, \"dur\": s, \"mode\": \"full\"}] "
@@ -3025,9 +3164,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"])   # pessoa errada na tela (falante fora da imagem)
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
-    if faltam and not formato_canal2(estilo):   # regra dos 10 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+    if faltam and not formato_canal2(estilo):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
         log("ritmo do", cid, "faltando em:", faltam)
-        passo("Completando o ritmo (um momento visual a cada 10 s)")
+        passo("Completando o ritmo (um momento visual a cada 12 s)")
         claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
                             regras=REGRAS_BROLL.format(pexels=_pexels(), bib=BIBLIOTECA_CW, proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum")),
                W, "sonnet", ao_passo=passo, limite=1800, higgs=higgs, higgs_lote=lote["id"])
@@ -3177,6 +3316,24 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         log("ficha do", cid, "não foi:", e)
     if not final.exists():
         raise Falhou("o render final não gerou saida/{}.mov".format(cid))
+    mapa = mapa_do_episodio(W.parent)
+    if mapa:   # trava de entrega: a pessoa errada na tela é MEDIDA no vídeo que saiu (Felipe, 09/11/2026)
+        passo("Conferindo quem aparece × quem fala no vídeo final")
+        pe = pessoa_errada(final, mapa)
+        if pe:
+            frac, trechos = pe
+            log("corte", cid, ": pessoa errada na tela em {:.0%} do corte".format(frac), trechos or "")
+            if frac > ERRADA_TRAVA and not c.get("ajuste"):
+                raise SemFalante("Não entregue: a pessoa errada aparece na tela em {:.0%} do corte ({}). O episódio mostra quem ouve "
+                                 "enquanto o outro fala nesse trecho.".format(frac, ", ".join("{:.0f}–{:.0f} s".format(a, b) for a, b in trechos[:6])))
+            if trechos:
+                arq = work / "enquadramento.json"
+                try:
+                    e = json.loads(arq.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    e = {}
+                e["errada"] = trechos
+                arq.write_text(json.dumps(e, ensure_ascii=False), encoding="utf-8")
     registrar_broll(W, cid, plan)
     return final, (previa if previa.exists() else final)
 
@@ -3413,6 +3570,18 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
                            capture_output=True, text=True, timeout=1800)
         if r.returncode:
             log("Nanquim:", cid, "falante.py não rodou:", (r.stderr or "")[-200:])
+    voz = work / "voz.json"   # quem fala pela voz contra o mapa do episódio: manda no recorte; a boca fica de reserva (09/11/2026)
+    voz.unlink(missing_ok=True)
+    mapa = mapa_do_episodio(W.parent)
+    if mapa:
+        try:
+            r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz", "--mapa", str(mapa), "--json", str(voz)],
+                               capture_output=True, text=True, timeout=1500)
+            if json.loads(voz.read_text(encoding="utf-8")).get("modo") != "mapa":
+                voz.unlink(missing_ok=True)
+        except Exception as e:
+            log("Nanquim:", cid, "voz pelo mapa não rodou:", e)
+            voz.unlink(missing_ok=True)
     try:
         med = json.loads(fal.read_text(encoding="utf-8"))
         fora = fora_dos_planos(med.get("planos"), dur, confia_close=True) or 0
@@ -3450,7 +3619,7 @@ def produzir_nanquim(c, ep, W, cid, bruto, ini, fim, pasta, passo, rodar, estilo
         emendas.append(round(acc, 3))
     plano = {"video": str(base), "palavras": str(pal), "saida": str(W / "saida" / "{}.mp4".format(cid)), "duracao": dur,
              "emendas": emendas, "blocos": r["blocos"], "virada": virada, "clima": clima, "tipo": tipo, "arroba": arroba_do_estilo(estilo),
-             "falante": str(fal) if med else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem")),
+             "falante": str(fal) if med else None, "voz": str(voz) if voz.exists() else None, "trilha": _trilha_nanquim(W, cid, clima_trilha, c.get("ordem")),
              "lados": lados_pedidos(itens_ajuste(c["ajuste"])) if c.get("ajuste") else []}   # lado pedido pelo editor manda no recorte
     roteiro.write_text(json.dumps(plano, ensure_ascii=False, indent=1), encoding="utf-8")
     (W / "saida").mkdir(exist_ok=True)

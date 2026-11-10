@@ -20,6 +20,7 @@ cada 1 s): quem fala JANELA A JANELA, para o recorte trocar de pessoa quando a f
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -190,13 +191,18 @@ def _kmeans(X, k=2, it=40):
     return best[1], best[2]
 
 
-def vozes(video):
-    """[(t, voz 0|1)] a cada 0,5 s com fala: MFCC (13) média e desvio em janela de 1 s, normalizados no corte, em 2 grupos."""
+def _audio(video, de=None, dur=None):
     import numpy as np
-    a = np.frombuffer(subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", str(SR), "-f",
-                                      "s16le", "-"], capture_output=True).stdout, np.int16).astype(np.float32) / 32768
+    cmd = ["ffmpeg", "-nostdin", "-v", "error"] + (["-ss", "{:.2f}".format(de)] if de else []) + ["-i", str(video)] \
+        + (["-t", "{:.2f}".format(dur)] if dur else []) + ["-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
+    return np.frombuffer(subprocess.run(cmd, capture_output=True).stdout, np.int16).astype(np.float32) / 32768
+
+
+def _janelas_voz(a, t0=0.0):
+    """(ts, X): uma janela de 1 s a cada 0,5 s com fala; X = média e desvio do MFCC (13), normalizado no trecho (tira o canal)."""
+    import numpy as np
     if len(a) < SR * 4:
-        return []
+        return [], []
     n, hop = 400, 160
     fr = np.lib.stride_tricks.sliding_window_view(a, n)[::hop] * np.hamming(n)
     sp = np.abs(np.fft.rfft(fr, 512)) ** 2
@@ -214,8 +220,15 @@ def vozes(video):
     for i in range(0, len(m) - 100, int(PASSO_VOZ * 100)):
         vo = en[i:i + 100] > lim
         if vo.mean() >= 0.5:
-            ts.append(round(i / 100 + 0.5, 2))   # centro da janela
+            ts.append(round(t0 + i / 100 + 0.5, 2))   # centro da janela
             X.append(np.concatenate([m[i:i + 100][vo].mean(0), m[i:i + 100][vo].std(0)]))
+    return ts, X
+
+
+def vozes(video):
+    """[(t, voz 0|1)] a cada 0,5 s com fala: MFCC (13) média e desvio em janela de 1 s, normalizados no corte, em 2 grupos."""
+    import numpy as np
+    ts, X = _janelas_voz(_audio(video))
     if len(X) < 10:
         return []
     lab, _ = _kmeans(np.array(X))
@@ -254,9 +267,268 @@ def rostos_id(video, fps=2):
     return [(t, cx, cy, int(l)) for (t, cx, cy, _), l in zip(achados, lab)], sim
 
 
-def medir_voz(video):
+# ---------------------------------------------------------------------------------------------- mapa do episódio
+# Felipe, 09/11/2026 ("alguns enquadramentos continuam errados"): separar as vozes DENTRO de cada corte (~60 s, sempre 2 pessoas)
+# falhava quando o corte tinha pouco close de alguém ou 3 pessoas na mesa (host + 2 convidados, lote 31), e aí a boca (fraca no
+# plano aberto) decidia. O mapa aprende UMA vez, no episódio inteiro: quem é quem pelo rosto (SFace) e pela voz (MFCC), e liga
+# cada voz ao rosto que aparece sozinho enquanto ela fala. Cada corte só classifica a voz e os rostos contra o mapa.
+CLOSE = 0.09        # largura mínima do rosto (fração da imagem) para contar como close de uma pessoa
+MAPA_ROSTO = 0.40   # semelhança SFace para ser a mesma pessoa (o OpenCV recomenda 0,363)
+
+
+def _rostos_keyframes(video, cada=1.0, lado=1280):
+    """[(t, cx, cy, emb)] dos quadros-chave (no máximo um a cada `cada` s): rápido mesmo no episódio de 1 h em 4K."""
+    import cv2
+    import numpy as np
+    import tempfile
+    W, H = tamanho(video)
+    w2, h2 = lado, int(round(H * lado / W / 2) * 2)
+    aqui = Path(__file__).resolve().parent
+    yn = cv2.FaceDetectorYN.create(str(aqui / "face_detection_yunet.onnx"), "", (w2, h2), 0.7, 0.3, 5000)
+    sf = cv2.FaceRecognizerSF.create(str(aqui / "face_recognition_sface.onnx"), "")
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(["ffmpeg", "-nostdin", "-skip_frame", "nokey", "-i", str(video), "-vf",
+                              "select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{})',scale={}:{},showinfo".format(cada, w2, h2),
+                              "-vsync", "vfr", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, stderr=err)
+        quadros = []
+        while True:
+            b = p.stdout.read(w2 * h2 * 3)
+            if len(b) < w2 * h2 * 3:
+                break
+            im = np.frombuffer(b, np.uint8).reshape(h2, w2, 3)
+            _, fs = yn.detect(im)
+            q = []
+            for f in (fs if fs is not None else []):
+                if f[2] < w2 * 0.035:
+                    continue
+                e = sf.feature(sf.alignCrop(im, f)).flatten()
+                q.append((float((f[0] + f[2] / 2) / w2), float((f[1] + f[3] / 2) / h2), e / (np.linalg.norm(e) + 1e-9), float(f[2] / w2)))
+            quadros.append(q)
+        p.wait()
+        err.seek(0)
+        tempos = [float(x) for x in re.findall(r"pts_time:\s*([\d.]+)", err.read().decode("utf-8", "replace"))]
+    return [(round(t, 2), q) for t, q in zip(tempos, quadros)]
+
+
+def _agrupar_rostos(embs):
+    """Rótulo de cada rosto (mesma pessoa = semelhança ≥ MAPA_ROSTO com o centro do grupo) e os centros."""
+    import numpy as np
+    C, cont, lab = [], [], []
+    for e in embs:
+        if C:
+            sims = np.array(C) @ e
+            j = int(sims.argmax())
+            if sims[j] >= MAPA_ROSTO:
+                c = C[j] * cont[j] + e
+                C[j] = c / (np.linalg.norm(c) + 1e-9)
+                cont[j] += 1
+                lab.append(j)
+                continue
+        C.append(e.copy())
+        cont.append(1)
+        lab.append(len(C) - 1)
+    return lab, C, cont
+
+
+VOZ_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+           "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")   # CAM++ (3D-Speaker, Apache-2.0), 28 MB
+_VOZ = {}
+
+
+def _modelo_voz():
+    """Impressão de voz (CAM++) pelo OpenCV DNN, o mesmo do YuNet/SFace: nada a instalar. Baixa uma vez para ~/.cache."""
+    if "net" not in _VOZ:
+        import cv2
+        import urllib.request
+        arq = Path.home() / ".cache" / "cw-falante" / "campplus.onnx"
+        if not arq.exists():
+            arq.parent.mkdir(parents=True, exist_ok=True)
+            tmp = arq.with_suffix(".baixando")
+            urllib.request.urlretrieve(VOZ_URL, tmp)
+            tmp.rename(arq)
+        _VOZ["net"] = cv2.dnn.readNetFromONNX(str(arq))
+    return _VOZ["net"]
+
+
+def _fbank(x):
+    """80 filtros mel (estilo Kaldi: 25 ms, passo 10 ms, janela povey), menos a média: a entrada do CAM++."""
+    import numpy as np
+    n, hop = 400, 160
+    fr = np.lib.stride_tricks.sliding_window_view(x, n)[::hop].astype(np.float64)
+    fr = fr - fr.mean(1, keepdims=True)
+    fr = np.concatenate([fr[:, :1] * 0.03, fr[:, 1:] - 0.97 * fr[:, :-1]], 1)
+    fr = fr * ((0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / (n - 1))) ** 0.85)
+    sp = np.abs(np.fft.rfft(fr, 512)) ** 2
+    mel = lambda f: 1127 * np.log(1 + f / 700)
+    mp = np.linspace(mel(20), mel(8000), 82)
+    fm = mel(np.arange(257) * 16000 / 512)
+    fb = np.stack([np.clip(np.minimum((fm - mp[i]) / (mp[i + 1] - mp[i]), (mp[i + 2] - fm) / (mp[i + 2] - mp[i + 1])), 0, None)
+                   for i in range(80)])
+    f = np.log(np.maximum(sp @ fb.T, 1e-10))
+    return (f - f.mean(0)).astype(np.float32)
+
+
+def _impressoes(a, ts, t0=0.0, meia=0.75):
+    """Impressão de voz (192, norma 1) de 1,5 s em volta de cada instante de ts (em s; a começa em t0)."""
+    import numpy as np
+    net = _modelo_voz()
+    out = []
+    for t in ts:
+        i0 = max(0, int((t - t0 - meia) * SR))
+        seg = a[i0:i0 + int(2 * meia * SR)]
+        if len(seg) < SR // 2:
+            seg = np.pad(seg, (0, SR // 2 - len(seg)))
+        net.setInput(_fbank(seg)[None])
+        e = net.forward().flatten()
+        out.append(e / (np.linalg.norm(e) + 1e-9))
+    return np.array(out)
+
+
+def mapa_episodio(video):
+    """{"ok", "motivo", "pessoas": [{"id", "rosto": [128], "voz": [192] ou None, "cx": lado médio no plano aberto, "peso"}],
+    "acerto"}. A voz de cada pessoa é aprendida nos closes dela (o episódio editado mostra quem fala quase sempre) e conferida
+    em metade dos closes que não entrou no aprendizado."""
+    import numpy as np
+    qs = _rostos_keyframes(video)
+    embs = [x[2] for _, q in qs for x in q]
+    if len(embs) < 30:
+        return {"ok": False, "motivo": "poucos rostos no episódio ({})".format(len(embs))}
+    lab, C, cont = _agrupar_rostos(embs)
+    total = len(embs)
+    gente = [j for j in sorted(range(len(C)), key=lambda j: -cont[j]) if cont[j] >= max(10, 0.04 * total)][:5]
+    if len(gente) < 2:
+        return {"ok": False, "motivo": "uma pessoa só no episódio"}
+    ident = {g: k for k, g in enumerate(gente)}
+    por_t, i = [], 0   # [(t, [(cx, pessoa|-1)])]
+    for t, q in qs:
+        por_t.append((t, [(x[0], ident.get(lab[i + k], -1), x[3]) for k, x in enumerate(q)]))
+        i += len(q)
+    P = len(gente)
+    # close de verdade: um rosto só E grande (no plano aberto de 3 pessoas o YuNet às vezes acha um rosto só, pequeno; CW Cast #48)
+    solo = [(t, q[0][1]) for t, q in por_t if len(q) == 1 and q[0][1] >= 0 and q[0][2] >= CLOSE]
+    a = _audio(video)
+    ts, _ = _janelas_voz(a)   # só os instantes com fala
+    ts = np.array(ts)
+    amostra, ys, grupo = [], [], []
+    for n, (t, pe) in enumerate(solo):
+        for j in np.where(np.abs(ts - t) <= 1.0)[0]:
+            amostra.append(float(ts[j]))
+            ys.append(pe)
+            grupo.append((n // 10) % 2)   # blocos de 10 closes: metade aprende, metade confere
+    if len(amostra) < 60:
+        return {"ok": False, "motivo": "pouca fala nos closes ({} janelas)".format(len(amostra))}
+    E = _impressoes(a, amostra)
+    ys, grupo = np.array(ys), np.array(grupo)
+
+    def centros(sel):
+        cs = []
+        for pe in range(P):
+            Xp = E[sel & (ys == pe)]
+            if len(Xp) < 15:
+                cs.append(None)   # quase não fala nos closes: sem voz no mapa
+                continue
+            c = Xp.mean(0)
+            d = Xp @ (c / np.linalg.norm(c))
+            c = Xp[d >= np.percentile(d, 30)].mean(0)   # tira os 30% mais longe (close de quem ouve, risada, voz cruzada)
+            cs.append(c / np.linalg.norm(c))
+        n_ = [int((sel & (ys == pe)).sum()) for pe in range(P)]
+        for x in sorted(range(P), key=lambda pe: n_[pe]):   # voz quase igual à de outra pessoa: era close de quem só reage
+            if cs[x] is not None and any(y != x and cs[y] is not None and n_[y] >= n_[x] and float(cs[x] @ cs[y]) > 0.8
+                                         for y in range(P)):
+                cs[x] = None   # (CW Cast #48: a "voz" do 3º rosto era 0,94 igual à do convidado)
+        return cs
+
+    acertos = []
+    for g in (0, 1):
+        cs = centros(grupo == g)
+        ok = [pe for pe in range(P) if cs[pe] is not None]
+        te = (grupo != g) & np.isin(ys, ok)
+        if len(ok) < 2 or te.sum() < 20:
+            continue
+        pred = np.array(ok)[(E[te] @ np.array([cs[pe] for pe in ok]).T).argmax(1)]
+        acertos.append(float(np.mean([(pred[ys[te] == pe] == pe).mean() for pe in ok])))   # média por pessoa (não só o host)
+    cs = centros(np.ones(len(ys), bool))
+    falam = [pe for pe in range(P) if cs[pe] is not None]
+    acerto = min(acertos) if acertos else 0
+    if len(falam) < 2 or acerto < 0.70:
+        return {"ok": False, "motivo": "vozes não separam no episódio (acerto {:.0%}, {} pessoa(s) com voz)".format(acerto, len(falam))}
+    pessoas = []
+    for k, g in enumerate(gente):
+        cxs = sorted(cx for _, q in por_t if len(q) >= 2 for cx, pe, _ in q if pe == k)
+        pessoas.append({"id": k, "rosto": [round(float(x), 5) for x in C[g]],
+                        "voz": [round(float(x), 5) for x in cs[k]] if cs[k] is not None else None,
+                        "cx": round(cxs[len(cxs) // 2], 3) if cxs else None, "peso": round(cont[g] / total, 3)})
+    return {"ok": True, "acerto": round(acerto, 2), "amostras": len(amostra), "pessoas": pessoas}
+
+
+def _medir_com_mapa(video, mapa, confia=False):
+    """Como medir_voz, mas a voz e os rostos do corte são classificados contra o mapa do episódio (ids estáveis no episódio)."""
+    import cv2
+    import numpy as np
+    pe = mapa["pessoas"]
+    R = np.array([p["rosto"] for p in pe])
+    com_voz = [p["id"] for p in pe if p.get("voz")]
+    V = np.array([pe[k]["voz"] for k in com_voz])
+    a = _audio(video)
+    ts, _ = _janelas_voz(a)
+    if len(ts) < 6:
+        return None
+    vp = [com_voz[int(j)] for j in (_impressoes(a, ts) @ V.T).argmax(1)]
+    W, H = tamanho(video)
+    w2, h2 = 1280, int(round(H * 1280 / W / 2) * 2)
+    aqui = Path(__file__).resolve().parent
+    yn = cv2.FaceDetectorYN.create(str(aqui / "face_detection_yunet.onnx"), "", (w2, h2), 0.7, 0.3, 5000)
+    sf = cv2.FaceRecognizerSF.create(str(aqui / "face_recognition_sface.onnx"), "")
+    pr = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vf", "fps=2,scale={}:{}".format(w2, h2),
+                           "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
+    por_t, k = {}, 0
+    while True:
+        b = pr.stdout.read(w2 * h2 * 3)
+        if len(b) < w2 * h2 * 3:
+            break
+        im = np.frombuffer(b, np.uint8).reshape(h2, w2, 3)
+        _, fs = yn.detect(im)
+        rs = []
+        for f in (fs if fs is not None else []):
+            if f[2] < w2 * 0.035:
+                continue
+            e = sf.feature(sf.alignCrop(im, f)).flatten()
+            e = e / (np.linalg.norm(e) + 1e-9)
+            sims = R @ e
+            j = int(sims.argmax())
+            rs.append([round(float((f[0] + f[2] / 2) / w2), 3), round(float((f[1] + f[3] / 2) / h2), 3), j if sims[j] >= 0.30 else -1,
+                       round(float(f[2] / w2), 3)])
+        if rs:
+            por_t[round(k / 2, 2)] = rs
+        k += 1
+    pr.wait()
+    if not por_t:
+        return None
+    certo = tot = 0
+    for t, p in zip(ts, vp):
+        q = por_t.get(round(round(t * 2) / 2, 2)) or []
+        if len(q) == 1 and q[0][2] >= 0 and q[0][3] >= CLOSE:
+            tot += 1
+            certo += q[0][2] == p
+    acerto = certo / tot if tot else None
+    if not confia and tot >= 10 and acerto < 0.6:   # o mapa não serve para este corte (outra gravação, outra mesa): mede só no corte
+        return None
+    return {"ts": ts, "vp": vp, "por_t": por_t, "acerto": acerto}
+
+
+def medir_voz(video, mapa=None, confia_mapa=False):
     """{"ok", "motivo", "pessoa_da_voz", "falas": [[ini, fim, pessoa]], "amostras": [{"t", "rostos": [[cx, cy, pessoa]]}]}.
-    ok=False quando não dá para confiar (uma pessoa só, rostos parecidos demais, vozes que não batem com quem aparece)."""
+    ok=False quando não dá para confiar (uma pessoa só, rostos parecidos demais, vozes que não batem com quem aparece).
+    Com o mapa do episódio (mapa_episodio) a voz e o rosto vêm dele (modo "mapa"); sem mapa ou se ele não bater, mede no corte."""
+    if mapa and mapa.get("ok"):
+        try:
+            mm = _medir_com_mapa(video, mapa, confia_mapa)
+        except Exception as e:   # modelo de voz indisponível (download, OpenCV antigo): mede só no corte, como antes
+            print("mapa do episódio não usado:", e, file=sys.stderr)
+            mm = None   # confia_mapa: conferência do vídeo final (lá o erro É o que se mede)
+        if mm:
+            return _falas(list(zip(mm["ts"], mm["vp"])), None, mm["por_t"], "mapa",
+                          {"acerto": round(mm["acerto"], 2) if mm["acerto"] is not None else None, "pessoas": len(mapa["pessoas"])})
     vz = vozes(video)
     rs, sim = rostos_id(video)
     if not vz or not rs:
@@ -275,16 +547,19 @@ def medir_voz(video):
     reto, cruz = cont[0][0] + cont[1][1], cont[0][1] + cont[1][0]
     tot = reto + cruz
     acerto = max(reto, cruz) / tot if tot else 0
-    amostras = [{"t": t, "rostos": por_t[t]} for t in sorted(por_t)]
     if tot < 10 or acerto < 0.8 or min(sum(1 for _, v in vz if v == j) for j in (0, 1)) < 0.1 * len(vz):
         # vozes não separam: não chuta. O modo "principal" (quem aparece sozinho mais tempo fala o corte todo) errava o plano
         # aberto da abertura (l31c02, 06/11/2026: o apresentador falava e o recorte ficou no convidado); quem decide é a boca
         return {"ok": False, "motivo": "vozes não batem com quem aparece ({:.0%} em {} amostras)".format(acerto, tot)}
     pv = [0, 1] if reto >= cruz else [1, 0]   # voz -> pessoa
-    # falas contínuas por pessoa (trocas curtas são absorvidas)
+    return _falas(vz, pv, por_t, "voz", {"acerto": round(acerto, 2), "semelhanca_rostos": round(sim, 2), "pessoa_da_voz": pv})
+
+
+def _falas(vz, pv, por_t, modo, extra):
+    """Falas contínuas por pessoa a partir de [(t, voz)] (pv: voz -> pessoa; None = a voz já é a pessoa)."""
     falas = []
     for t, v in vz:
-        pe = pv[v]
+        pe = v if pv is None else pv[v]
         if falas and falas[-1][2] == pe and t - falas[-1][1] <= 1.0:
             falas[-1][1] = t + PASSO_VOZ / 2
         else:
@@ -297,8 +572,8 @@ def medir_voz(video):
             lim[-1][1] = f[1]
         else:
             lim.append(list(f))
-    return {"ok": True, "modo": "voz", "acerto": round(acerto, 2), "semelhanca_rostos": round(sim, 2), "pessoa_da_voz": pv,
-            "falas": [[round(a, 2), round(b, 2), p] for a, b, p in lim], "amostras": amostras}
+    return dict(extra, ok=True, modo=modo, falas=[[round(a, 2), round(b, 2), p] for a, b, p in lim],
+                amostras=[{"t": t, "rostos": por_t[t]} for t in sorted(por_t)])
 
 
 def quem_fala_em(med, t0, t1):
@@ -350,8 +625,27 @@ def main():
     ap.add_argument("--ate", type=float)
     ap.add_argument("--json")
     ap.add_argument("--voz", action="store_true", help="quem fala pela voz + quem aparece pelo rosto")
+    ap.add_argument("--mapa", help="mapa do episódio (json): com --voz classifica contra ele; com --criar-mapa grava nele")
+    ap.add_argument("--criar-mapa", action="store_true", help="aprende quem é quem no episódio inteiro (video = bruto)")
+    ap.add_argument("--confia-mapa", action="store_true", help="com --voz --mapa: não troca para a medida no corte se o mapa discordar")
     a = ap.parse_args()
-    txt = json.dumps(medir_voz(a.video) if a.voz else medir(a.video, a.de, a.ate), ensure_ascii=False)
+    if a.criar_mapa:
+        try:
+            res = mapa_episodio(a.video)
+        except Exception as e:   # grava a falha: a esteira não tenta de novo a cada corte
+            res = {"ok": False, "motivo": "mapa falhou: {}".format(str(e)[:200])}
+        if a.mapa:
+            Path(a.mapa).write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps({k: v for k, v in res.items() if k != "pessoas"} | {"pessoas": [{k: v for k, v in p.items() if k not in ("rosto", "voz")}
+                                                                                     for p in res.get("pessoas") or []]}, ensure_ascii=False))
+        return 0
+    mapa = None
+    if a.voz and a.mapa:
+        try:
+            mapa = json.loads(Path(a.mapa).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            mapa = None
+    txt = json.dumps(medir_voz(a.video, mapa, a.confia_mapa) if a.voz else medir(a.video, a.de, a.ate), ensure_ascii=False)
     if a.json:
         Path(a.json).write_text(txt, encoding="utf-8")
     print(txt)

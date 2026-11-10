@@ -277,6 +277,23 @@ def falas_boca(falante):
     return sorted((t, cx, sy) for t, (cx, sy) in melhor.items())
 
 
+def serie_voz(voz):
+    """Quem fala segundo a VOZ (falante.medir_voz com o mapa do episódio): [(segundo, cx, 1.0)] no formato de falas_boca, com o cx
+    do rosto daquela pessoa nas amostras mais perto (ou o lugar dela no mapa). [] se não há medida pela voz."""
+    if not voz or voz.get("modo") not in ("mapa", "voz"):
+        return []
+    am = voz.get("amostras") or []
+    out = []
+    for a, b, p in voz.get("falas") or []:
+        t = a + 0.5
+        while t < b:
+            perto = sorted((abs(x["t"] - t), r[0]) for x in am if abs(x["t"] - t) <= 2.0 for r in x["rostos"] if r[2] == p)
+            if perto:
+                out.append((round(t, 2), perto[0][1], 1.0))
+            t += 1.0
+    return out
+
+
 def falante_do_plano(falante, t0, t1):
     """cx de quem fala no plano [t0, t1) pela medida do plano inteiro (boca × voz): o falante marcado ou, se o falante.py ficou
     em dúvida, o rosto de boca mais sincronizada (se passar de 0,2). None se não mediu."""
@@ -297,7 +314,7 @@ def falante_do_plano(falante, t0, t1):
     return melhor
 
 
-def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvidas=None):
+def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvidas=None, voz=None):
     """Janela de recorte (x, y, largura, altura em px do vídeo 1920x1080) para cada quadro.
     Enquadramento SEMPRE o mesmo (Felipe, 05/11/2026: sem zoom e sem mudança de enquadramento): um zoom só para o corte todo,
     sem movimento. QUEM aparece é decidido pela BOCA de quem fala (Felipe, 06/11/2026), em todo plano: falante.py mede a boca
@@ -311,7 +328,8 @@ def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvid
     rostos, cortes, n = detectar(video, dur)
     limites = sorted(set(cortes + [n]))   # só troca de câmera; emenda não muda o recorte
     jan = np.zeros((n, 4))
-    serie = falas_boca(falante)
+    serie_v = serie_voz(voz)
+    serie = serie_v or falas_boca(falante)
     pausas = [(a["f"] + b["i"]) / 2 for a, b in zip(ws or [], (ws or [])[1:]) if b["i"] - a["f"] >= 0.08]
     planos, alturas = [], []
 
@@ -328,7 +346,15 @@ def trilha_recorte(video, dur, emendas, falante=None, ws=None, lados=None, duvid
         if b <= a:
             continue
         t0, t1 = a / FPS, b / FPS
-        base_cx = falante_do_plano(falante, t0, t1)
+        base_cx = None if serie_v else falante_do_plano(falante, t0, t1)
+        if serie_v:   # pela voz: quem mais fala no plano
+            cont = {}
+            for t, cx, _ in serie_v:
+                if t0 <= t < t1:
+                    k_ = round(cx, 1)
+                    cont.setdefault(k_, []).append(cx)
+            if cont:
+                base_cx = float(np.median(max(cont.values(), key=len)))
         # quem fala janela a janela dentro do plano; troca de pessoa só se a outra fala por TROCA_MIN janelas seguidas
         jj = [(t, cx) for t, cx, _ in serie if t0 <= t < t1]
         trechos = []   # [(quadro inicial, cx)]
@@ -700,8 +726,14 @@ def render(plano_path):
             falante = json.loads((raiz / plano["falante"]).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             falante = None
+    voz = None
+    if plano.get("voz"):
+        try:
+            voz = json.loads((raiz / plano["voz"]).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            voz = None
     duvidas = []
-    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante, ws, plano.get("lados"), duvidas)
+    jan, n_lidos = trilha_recorte(video, fim_img, plano.get("emendas") or [], falante, ws, plano.get("lados"), duvidas, voz)
     impostos = [[l.get("t0"), l.get("t1"), l["lado"]] for l in plano.get("lados") or []]
     (raiz / "enquadramento.json").write_text(json.dumps({"duvidas": duvidas, "impostos": impostos}, ensure_ascii=False), encoding="utf-8")
     lut = lut_pb()
