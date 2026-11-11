@@ -2047,9 +2047,15 @@ def _recorte_pela_boca(pl, med, rid, dur, lados=None, voz_ok=False):
                     duvidas.append([round(a, 2), round(b, 2)])
         if atual is not None:
             certo[n] = ident(p, rs[atual]) or certo[n]
-    res = {"mexeu": 0, "duvidas": duvidas, "impostos": impostos}
+    res = {"mexeu": _aplicar_recortes(pl, decis, dur), "duvidas": duvidas, "impostos": impostos}
+    return res
+
+
+def _aplicar_recortes(pl, decis, dur):
+    """Põe o cx de cada decisão (ini, fim, cx) nos shots do plano, dividindo o shot nas bordas da decisão. Devolve quantos mudaram."""
+    mexeu = 0
     if not decis:
-        return res
+        return 0
     for chave in ("shots", "_base_shots"):
         shots = sorted(pl.get(chave) or [], key=lambda s: float(s.get("start") or 0))
         if not shots:
@@ -2070,14 +2076,14 @@ def _recorte_pela_boca(pl, med, rid, dur, lados=None, voz_ok=False):
             if d is not None and (novo.get("stack") or abs(float(novo.get("cx") or 0.5) - d[2]) > 0.06):
                 novo.pop("stack", None)
                 novo["cx"] = round(d[2], 3)
-                res["mexeu"] += chave == "shots"
+                mexeu += chave == "shots"
             ant = novos[-1] if novos else None
             if ant is not None and not proprio and ant.get("cx") == novo.get("cx") and bool(ant.get("stack")) == bool(novo.get("stack")) \
                     and ant.get("camera") == novo.get("camera"):
                 continue   # mesmo enquadramento: não divide à toa
             novos.append(novo)
         pl[chave] = novos
-    return res
+    return mexeu
 
 
 def guardar_enquadramento(W, cid, duvidas=None, impostos=None):
@@ -2161,6 +2167,58 @@ def pessoa_errada(video, mapa):
     trechos = [[round(a, 1), round(b, 1)] for a, b in trechos if b - a >= 1.0]   # um quadro solto não conta
     dur = ffprobe_dur(video) or 0
     return (sum(b - a for a, b in trechos) / dur if dur else 0.0), trechos
+
+
+def mesma_linha_do_tempo(video, work):
+    """O vídeo final tem a duração do corte (transcript)? Só então o segundo medido nele é o mesmo segundo do plano."""
+    try:
+        d = float(json.loads((Path(work) / "transcript.json").read_text(encoding="utf-8")).get("duration") or 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    return bool(d) and abs((ffprobe_dur(video) or 0) - d) <= 1.0
+
+
+def corrigir_pessoa_errada(W, cid, plan, trechos, mapa, passo, higgs, lote_id, estilo):
+    """A pessoa errada MEDIDA no vídeo que saiu é corrigida antes da prévia, não só avisada (Felipe, 11/11/2026: l46c02 e l46c03
+    abriram com quem ouve). No vídeo horizontal: se quem fala está na imagem no trecho, o recorte vai nele; se não está (close de
+    quem ouve), o trecho é coberto com b-roll. Devolve True se mudou o plano (precisa renderizar de novo)."""
+    import falante
+    base = _base_do_corte(W, cid)
+    if not base or not plan.exists():
+        return False
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz", "--mapa", str(mapa), "--confia-mapa"],
+                           capture_output=True, text=True, timeout=1500)
+        med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+    except Exception as e:
+        log("pessoa errada do", cid, ": medida no horizontal não rodou:", e)
+        return False
+    if med.get("modo") != "mapa":
+        return False
+    dur = ffprobe_dur(base) or 0
+    pausas = pausas_do_corte(W / "work" / cid)
+    decis, resta = [], []
+    for a, b in trechos:
+        amo = [x for x in med.get("amostras") or [] if a - 0.5 <= x["t"] < b + 0.5]
+        cxs = []
+        for x in amo:
+            p = falante.quem_fala_em(med, x["t"] - 0.25, x["t"] + 0.25)
+            cxs += [r_[0] for r_ in x["rostos"] if p is not None and r_[2] == p]
+        if amo and len(cxs) >= 0.5 * len(amo):   # quem fala está no plano aberto: só mover o recorte
+            ini = 0.0 if a <= 1.0 else max(0.0, _na_pausa(a - 0.3, pausas))
+            decis.append((ini, min(dur, _na_pausa(b + 0.3, pausas)), sorted(cxs)[len(cxs) // 2]))
+        else:
+            resta.append((a, b))
+    pl = json.loads(plan.read_text(encoding="utf-8"))
+    mexeu = _aplicar_recortes(pl, decis, dur)
+    if mexeu:
+        plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+    log("pessoa errada do", cid, ": recorte movido para quem fala em", mexeu, "trecho(s)", decis or "", "· sem quem fala na imagem em", resta or "nenhum")
+    resta = _sem_cobertura(resta, pl)
+    if resta and not formato_canal2(estilo):
+        _cobrir_fora(W, cid, pl, resta, [[x, y] for x, y, _ in med.get("falas") or []], passo, higgs, lote_id)
+    (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
+    return bool(mexeu or resta)
 
 
 def enquadrar_quem_fala(W, cid, plan, passo, trava):
@@ -3347,6 +3405,21 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     if mapa:   # trava de entrega: a pessoa errada na tela é MEDIDA no vídeo que saiu (Felipe, 09/11/2026)
         passo("Conferindo quem aparece × quem fala no vídeo final")
         pe = pessoa_errada(final, mapa)
+        pode_enq = not trava or trava.livres is None or "enquadramento" in trava.areas
+        if pe and pe[1] and pode_enq and mesma_linha_do_tempo(final, work):
+            passo("Pessoa errada na tela: corrigindo o enquadramento")
+            if corrigir_pessoa_errada(W, cid, plan, pe[1], mapa, passo, higgs, lote["id"], estilo):
+                broll_ok()
+                rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+                sem_logo()
+                respeitar_editor(work)
+                limpar_shots(work)
+                rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
+                rodar("Render final", ["scripts/render.py", "work/{}/plan.json".format(cid)], tempo=2400)
+                motion()
+                limpar_final()
+                passo("Conferindo quem aparece × quem fala de novo")
+                pe = pessoa_errada(final, mapa) or pe
         if pe:
             frac, trechos = pe
             log("corte", cid, ": pessoa errada na tela em {:.0%} do corte".format(frac), trechos or "")
