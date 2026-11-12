@@ -3650,6 +3650,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                                           trava.antes["plan.json"] if trava else None) if c.get("edicoes") else ([], [])
     if mec_falhas:
         log("edição direta do", cid, "não ficou no vídeo:", "; ".join(mec_falhas))
+    fechar_conferencia = None
     if c.get("edicoes") and not edicoes_ia and not falhou_leg and final.exists():   # só edição mecânica: conferida no plano que virou vídeo
         feitas_txt = mec_ok + [texto_edicao(o) for o in c["edicoes"] if o.get("tipo") == "palavra"]
         registrar_conferencia(c, {"atendido": not mec_falhas, "destino": "pontual",
@@ -3674,15 +3675,18 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             motion()   # o render novo sai sem o motion do formato: aplica de novo antes de conferir
             limpar_final()
             r = conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll())
-        resta, usados = higgs_restante(lote)
-        if mec_falhas:   # edição mecânica que não ficou: a conferência não pode dizer "atendido"
-            r["atendido"] = False
-            r["motivo"] = "NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " + (r.get("motivo") or "")
-        if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
-            r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
-        if nao_deu:
-            r["motivo"] = "Do pedido de quem aparece, não deu: {}. {}".format(nao_deu, r.get("motivo") or "")
-        registrar_conferencia(c, r, cid, work)
+
+        def fechar_conferencia(r):
+            resta, usados = higgs_restante(lote)
+            if mec_falhas:   # edição mecânica que não ficou: a conferência não pode dizer "atendido"
+                r["atendido"] = False
+                r["motivo"] = "NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " + (r.get("motivo") or "")
+            if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
+                r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
+            if nao_deu:
+                r["motivo"] = "Do pedido de quem aparece, não deu: {}. {}".format(nao_deu, r.get("motivo") or "")
+            registrar_conferencia(c, r, cid, work)
+        fechar_conferencia(r)
     if trava:   # o time vê na Central o que a esteira entendeu do pedido e o que mudou de verdade
         srv("corte", id=c["id"], ajuste_mudancas=("entendi: {} · mudou: {}{}".format(entendido, trava.resumo(), " · não deu: " + nao_deu if nao_deu else ""))[:900])
     try:   # a ficha do corte (o time vê e edita ao lado da prévia)
@@ -3713,6 +3717,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 limpar_final()
                 passo("Conferindo quem aparece × quem fala de novo")
                 pe = _sem_os_pedidos(pessoa_errada(final, mapa, frases_final), work) or pe
+                if fechar_conferencia:   # a conferência do pedido julgou o vídeo de antes desta correção (l50c04: "não
+                    passo("Conferindo o pedido de ajuste no vídeo corrigido")   # atendido" de um trecho já corrigido)
+                    fechar_conferencia(conferir_ajuste(c, final, pasta, prints, passo, work / "transcript.json", meios_broll()))
         if pe:
             frac, trechos = pe
             log("corte", cid, ": pessoa errada na tela em {:.0%} do corte".format(frac), trechos or "")

@@ -579,6 +579,7 @@ def _medir_com_mapa(video, mapa, confia=False):
 
 
 FRASE_PAUSA = 0.35   # pausa entre palavras que separa duas frases (s)
+FRASE_COLADA = 0.10  # pausa menor que isso entre duas frases = a mesma fala seguindo (só o ponto da transcrição as separa)
 FRASE_MARGEM = 0.10  # semelhança da 1ª voz − a da 2ª abaixo disso = dúvida (CW Cast #50: host × convidado 0,20–0,53; host × host
                      # 0,06–0,16; "Tipo, confeitaria" do mesmo host saiu como o outro com 0,06 e o recorte pulava entre eles)
 
@@ -677,6 +678,10 @@ def _falas_por_frase(a, frases, mapa, por_t, extra):
         mg = float(np.mean([m for m, d in zip(margem, dono) if d == k]))
         if ant is not None and (conf < 0.6 or (mg < FRASE_MARGEM and y - x < 1.5)):
             quem = ant   # voz sem certeza (ou frase curta entre vozes parecidas, como dois hosts): fica com quem já falava
+        elif ant is not None and quem != ant and y - x < 1.5 and k and x - frases[k - 1][1] < FRASE_COLADA and mg < 2 * FRASE_MARGEM:
+            quem = ant   # frase curta colada na anterior (só o ponto as separa, sem pausa) não troca de pessoa com voz fraca:
+                         # l50c04, "...o Instagram. Crescer, ganhar mais seguidores" do convidado saiu como o host com 0,16
+                         # (0,02 s de pausa). Troca de verdade tem respiro: "pastelaria." → "Pastelaria?" do host, 0,20 s (l46c14)
         res.append([x, y, quem, round(conf, 2), round(mg, 2)])
         ant = quem
     falas = []
