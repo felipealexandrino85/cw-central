@@ -333,6 +333,22 @@ def _agrupar_rostos(embs):
 VOZ_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
            "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")   # CAM++ (3D-Speaker, Apache-2.0), 28 MB
 _VOZ = {}
+VOZ_OUTRA = 0.42    # semelhança (CAM++) abaixo disso com todas as vozes do mapa = outra pessoa. CW Cast #50 (12/11/2026): mesma
+                    # pessoa 0,52–0,84, outra 0,05–0,32 (p5–p95, 361 janelas com quem fala conferido na transcrição)
+
+
+class _VozOrt:
+    """O mesmo CAM++ pelo onnxruntime, quando o OpenCV DNN não abre o arquivo (OpenCV 4.10 do Mac: erro no Reshape)."""
+    def __init__(self, arq):
+        import onnxruntime as ort
+        self.s = ort.InferenceSession(str(arq))
+        self.nome, self.x = self.s.get_inputs()[0].name, None
+
+    def setInput(self, x):
+        self.x = x
+
+    def forward(self):
+        return self.s.run(None, {self.nome: self.x})[0]
 
 
 def _modelo_voz():
@@ -346,7 +362,10 @@ def _modelo_voz():
             tmp = arq.with_suffix(".baixando")
             urllib.request.urlretrieve(VOZ_URL, tmp)
             tmp.rename(arq)
-        _VOZ["net"] = cv2.dnn.readNetFromONNX(str(arq))
+        try:
+            _VOZ["net"] = cv2.dnn.readNetFromONNX(str(arq))
+        except cv2.error:
+            _VOZ["net"] = _VozOrt(arq)
     return _VOZ["net"]
 
 
@@ -382,6 +401,47 @@ def _impressoes(a, ts, t0=0.0, meia=0.75):
         e = net.forward().flatten()
         out.append(e / (np.linalg.norm(e) + 1e-9))
     return np.array(out)
+
+
+def _voz_que_falta(a, ts, cs, por_t, n_max=1500):
+    """Voz de quem nunca aparece sozinho num close (o host no sofá do CW Cast #50, 12/11/2026: sem voz no mapa, a fala dele
+    virava a de outra pessoa e o recorte ia para o convidado). As falas do episódio que não batem com nenhuma voz conhecida
+    (< VOZ_OUTRA) formam a voz que falta, ligada à pessoa sem voz que mais aparece na imagem nesses instantes.
+    Devolve (cs, pessoa que ganhou a voz ou None)."""
+    import numpy as np
+    sem_voz = [pe for pe, c in enumerate(cs) if c is None]
+    conh = [c for c in cs if c is not None]
+    if not sem_voz or not conh or len(ts) < 30:
+        return cs, None
+    amostra = [float(t) for t in ts[::max(1, len(ts) // n_max)]]
+    E = _impressoes(a, amostra)
+    fora = (E @ np.array(conh).T).max(1) < VOZ_OUTRA
+    if fora.sum() < 30:   # menos de ~15 s de fala de outra pessoa no episódio: nada a aprender
+        return cs, None
+    Ef, tf = E[fora], np.array(amostra)[fora]
+    c = Ef.mean(0) / np.linalg.norm(Ef.mean(0))
+    perto = Ef @ c >= np.percentile(Ef @ c, 30)   # tira os 30% mais longe (risada, voz cruzada, ruído)
+    c = Ef[perto].mean(0)
+    c = c / np.linalg.norm(c)
+    if np.median(Ef[perto] @ c) < 0.5 or max(float(c @ k) for k in conh) > 0.6:
+        return cs, None   # não é uma voz só, ou é parecida demais com uma que já existe
+    if len(sem_voz) == 1:
+        alvo = sem_voz[0]
+    else:
+        tt = np.array([t for t, _ in por_t])
+        conta = dict.fromkeys(sem_voz, 0)
+        for t in tf[perto]:
+            j = int(np.abs(tt - t).argmin())
+            if abs(tt[j] - t) <= 1.0:
+                for _, pe, _ in por_t[j][1]:
+                    if pe in conta:
+                        conta[pe] += 1
+        alvo = max(conta, key=conta.get)
+        if not conta[alvo]:
+            return cs, None
+    cs = list(cs)
+    cs[alvo] = c
+    return cs, alvo
 
 
 def mapa_episodio(video):
@@ -452,13 +512,15 @@ def mapa_episodio(video):
     acerto = min(acertos) if acertos else 0
     if len(falam) < 2 or acerto < 0.70:
         return {"ok": False, "motivo": "vozes não separam no episódio (acerto {:.0%}, {} pessoa(s) com voz)".format(acerto, len(falam))}
+    cs, aprendida = _voz_que_falta(a, ts, cs, por_t)
     pessoas = []
     for k, g in enumerate(gente):
         cxs = sorted(cx for _, q in por_t if len(q) >= 2 for cx, pe, _ in q if pe == k)
         pessoas.append({"id": k, "rosto": [round(float(x), 5) for x in C[g]],
                         "voz": [round(float(x), 5) for x in cs[k]] if cs[k] is not None else None,
-                        "cx": round(cxs[len(cxs) // 2], 3) if cxs else None, "peso": round(cont[g] / total, 3)})
-    return {"ok": True, "acerto": round(acerto, 2), "amostras": len(amostra), "pessoas": pessoas}
+                        "cx": round(cxs[len(cxs) // 2], 3) if cxs else None, "peso": round(cont[g] / total, 3)}
+                       | ({"voz_de": "fala fora do close"} if k == aprendida else {}))
+    return {"ok": True, "versao": 2, "acerto": round(acerto, 2), "amostras": len(amostra), "pessoas": pessoas}
 
 
 def _medir_com_mapa(video, mapa, confia=False):
@@ -516,7 +578,122 @@ def _medir_com_mapa(video, mapa, confia=False):
     return {"ts": ts, "vp": vp, "por_t": por_t, "acerto": acerto}
 
 
-def medir_voz(video, mapa=None, confia_mapa=False):
+FRASE_PAUSA = 0.35   # pausa entre palavras que separa duas frases (s)
+FRASE_MARGEM = 0.10  # semelhança da 1ª voz − a da 2ª abaixo disso = dúvida (CW Cast #50: host × convidado 0,20–0,53; host × host
+                     # 0,06–0,16; "Tipo, confeitaria" do mesmo host saiu como o outro com 0,06 e o recorte pulava entre eles)
+
+
+def frases_do_corte(transcript):
+    """[[ini, fim]] das frases do corte (linha do tempo do corte) pelas palavras do transcript.json: fecha a frase no ponto
+    final/interrogação/exclamação ou numa pausa ≥ FRASE_PAUSA."""
+    try:
+        ws = json.loads(Path(transcript).read_text(encoding="utf-8")).get("words") or []
+    except (OSError, ValueError):
+        return []
+    frases, cur = [], None
+    for w in ws:
+        a, b = float(w["start"]), float(w["end"])
+        if b <= a:
+            continue
+        if cur and a - cur[1] >= FRASE_PAUSA:
+            frases.append(cur)
+            cur = None
+        cur = [a, b] if cur is None else [cur[0], b]
+        if str(w.get("w") or w.get("word") or "").rstrip().endswith((".", "?", "!")):
+            frases.append(cur)
+            cur = None
+    if cur:
+        frases.append(cur)
+    return [[round(a, 2), round(b, 2)] for a, b in frases]
+
+
+def inicios_das_palavras(transcript):
+    try:
+        return [float(w["start"]) for w in json.loads(Path(transcript).read_text(encoding="utf-8")).get("words") or []]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _dividir_na_troca(frases, a, mapa, palavras):
+    """Frase longa (≥ 3 s) em que a voz troca de pessoa no meio (duas falas coladas, sem pausa: o "que..." do convidado e a
+    pergunta do host no fim do l46c14) é dividida na palavra mais próxima da troca. Só divide numa troca limpa: cada lado com
+    ≥ 2 janelas da mesma pessoa e margem ≥ 2 × FRASE_MARGEM."""
+    import numpy as np
+    pe = mapa["pessoas"]
+    com = [p["id"] for p in pe if p.get("voz")]
+    V = np.array([pe[k]["voz"] for k in com])
+    out = []
+    for x, y in frases:
+        if y - x < 3.0:
+            out.append([x, y])
+            continue
+        ts = list(np.arange(x + 0.75, y - 0.75 + 1e-6, 0.5))
+        S = _impressoes(a, ts) @ V.T
+        vs = [com[int(j)] for j in S.argmax(1)]
+        Ss = np.sort(S, 1)
+        mg = Ss[:, -1] - Ss[:, -2]
+        corte = None
+        for k in range(2, len(vs) - 1):
+            if len(set(vs[:k])) == 1 and len(set(vs[k:])) == 1 and vs[0] != vs[k] and min(mg[:k].mean(), mg[k:].mean()) >= 2 * FRASE_MARGEM:
+                corte = (ts[k - 1] + ts[k]) / 2
+                break
+        if corte is None:
+            out.append([x, y])
+            continue
+        bordas = [w for w in palavras if x < w < y]   # começo de palavra mais perto da troca
+        c = min(bordas, key=lambda w: abs(w - corte)) if bordas else corte
+        out += [[x, round(c, 2)], [round(c, 2), y]]
+    return out
+
+
+def _falas_por_frase(a, frases, mapa, por_t, extra):
+    """Quem fala decidido FRASE A FRASE (Felipe, 12/11/2026, l46c14: a pergunta do host, 6 s, virava pedaços de voz de 0,5–1 s
+    entre janelas sem energia, cada pedaço < VOZ_MIN era descartado e o recorte ficava no convidado). Cada frase recebe a voz
+    que mais aparece em janelas de 1,5 s dentro dela (uma janela centrada se a frase for curta). Frase sem voz clara (< 60% das
+    janelas) fica com quem falava antes. Devolve o mesmo formato de _falas, com "frases": [[ini, fim, pessoa, confiança]]."""
+    import numpy as np
+    pe = mapa["pessoas"]
+    com = [p["id"] for p in pe if p.get("voz")]
+    V = np.array([pe[k]["voz"] for k in com])
+    palavras = extra.pop("_palavras", None)
+    if palavras:
+        frases = _dividir_na_troca(frases, a, mapa, palavras)
+    ts, dono = [], []
+    for k, (x, y) in enumerate(frases):
+        meio = [(x + y) / 2] if y - x < 1.5 else list(np.arange(x + 0.75, y - 0.75 + 1e-6, 0.5))
+        ts += meio
+        dono += [k] * len(meio)
+    if not ts:
+        return None
+    S = _impressoes(a, ts) @ V.T
+    votos = [com[int(j)] for j in S.argmax(1)]
+    Ss = np.sort(S, 1)
+    margem = Ss[:, -1] - Ss[:, -2] if S.shape[1] > 1 else Ss[:, -1]
+    res, ant = [], None
+    for k, (x, y) in enumerate(frases):
+        vs = [v for v, d in zip(votos, dono) if d == k]
+        quem = max(set(vs), key=vs.count)
+        conf = vs.count(quem) / len(vs)
+        mg = float(np.mean([m for m, d in zip(margem, dono) if d == k]))
+        if ant is not None and (conf < 0.6 or (mg < FRASE_MARGEM and y - x < 1.5)):
+            quem = ant   # voz sem certeza (ou frase curta entre vozes parecidas, como dois hosts): fica com quem já falava
+        res.append([x, y, quem, round(conf, 2), round(mg, 2)])
+        ant = quem
+    falas = []
+    for x, y, quem, *_ in res:
+        if falas and falas[-1][2] == quem:
+            falas[-1][1] = y
+        else:
+            if falas:   # a troca fica no meio da pausa entre as frases
+                meio = (falas[-1][1] + x) / 2
+                falas[-1][1] = meio
+                x = meio
+            falas.append([x, y, quem])
+    return dict(extra, ok=True, modo="mapa", por_frase=True, falas=[[round(x, 2), round(y, 2), p] for x, y, p in falas],
+                frases=res, amostras=[{"t": t, "rostos": por_t[t]} for t in sorted(por_t)])
+
+
+def medir_voz(video, mapa=None, confia_mapa=False, frases=None, palavras=None):
     """{"ok", "motivo", "pessoa_da_voz", "falas": [[ini, fim, pessoa]], "amostras": [{"t", "rostos": [[cx, cy, pessoa]]}]}.
     ok=False quando não dá para confiar (uma pessoa só, rostos parecidos demais, vozes que não batem com quem aparece).
     Com o mapa do episódio (mapa_episodio) a voz e o rosto vêm dele (modo "mapa"); sem mapa ou se ele não bater, mede no corte."""
@@ -526,6 +703,12 @@ def medir_voz(video, mapa=None, confia_mapa=False):
         except Exception as e:   # modelo de voz indisponível (download, OpenCV antigo): mede só no corte, como antes
             print("mapa do episódio não usado:", e, file=sys.stderr)
             mm = None   # confia_mapa: conferência do vídeo final (lá o erro É o que se mede)
+        if mm and frases:
+            r = _falas_por_frase(_audio(video), frases, mapa, mm["por_t"],
+                                 {"acerto": round(mm["acerto"], 2) if mm["acerto"] is not None else None, "pessoas": len(mapa["pessoas"]),
+                                  "_palavras": palavras})
+            if r:
+                return r
         if mm:
             return _falas(list(zip(mm["ts"], mm["vp"])), None, mm["por_t"], "mapa",
                           {"acerto": round(mm["acerto"], 2) if mm["acerto"] is not None else None, "pessoas": len(mapa["pessoas"])})
@@ -628,6 +811,7 @@ def main():
     ap.add_argument("--mapa", help="mapa do episódio (json): com --voz classifica contra ele; com --criar-mapa grava nele")
     ap.add_argument("--criar-mapa", action="store_true", help="aprende quem é quem no episódio inteiro (video = bruto)")
     ap.add_argument("--confia-mapa", action="store_true", help="com --voz --mapa: não troca para a medida no corte se o mapa discordar")
+    ap.add_argument("--frases", help="com --voz --mapa: transcript.json do corte; quem fala é decidido frase a frase")
     a = ap.parse_args()
     if a.criar_mapa:
         try:
@@ -645,7 +829,8 @@ def main():
             mapa = json.loads(Path(a.mapa).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             mapa = None
-    txt = json.dumps(medir_voz(a.video, mapa, a.confia_mapa) if a.voz else medir(a.video, a.de, a.ate), ensure_ascii=False)
+    txt = json.dumps(medir_voz(a.video, mapa, a.confia_mapa, frases_do_corte(a.frases) if a.frases else None,
+                                inicios_das_palavras(a.frases) if a.frases else None) if a.voz else medir(a.video, a.de, a.ate), ensure_ascii=False)
     if a.json:
         Path(a.json).write_text(txt, encoding="utf-8")
     print(txt)

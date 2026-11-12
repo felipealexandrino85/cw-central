@@ -1897,7 +1897,8 @@ def _recorte_na_voz(pl, med, dur, pausas=()):
                     partes[-1][1] = ib
                 else:
                     partes.append([ia, ib, p])
-            partes = [x for x in partes if x[1] - x[0] >= falante.VOZ_MIN] or partes[:1]
+            minimo = FALA_HOST_MIN if med.get("por_frase") else falante.VOZ_MIN   # por frase a voz é firme: interjeição de 1 s conta (RE §5)
+            partes = [x for x in partes if x[1] - x[0] >= minimo] or partes[:1]
             if not partes:
                 novos.append(sh)
                 continue
@@ -2122,6 +2123,12 @@ def mapa_do_episodio(pasta_ep):
     pasta_ep = Path(pasta_ep)
     arq = pasta_ep / "mapa_falantes.json"
     bruto = next((b for b in pasta_ep.glob("bruto.*") if b.suffix != ".parcial"), None)
+    try:   # mapa da regra antiga (voz só de quem tem close sozinho): refaz uma vez (12/11/2026)
+        velho = json.loads(arq.read_text(encoding="utf-8")) if arq.exists() else {}
+        if velho.get("ok") and velho.get("versao") != 2:   # o que falhou não é refeito a cada corte (custa ~1 h)
+            arq.unlink()
+    except (OSError, ValueError):
+        arq.unlink(missing_ok=True)
     if not arq.exists() and bruto:
         with open(pasta_ep / ".mapa_falantes.lock", "w") as trava_:
             fcntl.flock(trava_, fcntl.LOCK_EX)
@@ -2139,16 +2146,18 @@ def mapa_do_episodio(pasta_ep):
         return None
 
 
+FALA_HOST_MIN = 0.8   # fala (frase decidida pela voz) mais curta que isso não move o recorte; a regra vigente pede o host na
+                      # tela mesmo numa interjeição de 1 s ("Usou um hack.", EP36_c1)
 ERRADA_TRAVA = 0.25   # pessoa errada na tela em mais que isso do corte: não vai para a prévia (Felipe, 09/11/2026)
 
 
-def pessoa_errada(video, mapa):
+def pessoa_errada(video, mapa, frases=None):
     """Mede NO VÍDEO QUE SAIU (vertical) os trechos com uma pessoa conhecida na tela enquanto OUTRA fala (voz e rosto contra o
     mapa do episódio). Devolve (fração do corte, [[ini, fim]]) ou None se não deu para medir."""
     import falante
     try:
-        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video), "--voz", "--mapa", str(mapa), "--confia-mapa"],
-                           capture_output=True, text=True, timeout=1500)
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video), "--voz", "--mapa", str(mapa), "--confia-mapa"]
+                           + (["--frases", str(frases)] if frases else []), capture_output=True, text=True, timeout=1500)
         med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
     except Exception as e:
         log("conferência de quem aparece não rodou:", e)
@@ -2187,8 +2196,8 @@ def corrigir_pessoa_errada(W, cid, plan, trechos, mapa, passo, higgs, lote_id, e
     if not base or not plan.exists():
         return False
     try:
-        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz", "--mapa", str(mapa), "--confia-mapa"],
-                           capture_output=True, text=True, timeout=1500)
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz", "--mapa", str(mapa), "--confia-mapa",
+                            "--frases", str(W / "work" / cid / "transcript.json")], capture_output=True, text=True, timeout=1500)
         med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
     except Exception as e:
         log("pessoa errada do", cid, ": medida no horizontal não rodou:", e)
@@ -2292,7 +2301,8 @@ def _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
     passo("Quem está falando (voz + rosto)")
     try:
         mapa = mapa_do_episodio(W.parent)
-        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz"] + (["--mapa", str(mapa)] if mapa else []),
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz"]
+                           + (["--mapa", str(mapa), "--frases", str(W / "work" / cid / "transcript.json")] if mapa else []),
                            capture_output=True, text=True, timeout=1500)
         med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {"ok": False, "motivo": (r.stderr or "sem saída")[-200:]}
     except Exception as e:
@@ -3404,7 +3414,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     mapa = mapa_do_episodio(W.parent)
     if mapa:   # trava de entrega: a pessoa errada na tela é MEDIDA no vídeo que saiu (Felipe, 09/11/2026)
         passo("Conferindo quem aparece × quem fala no vídeo final")
-        pe = pessoa_errada(final, mapa)
+        frases_final = work / "transcript.json" if mesma_linha_do_tempo(final, work) else None
+        pe = pessoa_errada(final, mapa, frases_final)
         pode_enq = not trava or trava.livres is None or "enquadramento" in trava.areas
         if pe and pe[1] and pode_enq and mesma_linha_do_tempo(final, work):
             passo("Pessoa errada na tela: corrigindo o enquadramento")
@@ -3419,7 +3430,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 motion()
                 limpar_final()
                 passo("Conferindo quem aparece × quem fala de novo")
-                pe = pessoa_errada(final, mapa) or pe
+                pe = pessoa_errada(final, mapa, frases_final) or pe
         if pe:
             frac, trechos = pe
             log("corte", cid, ": pessoa errada na tela em {:.0%} do corte".format(frac), trechos or "")
