@@ -962,6 +962,88 @@ def lados_pedidos(itens):
     return out
 
 
+PAPEL_RX = re.compile(r"\b(?:(host|apresentador[a]?|anfitri[ãa]o|entrevistador[a]?)|(convidad[oa]|entrevistad[oa]|guest))\b", re.I)
+MESMO_ROSTO = 0.55   # SFace entre episódios: a mesma pessoa deu 0,84–0,95 e pessoas diferentes ≤ 0,37 (mapas de 3 episódios, 12/11/2026)
+
+
+def papeis_pedidos(itens):
+    """Quem o editor pede na tela pelo PAPEL ("quem fala é o host, não o convidado"): [{"t0", "t1", "papel"}], papel host/convidado.
+    Antes só o lado (esquerda/direita) virava alvo e "é o host" ia para o Claude, que mudava pouco ou nada (l46c03, l46c05).
+    t0 None = o corte todo (vale onde essa pessoa fala e outra aparece); "no começo" = 0–6 s; "no final" = t0 −6 (os últimos 6 s).
+    Se o pedido também diz o lado, o lado manda (lados_pedidos)."""
+    out = []
+    for i in itens or []:
+        texto = i.get("pedido") or ""
+        if "enquadramento" not in i["areas"] and not PEDE_QUEM.search(texto) and not re.search(
+                r"aparec|na tela|mostr|recorte|\b[ée] (?:o|a) (?:host|apresentador|convidad|entrevistad)", texto, re.I):
+            continue   # "o nome do convidado na legenda" não é pedido de quem aparece
+        if lados_pedidos([i]) or re.search(r"\bmais (?:para|pra|à|a)\b|centraliz|ombro|\bcortad|\bborda|\bmeio da tela", texto, re.I):
+            continue   # lado pedido manda; posição dentro do quadro não é troca de pessoa
+        sim, nao = set(), set()
+        for m in PAPEL_RX.finditer(texto):
+            papel = "host" if m.group(1) else "convidado"
+            (nao if re.search(r"\b(n[ãa]o|nunca|nem)\b[^.,;]{0,25}$", texto[:m.start()], re.I) else sim).add(papel)
+        sim -= nao
+        dito = re.search(r"quem\s+(?:est[áa]\s+|t[áa]\s+)?fal\w*\s+(?:é|e|era)\s+(?:o|a)\s+(\w+)|deveria\s+(?:aparecer|estar)\s+(?:o|a)\s+(\w+)", texto, re.I)
+        dito = PAPEL_RX.match(dito.group(1) or dito.group(2)) if dito else None
+        if dito:   # "aparece o host mas quem fala é o convidado": vale quem fala
+            papel = "host" if dito.group(1) else "convidado"
+        elif len(sim) == 1:
+            papel = sim.pop()
+        elif not sim and len(nao) == 1:
+            papel = ({"host", "convidado"} - nao).pop()
+        else:
+            continue
+        t0, t1 = i.get("t0"), i.get("t1")
+        if t0 is None and re.search(r"come[çc]o|in[íi]cio|abertura", texto, re.I):
+            t0, t1 = 0.0, 6.0
+        elif t0 is None and re.search(r"\bfinal\b|\bfim\b", texto, re.I):
+            t0, t1 = -6.0, None
+        elif t0 is not None and (t1 is None or t1 - t0 < 1):
+            t1 = t0 + 4.0   # um instante citado: a frase daquele momento
+        out.append({"t0": t0, "t1": t1, "papel": papel})
+    return out
+
+
+def papeis_do_mapa(mapa):
+    """{pessoa: "host"|"convidado"} no mapa do episódio. Host é o rosto que também está no mapa de OUTRO episódio (o time do
+    CW Cast se repete, o convidado não). {} se não dá para saber (nenhum outro episódio, ou todos/ninguém reconhecido)."""
+    import numpy as np
+    mapa = Path(mapa)
+    try:
+        pessoas = json.loads(mapa.read_text(encoding="utf-8")).get("pessoas") or []
+    except (OSError, ValueError):
+        return {}
+    outros = []
+    for f in mapa.parent.parent.glob("*/mapa_falantes.json"):
+        if f.resolve() == mapa.resolve():
+            continue
+        try:
+            outros += [p["rosto"] for p in json.loads(f.read_text(encoding="utf-8")).get("pessoas") or [] if p.get("rosto")]
+        except (OSError, ValueError):
+            continue
+    if not outros or not pessoas:
+        return {}
+    O = np.array(outros, float)
+    O /= np.linalg.norm(O, axis=1, keepdims=True)
+    papeis = {}
+    for p in pessoas:
+        if p.get("rosto"):
+            v = np.array(p["rosto"], float)
+            papeis[p["id"]] = "host" if float((O @ (v / np.linalg.norm(v))).max()) >= MESMO_ROSTO else "convidado"
+    return papeis if len(set(papeis.values())) == 2 else {}
+
+
+def texto_entendido(itens, pessoas=()):
+    """O que a esteira entendeu do pedido (vai para a etapa e para "mudanças" na Central, para o time ver antes de culpar o vídeo)."""
+    quando = lambda a, b: ("o corte todo" if a is None else "últimos 6 s" if a < 0 else _mm(a) if b is None or b - a < 1
+                           else "{}–{}".format(_mm(a), _mm(b)))
+    partes = ["{} ({})".format("/".join(sorted(i["areas"])), quando(i["t0"], i["t1"])) for i in itens or []]
+    partes += ["recorte: {} na tela ({})".format(p["papel"], "onde fala" if p["t0"] is None else quando(p["t0"], p["t1"])) for p in pessoas]
+    partes += ["recorte: pessoa da {} ({})".format(l["lado"], quando(l["t0"], l["t1"])) for l in lados_pedidos(itens)]
+    return "; ".join(partes)
+
+
 def _sobrepor(segs, a, b, cx):
     """segs [(ini, fim, cx)] com [a, b) trocado por cx."""
     out = []
@@ -2108,7 +2190,7 @@ def aviso_enquadramento(work):
     duv = ("enquadramento em dúvida em " + ", ".join(seg(a, b) for a, b in e.get("duvidas") or [])
            + " (plano aberto sem sinal claro de quem fala; se estiver errado, peça o ajuste dizendo o lado: esquerda/direita)"
            if e.get("duvidas") else "")
-    imp = ("recorte no lado pedido pelo editor em " + ", ".join("{} ({})".format(seg(a, b), l) for a, b, l in e.get("impostos") or [])
+    imp = ("recorte na pessoa pedida pelo editor em " + ", ".join("{} ({})".format(seg(a, b), l) for a, b, l in e.get("impostos") or [])
            if e.get("impostos") else "")
     if e.get("errada"):   # medido no vídeo que saiu (voz × rosto pelo mapa do episódio)
         duv = "; ".join(x for x in [duv, "pessoa errada na tela em " + ", ".join(seg(a, b) for a, b in e["errada"])
@@ -2187,7 +2269,7 @@ def mesma_linha_do_tempo(video, work):
     return bool(d) and abs((ffprobe_dur(video) or 0) - d) <= 1.0
 
 
-def corrigir_pessoa_errada(W, cid, plan, trechos, mapa, passo, higgs, lote_id, estilo):
+def corrigir_pessoa_errada(W, cid, plan, trechos, mapa, passo, higgs, lote_id, estilo, centrar=False):
     """A pessoa errada MEDIDA no vídeo que saiu é corrigida antes da prévia, não só avisada (Felipe, 11/11/2026: l46c02 e l46c03
     abriram com quem ouve). No vídeo horizontal: se quem fala está na imagem no trecho, o recorte vai nele; se não está (close de
     quem ouve), o trecho é coberto com b-roll. Devolve True se mudou o plano (precisa renderizar de novo)."""
@@ -2226,8 +2308,177 @@ def corrigir_pessoa_errada(W, cid, plan, trechos, mapa, passo, higgs, lote_id, e
     resta = _sem_cobertura(resta, pl)
     if resta and not formato_canal2(estilo):
         _cobrir_fora(W, cid, pl, resta, [[x, y] for x, y, _ in med.get("falas") or []], passo, higgs, lote_id)
+    if mexeu and centrar:
+        centralizar(W, cid, plan, base, passo)
     (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
     return bool(mexeu or resta)
+
+
+def enquadramento_novo(lote, estilo):
+    """Chave antigo/novo do enquadramento (12/11/2026). Novo = centro pelos ombros medido em cada plano (centro.py). Só no Titeu
+    (Zeca, Breu e Nanquim têm enquadramento próprio). Volta ao antigo com CW_ENQUADRAMENTO=antigo no servidor ou, num lote só,
+    escrevendo "enquadramento antigo" nas instruções do lote."""
+    if formato_canal2(estilo) or formato_dark(estilo) or formato_nanquim(estilo):
+        return False
+    if re.search(r"enquadramento\s+(antigo|velho)", (lote or {}).get("instrucoes") or "", re.I):
+        return False
+    return os.environ.get("CW_ENQUADRAMENTO", "novo").strip().lower() != "antigo"
+
+
+def centralizar(W, cid, plan, base, passo):
+    """Enquadramento novo: o cx de cada plano vai para o meio dos ombros de quem já está no recorte (centro.py, no vídeo horizontal)."""
+    passo("Centralizando pelos ombros")
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "centro.py"), str(plan), str(base), "--aplicar"], capture_output=True, text=True, timeout=900)
+        res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {"ok": False, "motivo": (r.stderr or "sem saída")[-200:]}
+    except Exception as e:
+        log("centro do", cid, "não rodou:", e)
+        return 0
+    if not res.get("ok"):
+        log("centro do", cid, "não rodou:", res.get("motivo"))
+        return 0
+    aj = res.get("ajustes") or []
+    log("centro do", cid, ": {} plano(s) centralizado(s) pelos ombros".format(len(aj)),
+        ", ".join("{}–{} s {}→{}".format(x["ini"], x["fim"], x["cx_antes"], x["cx_novo"]) for x in aj)[:500],
+        "· sem medida em", res.get("sem_medida") or "nenhum", "· {} s".format(res.get("tempo_s")))
+    return len(aj)
+
+
+def pedidos_impostos(work):
+    """Trechos em que o recorte seguiu o pedido do editor (lado ou papel): a medida automática não desfaz nem acusa."""
+    try:
+        return [(float(a), float(b)) for a, b, *_ in json.loads((Path(work) / "enquadramento.json").read_text(encoding="utf-8")).get("impostos") or []]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _sem_os_pedidos(pe, work):
+    """Tira da "pessoa errada" medida os trechos em que o editor disse quem aparece (a decisão dele vale acima da medida)."""
+    imp = pedidos_impostos(work)
+    if not pe or not pe[1] or not imp:
+        return pe
+    frac, trechos = pe
+    fica = [t for t in trechos if not _cruza(imp, t[0], t[1])]
+    tot = sum(b - a for a, b in trechos)
+    return (frac * sum(b - a for a, b in fica) / tot if tot else 0.0), fica
+
+
+def pessoa_pedida(W, cid, plan, pedidos, mapa, passo, trava, higgs, lote_id, centrar=False):
+    """O editor pediu o host/convidado na tela (papeis_pedidos): o recorte vai nessa pessoa, reconhecida pelo rosto no mapa do
+    episódio, no trecho pedido; sem tempo no pedido, onde ela fala e outra aparece. Sem papéis conhecidos (episódio sem outro
+    mapa), o pedido com tempo vira "a outra pessoa" (a que não estava no recorte). Onde a pessoa pedida não está na imagem, o
+    trecho é coberto com b-roll (regra do time: nunca a pessoa errada na tela). Devolve o texto do que não deu para fazer."""
+    import falante
+    base = _base_do_corte(W, cid)
+    if not base or not plan.exists():
+        return "sem o vídeo horizontal do corte"
+    passo("Pondo na tela quem o editor pediu")
+    try:
+        r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(base), "--voz", "--mapa", str(mapa), "--confia-mapa",
+                            "--frases", str(W / "work" / cid / "transcript.json")], capture_output=True, text=True, timeout=1500)
+        med = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
+    except Exception as e:
+        log("pessoa pedida do", cid, "não rodou:", e)
+        return "a medida de quem aparece não rodou"
+    if med.get("modo") != "mapa":
+        return "o episódio não tem o mapa de quem é quem"
+    papeis = papeis_do_mapa(mapa)
+    dur = ffprobe_dur(base) or 0
+    pl = json.loads(plan.read_text(encoding="utf-8"))
+    amostras = sorted(med.get("amostras") or [], key=lambda x: x["t"])
+    meio = (amostras[1]["t"] - amostras[0]["t"]) / 2 if len(amostras) > 1 else 0.25
+    shots = sorted(pl.get("shots") or [], key=lambda s: float(s.get("start") or 0))
+    cortes = sorted({float(s.get("start") or 0) for s in pl.get("_base_shots") or shots})
+    pausas = pausas_do_corte(W / "work" / cid)
+
+    def no_recorte(x):   # quem está no recorte na amostra x (o rosto mais perto do cx do shot); None em tela dividida
+        sh = [s for s in shots if float(s.get("start") or 0) <= x["t"] + 0.01]
+        if not sh or sh[-1].get("stack"):
+            return None
+        cx = float(sh[-1].get("cx") or 0.5)
+        rs = [r_ for r_ in x["rostos"] if r_[2] >= 0 and abs(r_[0] - cx) <= 0.158]
+        return min(rs, key=lambda r_: abs(r_[0] - cx))[2] if rs else None
+
+    def ajeita(t):   # borda na troca de câmera mais perto (até 0,5 s), senão na pausa entre palavras
+        perto = [c_ for c_ in cortes if abs(c_ - t) <= 0.5]
+        return min(perto, key=lambda c_: abs(c_ - t)) if perto else _na_pausa(t, pausas)
+
+    decis, resta, impostos, nao_deu = [], [], [], []
+    for ped in pedidos:
+        alvos_papel = {p for p, r_ in papeis.items() if r_ == ped["papel"]}
+        if ped["t0"] is None:
+            if not papeis:
+                nao_deu.append("não sei quem é o {} neste episódio (sem outro episódio para comparar o rosto); diga o lado (esquerda/direita)".format(ped["papel"]))
+                continue
+            janelas = [(a, b) for a, b, p in med.get("falas") or [] if p in alvos_papel and b - a >= FALA_HOST_MIN]
+        else:
+            a = dur + ped["t0"] if ped["t0"] < 0 else ped["t0"]
+            janelas = [(max(0.0, a), dur if ped["t1"] is None else min(dur, ped["t1"]))]
+        for a, b in janelas:
+            amo = [x for x in amostras if a <= x["t"] < b]
+            if not amo:
+                continue
+            mostrados = [no_recorte(x) for x in amo]
+            if papeis:
+                alvos = alvos_papel
+            else:   # sem papéis: "a outra pessoa", a que estava no recorte é a errada
+                conh = [m for m in mostrados if m is not None]
+                errado = max(set(conh), key=conh.count) if conh else None
+                alvos = {r_[2] for x in amo for r_ in x["rostos"] if r_[2] >= 0 and r_[2] != errado}
+            if ped["t0"] is None and all(m in alvos for m in mostrados if m is not None):
+                continue   # pedido sem tempo: onde a pessoa pedida já está na tela, nada a fazer
+            falando = falante.quem_fala_em(med, a, b)
+            vis = [r_[2] for x in amo for r_ in x["rostos"] if r_[2] in alvos]
+            alvo = falando if falando in alvos else (max(set(vis), key=vis.count) if vis else None)
+            if ped["t0"] is not None and b < dur - 0.5:   # "no começo": vai até a pessoa pedida acabar a fala (no máximo +6 s)
+                b = max([b] + [min(fb, b + 6.0) for fa, fb, fp in med.get("falas") or [] if fp == alvo and fa < b <= fb])
+                b = min(dur, _na_pausa(b, pausas))
+                amo = [x for x in amostras if a <= x["t"] < b]
+            segs = []   # [ini, fim, [cx]] com cx vazio = a pessoa pedida não está na imagem
+            for x in amo:
+                c_ = next((r_[0] for r_ in x["rostos"] if r_[2] == alvo), None) if alvo is not None else None
+                if segs and (not segs[-1][2]) == (c_ is None) and (c_ is None or abs(segs[-1][2][-1] - c_) < 0.06):
+                    segs[-1][1] = x["t"] + meio
+                    if c_ is not None:
+                        segs[-1][2].append(c_)
+                else:
+                    segs.append([x["t"] - meio, x["t"] + meio, [] if c_ is None else [c_]])
+            segs[0][0], segs[-1][1] = a, b
+            for k in range(1, len(segs)):
+                segs[k][0] = segs[k - 1][1] = ajeita(segs[k][0])
+            for x0, x1, cxs in segs:
+                x0, x1 = (0.0 if x0 <= 1.0 else max(0.0, x0)), (dur if x1 >= dur - 0.5 else min(dur, x1))
+                if x1 - x0 < 0.6:
+                    continue
+                if cxs:
+                    decis.append((x0, x1, sorted(cxs)[len(cxs) // 2]))
+                    impostos.append([round(x0, 2), round(x1, 2), ped["papel"]])
+                else:
+                    resta.append((round(x0, 2), round(x1, 2)))
+                    impostos.append([round(x0, 2), round(x1, 2), ped["papel"] + " fora da imagem, coberto com b-roll"])
+    mexeu = _aplicar_recortes(pl, decis, dur)
+    if mexeu:
+        plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
+    resta = _sem_cobertura(resta, pl)
+    if resta:
+        if trava is not None and "broll" not in trava.areas:   # cobrir é o jeito de cumprir "não é o convidado" sem o host na imagem
+            trava.areas.add("broll")
+            trava.livres = chaves_livres(trava.areas)
+        _cobrir_fora(W, cid, pl, resta, [[x, y] for x, y, _ in med.get("falas") or []], passo, higgs, lote_id)
+    if centrar and mexeu:
+        centralizar(W, cid, plan, base, passo)
+    if impostos:
+        arq = W / "work" / cid / "enquadramento.json"
+        try:
+            e = json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            e = {}
+        e["impostos"] = (e.get("impostos") or []) + impostos
+        arq.write_text(json.dumps(e, ensure_ascii=False), encoding="utf-8")
+    log("pessoa pedida do", cid, ": papéis", papeis or "desconhecidos", "· recorte imposto em", impostos or "nenhum", "· coberto em", resta or "nenhum",
+        "· não deu:", "; ".join(nao_deu) or "nada")
+    (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
+    return "; ".join(nao_deu)
 
 
 def enquadrar_quem_fala(W, cid, plan, passo, trava):
@@ -2266,10 +2517,13 @@ def enquadrar_quem_fala(W, cid, plan, passo, trava):
         log("enquadramento do", cid, "pela boca não rodou:", e)
 
 
-def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id):
+def quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id, centrar=False):
     try:
         r = _quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote_id)
         enquadrar_quem_fala(W, cid, plan, passo, trava)
+        base = _base_do_corte(W, cid) if centrar and (not trava or trava.livres is None or "enquadramento" in trava.areas) else None
+        if base:   # enquadramento novo: depois de decidir QUEM fica no recorte, centraliza pelos ombros
+            centralizar(W, cid, plan, base, passo)
         return r
     finally:   # o vídeo montado só para medir tem ~1 GB: não fica no disco
         (W / "work" / cid / "base_quem_fala.mov").unlink(missing_ok=True)
@@ -2632,8 +2886,10 @@ PEDE_FIM = re.compile(r"final|finaliz|termin|acab|fim\b|cort(ou|ando|a) (a fala|
 PEDE_QUEM = re.compile(r"enquadr|quem (est[aá] |t[aá] )?fal|pessoa errada|c[aâ]mera|n[aã]o (est[aá] |t[aá] )?falando|foc", re.I)
 
 
-def medicoes(video, pedido):
-    """O que dá para MEDIR no vídeo sobre o pedido (vai para a conferência e para a correção): a voz no fim e quem fala na tela."""
+def medicoes(video, pedido, mapa=None, frases=None, work=None):
+    """O que dá para MEDIR no vídeo sobre o pedido (vai para a conferência e para a correção): a voz no fim e quem fala na tela.
+    Quem fala: pela voz + rosto contra o mapa do episódio quando ele existe (12/11/2026: o detector de boca acusou o convidado
+    "de boca fechada" num quadro e a conferência deu "não atendido" no l46c03, com a medida pela voz em 0% de pessoa errada)."""
     linhas = []
     if PEDE_FIM.search(pedido or ""):
         try:
@@ -2645,7 +2901,14 @@ def medicoes(video, pedido):
                     else "termina em silêncio/respiro"))
         except Exception as e:
             log("medição do fim falhou:", e)
-    if PEDE_QUEM.search(pedido or ""):
+    pe = pessoa_errada(video, mapa, frases) if mapa and PEDE_QUEM.search(pedido or "") else None
+    pe = _sem_os_pedidos(pe, work) if pe and work else pe   # onde o editor disse quem aparece, a decisão é dele
+    if pe is not None:
+        linhas.append("Quem aparece × quem fala no vídeo novo, pela VOZ e pelo ROSTO de cada pessoa (mapa do episódio; vale mais que a boca "
+                      "num quadro, que fecha no meio da fala): {}.".format(
+                          "PESSOA ERRADA NA TELA em " + ", ".join("{:.1f}–{:.1f} s".format(a, b) for a, b in pe[1]) if pe[1]
+                          else "nenhum trecho com a pessoa errada na tela"))
+    elif PEDE_QUEM.search(pedido or ""):
         try:
             r = subprocess.run([sys.executable, str(AQUI / "falante.py"), str(video)], capture_output=True, text=True, timeout=900)
             res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
@@ -2668,12 +2931,15 @@ def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     extra = list(extra) + termos_citados(c.get("ajuste"), transcript)
     quadros = quadros_do_ajuste(video, c.get("ajuste"), pasta, transcript, extra)
     leg = legendas_que_sairam(Path(transcript).parent) if transcript and "legenda" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))) else ""
-    med = medicoes(video, c.get("ajuste"))
     work = Path(transcript).parent if transcript else Path(video).parent.parent / "work" / Path(video).stem
+    mapa = mapa_do_episodio(work.parent.parent.parent) if PEDE_QUEM.search(c.get("ajuste") or "") else None
+    med = medicoes(video, c.get("ajuste"), mapa, work / "transcript.json" if mapa and mesma_linha_do_tempo(video, work) else None, work)
     duv, imp = aviso_enquadramento(work)
     if imp:   # o lado pedido foi aplicado direto no recorte: o detector de boca não decide se o pedido foi atendido
-        med += ("\nENQUADRAMENTO PELO LADO PEDIDO: " + imp + ". Nesses trechos o recorte foi posto na pessoa do lado pedido, sem o "
-                "detector; julgue pelos quadros se a pessoa daquele lado está na tela, e não pela medição de quem fala.")
+        med += ("\nENQUADRAMENTO PELA PESSOA PEDIDA: " + imp + ". Nesses trechos o recorte foi posto na pessoa pedida (lado: pela "
+                "posição; host/convidado: pelo rosto, o host é quem também aparece em outros episódios do CW Cast), sem o detector. "
+                "Julgue pelos quadros se o recorte mudou para uma pessoa inteira e bem enquadrada nesses trechos (ou se ficou coberto "
+                "com b-roll quando a pessoa pedida não estava na imagem), e não pela medição de quem fala.")
     if duv:
         med += "\nAVISO: " + duv + "."
     try:
@@ -2687,9 +2953,11 @@ def conferir_ajuste(c, video, pasta, prints, passo, transcript=None, extra=()):
     return r
 
 
-def registrar_conferencia(c, r, cid):
+def registrar_conferencia(c, r, cid, work=None):
     ok = bool(r.get("atendido"))
     srv("corte", id=c["id"], ajuste_conferido="sim" if ok else "nao", ajuste_nota=(r.get("motivo") or "")[:500])
+    if work:   # pedido não atendido vai para a prévia MARCADO (antes ia calado; l46c03 e l46c05, 12/11/2026)
+        Path(work, "conferencia.json").write_text(json.dumps({"atendido": ok, "motivo": r.get("motivo") or ""}, ensure_ascii=False), encoding="utf-8")
     destino = (r.get("destino") or "estilo").lower()
     try:
         if destino == "dicionario" and (r.get("certo") or "").strip():   # nome próprio vai para o dicionário das legendas, não para a receita
@@ -3110,6 +3378,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
 
     work = W / "work" / cid
     plan = work / "plan.json"
+    (work / "conferencia.json").unlink(missing_ok=True)   # o resultado da conferência é desta rodada
+    novo_enq = enquadramento_novo(lote, estilo)
     ini, fim = float(c["inicio"]), float(c["fim"])
     if not c.get("ajuste") or "corte" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))):
         novo_fim = fim_da_frase(ep["id"], fim, inicio=ini)
@@ -3126,12 +3396,18 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if fora is not None and fora >= FORA_TUDO:
             raise SemFalante("Não produzido: quem fala não aparece na imagem em {:.0%} do trecho (o vídeo do episódio mostra só quem "
                              "ouve). Escolha outro trecho ou peça o ajuste dizendo como cobrir.".format(fora))
-    trava = None
+    trava, pedidos_pessoa, entendido, nao_deu = None, [], "", ""
     if c.get("ajuste") and plan.exists():
         itens = itens_das_edicoes(c.get("edicoes")) if c.get("edicoes") else itens_ajuste(c["ajuste"])
         partir_da_versao(c, work)
         trava = Trava(work, itens)   # o que não foi pedido fica como está
-        log("ajuste do", cid, "áreas:", ",".join(sorted(trava.areas)))
+        pedidos_pessoa = papeis_pedidos(trava.itens)   # "quem fala é o host": vira alvo do recorte, sem passar pelo Claude
+        if pedidos_pessoa and "enquadramento" not in trava.areas:
+            trava.areas.add("enquadramento")
+            trava.livres = chaves_livres(trava.areas)
+        entendido = texto_entendido(trava.itens, pedidos_pessoa)
+        passo("Pedido entendido: " + entendido[:200])
+        log("ajuste do", cid, "áreas:", ",".join(sorted(trava.areas)), "· entendido:", entendido)
         fim_cedo = any(re.search(r"ainda (fosse|ia|iria) falar|ia falar|cortou (o que|a fala|o final|no meio)|faltou o final|terminou antes|"
                                  r"finalizou como|acabou (antes|do nada|no meio)|fim (ficou )?cortad", i["pedido"], re.I) for i in trava.itens)
         if "corte" in trava.areas and fim_cedo:   # "o final cortou o que ia falar": vai até a próxima frase fechar (antes nada mudava; cortes 47 e 69)
@@ -3256,7 +3532,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         if tirados:
             log("decisão do editor no", cid + ": tirado de novo", ", ".join(tirados))
     broll_ok()
-    quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"])   # pessoa errada na tela (falante fora da imagem)
+    quem_fala(W, cid, plan, passo, trava, estilo, higgs, lote["id"], centrar=novo_enq)   # pessoa errada na tela (falante fora da imagem)
+    if pedidos_pessoa:   # o editor disse quem deve aparecer: vale acima da medida de voz
+        mapa_ep = mapa_do_episodio(W.parent)
+        nao_deu = (pessoa_pedida(W, cid, plan, pedidos_pessoa, mapa_ep, passo, trava, higgs, lote["id"], novo_enq) if mapa_ep
+                   else "o episódio não tem o mapa de quem é quem; diga o lado (esquerda/direita)")
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
     if faltam and not formato_canal2(estilo):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
@@ -3374,7 +3654,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         feitas_txt = mec_ok + [texto_edicao(o) for o in c["edicoes"] if o.get("tipo") == "palavra"]
         registrar_conferencia(c, {"atendido": not mec_falhas, "destino": "pontual",
                                   "motivo": ("NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " if mec_falhas else "")
-                                  + ("Conferido no vídeo que saiu: " + "; ".join(feitas_txt) if feitas_txt else "")}, cid)
+                                  + ("Conferido no vídeo que saiu: " + "; ".join(feitas_txt) if feitas_txt else "")}, cid, work)
     elif c.get("ajuste") and final.exists():   # ajuste garantido: confere, e se não atendeu corrige uma vez e confere de novo
         if edicoes_ia or falhou_leg:   # a conferência julga o que foi para a IA e a troca de legenda que não apareceu no vídeo
             c = dict(c, ajuste="\n".join(texto_edicao(o) for o in (edicoes_ia or []) + [o for o in falhou_leg if o not in (edicoes_ia or [])]))
@@ -3400,9 +3680,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             r["motivo"] = "NÃO FICOU no vídeo: " + "; ".join(mec_falhas) + ". " + (r.get("motivo") or "")
         if not r.get("atendido") and higgs and resta <= 0:   # o time vê a causa real na Central
             r["motivo"] = "Orçamento de Higgsfield do lote acabou ({}/{}), então não deu para gerar b-roll novo. {}".format(usados, higgs, r.get("motivo") or "")
-        registrar_conferencia(c, r, cid)
-    if trava:   # o time vê na Central o que mudou de verdade
-        srv("corte", id=c["id"], ajuste_mudancas=trava.resumo()[:900])
+        if nao_deu:
+            r["motivo"] = "Do pedido de quem aparece, não deu: {}. {}".format(nao_deu, r.get("motivo") or "")
+        registrar_conferencia(c, r, cid, work)
+    if trava:   # o time vê na Central o que a esteira entendeu do pedido e o que mudou de verdade
+        srv("corte", id=c["id"], ajuste_mudancas=("entendi: {} · mudou: {}{}".format(entendido, trava.resumo(), " · não deu: " + nao_deu if nao_deu else ""))[:900])
     try:   # a ficha do corte (o time vê e edita ao lado da prévia)
         ficha = montar_ficha(W, cid, plan, work / "transcript.json")
         if ficha:
@@ -3415,11 +3697,11 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     if mapa:   # trava de entrega: a pessoa errada na tela é MEDIDA no vídeo que saiu (Felipe, 09/11/2026)
         passo("Conferindo quem aparece × quem fala no vídeo final")
         frases_final = work / "transcript.json" if mesma_linha_do_tempo(final, work) else None
-        pe = pessoa_errada(final, mapa, frases_final)
+        pe = _sem_os_pedidos(pessoa_errada(final, mapa, frases_final), work)
         pode_enq = not trava or trava.livres is None or "enquadramento" in trava.areas
         if pe and pe[1] and pode_enq and mesma_linha_do_tempo(final, work):
             passo("Pessoa errada na tela: corrigindo o enquadramento")
-            if corrigir_pessoa_errada(W, cid, plan, pe[1], mapa, passo, higgs, lote["id"], estilo):
+            if corrigir_pessoa_errada(W, cid, plan, pe[1], mapa, passo, higgs, lote["id"], estilo, novo_enq):
                 broll_ok()
                 rodar("Enquadramento", ["scripts/movimento.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
                 sem_logo()
@@ -3430,7 +3712,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 motion()
                 limpar_final()
                 passo("Conferindo quem aparece × quem fala de novo")
-                pe = pessoa_errada(final, mapa, frases_final) or pe
+                pe = _sem_os_pedidos(pessoa_errada(final, mapa, frases_final), work) or pe
         if pe:
             frac, trechos = pe
             log("corte", cid, ": pessoa errada na tela em {:.0%} do corte".format(frac), trechos or "")
@@ -4055,6 +4337,12 @@ def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
     duv, _ = aviso_enquadramento(Path(final).parent.parent / "work" / cid)
     if duv:   # plano aberto sem decisão de quem fala: vai para a prévia com o aviso, em vez de um palpite calado
         aviso = duv + ("; " + aviso if aviso else "")
+    try:   # a conferência disse que o pedido não foi atendido: o aviso vem primeiro
+        conf = json.loads((Path(final).parent.parent / "work" / cid / "conferencia.json").read_text(encoding="utf-8"))
+        if not conf.get("atendido"):
+            aviso = "PEDIDO DE AJUSTE NÃO ATENDIDO ({})".format((conf.get("motivo") or "sem motivo").strip()[:220]) + ("; " + aviso if aviso else "")
+    except (OSError, ValueError):
+        pass
     caminho = subir_previa(previa, c)
     PREVIAS_DRIVE.mkdir(parents=True, exist_ok=True)
     nome = "{}_{}{}".format(cid, re.sub(r"[^A-Za-z0-9]+", "-", c["titulo"])[:60].strip("-"), final.suffix)
