@@ -3135,9 +3135,13 @@ Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha
 Felipe (16/11/2026): nada de tagzinha/pílula/etiqueta/notificação pequena; motion ANIMADO de verdade, pelo menos UMA TELA A CADA
 ~10 s ({n_telas} telas neste corte), o resto do ritmo é b-roll:
 - cada tela 2,5–4 s, começando no instante em que a fala diz aquilo; nunca nos 3 primeiros segundos; pelo menos 3 s entre telas;
-- prefira as que se mexem e explicam: funil, grafico, barras, conta, pizza, numero (contando), medidor, linha_tempo, ranking,
-  comparacao, checklist, chat, comanda; "destaque" só se a fala não tiver nada que vire gráfico, e no máximo 1 por corte;
-- VARIE os tipos (nunca o mesmo tipo duas vezes seguidas); fundo "roxo" ou "amarelo" alternando;
+- use o catálogo INTEIRO (são 20 tipos): funil, grafico, barras, conta, pizza, numero (contando), medidor, linha_tempo, ranking,
+  comparacao, checklist, chat, comanda, celular, balanca, mapa, cliente_loja, tv_preco, fingir; "destaque" só se a fala não tiver
+  nada que vire gráfico, e no máximo 1 por corte;
+- Felipe (16/11/2026): os cortes estavam repetindo os mesmos motions. Cada tela do corte é de um tipo DIFERENTE, e estes tipos já
+  saíram nos últimos cortes do Glauton: {usados}. NÃO os use; escolha entre os outros o que traduz a fala (dá para contar a mesma
+  ideia de vários jeitos: um antes × depois vira barras, balanca, comparacao ou conta). Só repita um deles se nenhum outro couber;
+- fundo "roxo" ou "amarelo" alternando;
 - números e textos fiéis à fala (nada inventado; sem número dito, use tela sem número); títulos curtos (≤ 2 linhas de ~22 letras).
 Depois confira: rode
   python3 {motor} {saida} {final} {quadros} --quadros <tempos separados por vírgula: o meio de cada tela>
@@ -3167,6 +3171,33 @@ def fala_do_ass(ass):
     return sorted(out)
 
 
+TELAS_USADAS = Path.home() / ".cw-cortes" / "telas_glautin.json"   # tipos de tela dos últimos cortes do Glautin (rodízio)
+
+
+def telas_recentes(n=12):
+    """Tipos de tela dos últimos cortes do Glautin, do mais recente para trás, sem repetir (até n)."""
+    try:
+        hist = json.loads(TELAS_USADAS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for h in reversed(hist):
+        for t in h.get("tipos") or []:
+            if t not in out:
+                out.append(t)
+    return out[:n]
+
+
+def guardar_telas(cid, tipos):
+    try:
+        hist = json.loads(TELAS_USADAS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        hist = []
+    hist = [h for h in hist if h.get("cid") != cid] + [{"cid": cid, "tipos": tipos}]
+    TELAS_USADAS.parent.mkdir(parents=True, exist_ok=True)
+    TELAS_USADAS.write_text(json.dumps(hist[-30:], ensure_ascii=False), encoding="utf-8")
+
+
 def motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=False):
     motor = _motor_timeu()
     ass = work / "captions.ass"
@@ -3190,9 +3221,10 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=False):
         doc0 = {"so_motion": True, "sfx": True, "limpa_audio": False, "palavras": "palavras_final.json", "motion": [], "telas": [], "destaques": []}
         cenas.write_text(json.dumps(doc0, ensure_ascii=False), encoding="utf-8")   # a conferência com --quadros já sai sem legenda duplicada
         if so_telas:   # Glautin: só telas cheias animadas, uma a cada ~10 s (sem as tags pequenas)
+            usados = telas_recentes()
             claude(PLANO_TELAS.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
                                       exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
-                                      n_telas=max(2, round((dur - 3) / 10))),
+                                      n_telas=max(2, round((dur - 3) / 10)), usados=", ".join(usados) or "nenhum"),
                    W, "sonnet", ao_passo=passo, limite=1200)
         else:
             claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
@@ -3210,6 +3242,12 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=False):
         if not doc["motion"] and not doc["telas"]:
             return
         cenas.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        if so_telas:
+            tipos = [t.get("tipo") for t in doc["telas"] if t.get("tipo")]
+            repetidos = sorted({x for x in tipos if tipos.count(x) > 1} | (set(tipos) & set(usados)))
+            if repetidos:
+                log("telas do", cid, "repetem", ", ".join(repetidos))
+            guardar_telas(cid, tipos)
         passo("Motion design (render)")
         saida = work / "{}_motion.mov".format(cid)
         env = dict(os.environ, TIMEU_SFX_BANCO=str(motor.parents[2] / "assets" / "sfx_banco"))
