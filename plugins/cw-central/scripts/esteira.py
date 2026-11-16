@@ -596,6 +596,15 @@ Responda APENAS com JSON: {{"resumo": "2-3 linhas sobre o episódio e o critéri
 "fim": segundos, "gancho": "primeira frase do corte", "motivo": "por que funciona"}}]}}"""
 
 
+SELECAO_GLAUTIN = """
+
+ESTES CORTES SÃO DO GLAUTIN, para o PERFIL PESSOAL do Glauton Santos (CEO da Cardápio Web): escolha SÓ momentos em que quem fala
+é o Glauton, do começo ao fim do trecho (pergunta curta de quem entrevista no meio pode). Se ele não participa deste episódio,
+responda com a lista vazia e diga no "resumo" que ele não aparece. Prefira o que soa como fundador falando: opinião forte, número
+do setor, bastidor da empresa, decisão difícil, conselho para dono de restaurante. 30 a 60 s, uma ideia por corte, sem citar o
+podcast nem pedir para seguir o canal."""
+
+
 SELECAO_NANQUIM = """
 
 FORMATO NANQUIM (cortes reflexivos em P&B, para outro dono de restaurante parar e se reconhecer). Vale ACIMA das regras gerais:
@@ -661,12 +670,14 @@ def selecionar(lote, ep, estilo=None):
             extra = [W]
         if formato_nanquim(estilo):
             prompt += SELECAO_NANQUIM.format(n=lote["quantidade"])
+        if formato_glautin(estilo):
+            prompt += SELECAO_GLAUTIN
         if formato_canal2(estilo) or formato_dark(estilo) or formato_nanquim(estilo):   # Zeca, Breu e Nanquim: momentos que os outros canais ainda não usaram
             usados = srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []
             if usados:
                 prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
                            "(segundos do episódio): " + json.dumps(usados))
-        titeu = lote.get("linha") == "cortes" or (estilo or {}).get("slug") == "cw-cast-timeu"
+        titeu = lote.get("linha") == "cortes" or (estilo or {}).get("slug") == "cw-cast-timeu" or formato_glautin(estilo)
         n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) or formato_nanquim(estilo) or titeu else 0
         if n_res:   # Zeca, Nanquim e Titeu (Felipe, 16/11/2026): reservas para trocar os trechos em que quem fala não aparece na imagem
             prompt += ("\n\nDepois dos {n}, escolha mais {r} RESERVAS (momentos bons e diferentes, mesmo formato) na chave \"reservas\" do "
@@ -3121,6 +3132,82 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo):
         log("motion do Timeu no", cid, "ficou de fora:", str(e)[-300:])
 
 
+# ------------------------------------------------------------------------------------------- Glautin · Editorial (16/11/2026)
+# Cortes do Glauton (CEO) para o perfil pessoal dele. Modelo "A · Editorial" escolhido pelo Felipe + cartão de número do "B":
+# o corte do Titeu sai sem legenda/headline/logo/CTA (sem_legenda.py do CW-Fluido) e scripts/glautin.py desenha por cima.
+PLANO_GLAUTIN = """Você é o Glautin, editor dos cortes do Glauton Santos (CEO da Cardápio Web) para o perfil PESSOAL dele no Instagram.
+Ninguém está olhando: decida e responda. Corte "{titulo}", {dur:.1f} s. A fala do vídeo final (segundo: frase) está abaixo.
+{fala}
+
+Escreva o roteiro do modelo Editorial (sóbrio, de revista de negócios; nada de linguagem de anúncio):
+- titulo: 2 linhas curtas (até ~22 letras cada) com a ideia mais forte do corte, fiel à fala. A 2ª linha vai entre *asteriscos*
+  (sai em itálico dourado). Ex.: ["O cliente é seu,", "*não do aplicativo.*"]. Ele aparece nos primeiros 3 s.
+- chaves: 4 a 8 palavras ditas na fala, uma por ideia (o conceito central de cada frase forte: substantivo ou verbo, nunca artigo,
+  nunca número). Saem em itálico serifado com um fio embaixo.
+- numeros: só quando ele DIZ um número que importa (percentual, valor, quantidade, tempo). Cada um:
+  {{"de": s, "ate": s, "valor": 70, "prefixo": "", "sufixo": "%", "texto": "o que o número mede, em até 6 palavras"}};
+  "de" ~0,8 s antes de o número ser dito, 3 a 4 s na tela. No máximo 2. Nenhum número inventado ou arredondado.
+- nome_em: segundo (depois de 4 s) de uma pausa natural para aparecer "Glauton Santos · CEO Cardápio Web" por 3 s.
+Responda APENAS com JSON: {{"titulo": ["...", "*...*"], "chaves": [...], "numeros": [...], "nome_em": s}}"""
+
+
+def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=False):
+    fluido = _motor_fluido()
+    if not fluido or not final.exists():
+        raise Falhou("Glautin: falta o motor sem legenda (motion-vox/cwfluido) neste servidor")
+    lib = fluido.parent
+    passo("Glautin (corte sem legenda)")
+    r = subprocess.run([sys.executable, str(lib / "sem_legenda.py"), cid], cwd=str(W), capture_output=True, text=True, timeout=2400,
+                       env=dict(os.environ, CW_SEM_TEXTO="1"))
+    (pasta / "motor.log").open("a").write("\n$ glautin sem legenda\n{}\n{}\n".format(r.stdout[-1500:], r.stderr[-1500:]))
+    sem = W / "saida" / "{}_sem_legenda.mov".format(cid)
+    if r.returncode or not sem.exists():
+        raise Falhou("Glautin: render sem legenda: " + (r.stderr or r.stdout)[-300:])
+    passo("Glautin (tempo de cada palavra)")
+    r = subprocess.run([sys.executable, str(lib / "palavras.py"), str(sem), str(work / "palavras_final.json")],
+                       cwd=str(work), capture_output=True, text=True, timeout=900)
+    if r.returncode:
+        raise Falhou("Glautin: palavras: " + (r.stderr or r.stdout)[-300:])
+    import glautin
+    pal = json.loads((work / "palavras_final.json").read_text(encoding="utf-8"))
+    ass = work / "captions_final.ass"
+    ws = glautin.palavras_do_ass(ass, pal) if ass.exists() else pal
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(sem)],
+                               capture_output=True, text=True).stdout.strip() or 0)
+    roteiro = work / "glautin_plano.json"
+    try:   # ajuste que não é sobre o motion: o mesmo título, as mesmas palavras e números de antes
+        antigo = json.loads(roteiro.read_text(encoding="utf-8")) if reusar else None
+    except (OSError, ValueError):
+        antigo = None
+    if antigo:
+        r = antigo
+    else:
+        passo("Glautin (título, palavras-chave e números)")
+        fala = "\n".join("{:.1f}: {}".format(b["de"], " ".join(w["w"] for w in b["ws"])) for b in glautin.blocos(ws))
+        r = json_final(claude(PLANO_GLAUTIN.format(titulo=c.get("titulo") or "", dur=dur, fala=fala), W, "sonnet", ao_passo=passo, limite=600))
+    nome_em = float(r.get("nome_em") or 5.0)
+    plano = {"video": str(sem), "saida": str(W / "saida" / "{}_glautin.mp4".format(cid)), "palavras": ws,
+             "titulo": {"linhas": (r.get("titulo") or [])[:2], "de": 0.2, "ate": 3.6}, "chaves": r.get("chaves") or [],
+             "numeros": r.get("numeros") or [], "nome": {"texto": "Glauton Santos", "cargo": "CEO · Cardápio Web", "de": nome_em}}
+    if isinstance(plano["titulo"]["linhas"], str):
+        plano["titulo"]["linhas"] = [plano["titulo"]["linhas"]]
+    roteiro.write_text(json.dumps({"titulo": plano["titulo"]["linhas"], "chaves": plano["chaves"], "numeros": plano["numeros"],
+                                   "nome_em": nome_em}, ensure_ascii=False, indent=1), encoding="utf-8")
+    entrada = work / "glautin_render.json"
+    entrada.write_text(json.dumps(plano, ensure_ascii=False), encoding="utf-8")
+    passo("Render do Glautin (Editorial)")
+    r = subprocess.run([sys.executable, str(AQUI / "glautin.py"), str(entrada)], capture_output=True, text=True, timeout=3600)
+    (pasta / "motor.log").open("a").write("\n$ glautin.py\n{}\n{}\n".format(r.stdout[-1500:], r.stderr[-1500:]))
+    saida = Path(plano["saida"])
+    if r.returncode or not saida.exists() or saida.stat().st_size < 100000:
+        raise Falhou("Glautin: render: " + (r.stderr or r.stdout)[-300:])
+    shutil.move(str(final), str(final.with_name(final.stem + "_titeu" + final.suffix)))
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(saida), "-c", "copy", str(final)], timeout=600)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                    "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+    log("Glautin no", cid + ":", len(plano["chaves"]), "palavra(s)-chave,", len(plano["numeros"]), "número(s)")
+
+
 # ------------------------------------------------------------------------------------------- motion CW-Fluido (23/10/2026)
 # Referências do Felipe: câmera em cima e cena ilustrada embaixo + tipografia cinética fluida, na marca da CW.
 # O corte é renderizado também SEM legenda; o motor (motion-vox/lib/cwfluido) alterna câmera / tela dividida / motion em
@@ -3230,6 +3317,12 @@ def formato_dark(estilo):
 def formato_nanquim(estilo):
     """Estilo do Nanquim (marca na receita: "FORMATO: NANQUIM"): cortes reflexivos P&B, motor scripts/nanquim.py."""
     return "formato: nanquim" in ((estilo or {}).get("receita") or "").lower()
+
+
+def formato_glautin(estilo):
+    """Estilo do Glautin (marca na receita: "FORMATO: GLAUTIN"): cortes do Glauton (CEO) para o perfil pessoal dele, modelo
+    Editorial (scripts/glautin.py desenha título, legenda, palavra-chave, nome e cartão de número sobre o corte do Titeu)."""
+    return "formato: glautin" in ((estilo or {}).get("receita") or "").lower()
 
 
 def formato_02(estilo):
@@ -3540,7 +3633,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                    else "o episódio não tem o mapa de quem é quem; diga o lado (esquerda/direita)")
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
-    if faltam and not formato_canal2(estilo):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+    if faltam and not (formato_canal2(estilo) or formato_glautin(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
         log("ritmo do", cid, "faltando em:", faltam)
         passo("Completando o ritmo (um momento visual a cada 12 s)")
         claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
@@ -3556,13 +3649,19 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         rodar("Revisão final da legenda", [AQUI / "legendas.py", "final", "work/{}/transcript.json".format(cid),
                                            "--contexto", "{} · corte \"{}\"".format(ep["nome"], c["titulo"]), "--referencia", ref_txt], ok=(0, 1), tempo=300)
     def sem_logo():   # Canal 2 não leva a marca do CW Cast: o render sai sem o logo (antes ele era borrado depois, e o borrão aparecia)
-        if not formato_canal2(estilo):
+        if not (formato_canal2(estilo) or formato_glautin(estilo)):
             return
         try:
             pl = json.loads(plan.read_text(encoding="utf-8"))
+            antes = json.dumps(pl, sort_keys=True)
             so = pl.setdefault("style_overrides", {})
-            if (so.get("logo") or {}).get("file") != "":
-                so["logo"] = dict(so.get("logo") or {}, file="")
+            so["logo"] = dict(so.get("logo") or {}, file="")
+            if formato_glautin(estilo):   # perfil pessoal: sem card de CTA, sem clique na legenda, gancho sem flash nem estrondo
+                pl.pop("cta", None)
+                pl["enfase"] = []
+                so["captions"] = dict(so.get("captions") or {}, highlight_sfx={})
+                so["hook_fx"] = dict(so.get("hook_fx") or {}, bed="", riser="", flash="", boom={"file": ""}, whoosh={"file": ""})
+            if json.dumps(pl, sort_keys=True) != antes:
                 plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
         except (OSError, ValueError) as e:
             log("logo do", cid, "não saiu:", e)
@@ -3610,6 +3709,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     def motion():
         if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, reusar=bool(trava and trava.reaproveitar_motion()))
+        elif formato_glautin(estilo):   # Glautin: modelo Editorial desenhado por cima do corte sem legenda
+            motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()))
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
                           reusar=bool(trava and trava.reaproveitar_motion()))
@@ -4411,7 +4512,8 @@ def entregar(item):
                                + (["--destino", "Instagram Cardapio Web"] if reel else [])
                                + (["--programa", "canal2"] if item.get("canal2") else [])   # Zeca: pasta e aba próprias
                                + (["--programa", "dark"] if item.get("dark") else [])   # Breu: pasta e aba próprias
-                               + (["--programa", "nanquim"] if item.get("nanquim") else []),   # Nanquim: pasta e aba próprias
+                               + (["--programa", "nanquim"] if item.get("nanquim") else [])   # Nanquim: pasta e aba próprias
+                               + (["--programa", "glautin"] if item.get("glautin") else []),   # Glautin: pasta e aba próprias
                                capture_output=True, text=True, timeout=900)
         m = re.search(r"P-(\d+)", saida.stdout)
         if not m:
