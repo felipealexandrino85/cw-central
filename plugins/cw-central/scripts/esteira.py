@@ -3190,16 +3190,22 @@ PLANO_GLAUTIN = """Você é o Glautin, editor dos cortes do Glauton Santos (CEO 
 Ninguém está olhando: decida e responda. Corte "{titulo}", {dur:.1f} s. A fala do vídeo final (segundo: frase) está abaixo.
 {fala}
 
-Escreva o roteiro do modelo Editorial (sóbrio, de revista de negócios; nada de linguagem de anúncio):
-- titulo: 2 linhas curtas (até ~22 letras cada) com a ideia mais forte do corte, fiel à fala. A 2ª linha vai entre *asteriscos*
-  (sai em itálico dourado). Ex.: ["O cliente é seu,", "*não do aplicativo.*"]. Ele aparece nos primeiros 3 s.
-- chaves: 4 a 8 palavras ditas na fala, uma por ideia (o conceito central de cada frase forte: substantivo ou verbo, nunca artigo,
-  nunca número). Saem em itálico serifado com um fio embaixo.
-- numeros: só quando ele DIZ um número que importa (percentual, valor, quantidade, tempo). Cada um:
-  {{"de": s, "ate": s, "valor": 70, "prefixo": "", "sufixo": "%", "texto": "o que o número mede, em até 6 palavras"}};
-  "de" ~0,8 s antes de o número ser dito, 3 a 4 s na tela. No máximo 2. Nenhum número inventado ou arredondado.
-- nome_em: segundo (depois de 4 s) de uma pausa natural para aparecer "Glauton Santos · CEO Cardápio Web" por 3 s.
-Responda APENAS com JSON: {{"titulo": ["...", "*...*"], "chaves": [...], "numeros": [...], "nome_em": s}}"""
+Escreva o roteiro de motion do modelo Editorial (sóbrio, de revista de negócios, mas ANIMADO: Felipe pediu mais motion).
+- titulo: 2 linhas curtas (até ~24 letras cada) com a ideia mais forte do corte, fiel à fala. A 2ª linha vai entre *asteriscos*
+  (itálico dourado). Ex.: ["Entrevistei 10 gestores.", "*Nenhum sabia o ROI.*"]. Aparece nos primeiros 3,6 s.
+- chaves: 5 a 9 palavras ditas na fala, uma por frase forte (substantivo ou verbo central; nunca artigo nem número).
+- cenas: UMA PEÇA A CADA 6 A 8 s no corte inteiro depois do título (~{n_cenas} peças), sem sobrepor (0,6 s entre elas), começando
+  quando a fala diz aquilo. Varie os tipos; textos fiéis à fala (pode limpar vício de linguagem, nunca inventar):
+  * citacao  {{"tipo":"citacao","de":s,"ate":s,"texto":"a frase mais forte, até 12 palavras"}} 2,5–4 s; 1 ou 2 por corte; o vídeo
+    desfoca e a frase entra grande. Use na frase de impacto (opinião, conclusão, virada).
+  * palavra  {{"tipo":"palavra","de":s,"ate":s,"texto":"1 a 3 palavras"}} 1,5–2,5 s: o conceito do momento, grande no alto.
+  * numero   {{"tipo":"numero","de":s,"ate":s,"valor":70,"prefixo":"R$ ","sufixo":"%","texto":"o que mede, até 6 palavras"}} 3–4 s;
+    só número DITO; "de" ~0,8 s antes de ele dizer.
+  * lista    {{"tipo":"lista","de":s,"ate":s,"itens":[["item curto",s],["item",s]]}} 2 a 4 itens (o s = quando cada um é dito),
+    no máximo 8 s; só quando ele enumera passos, números ou exemplos.
+  * zoom     {{"tipo":"zoom","de":s,"ate":s}} 0,6–1,5 s na frase de impacto (pode cair junto da fala, fora das outras peças); 2 a 4.
+- nome_em: segundo (depois de 4 s, longe de uma citação) para aparecer "Glauton Santos · CEO Cardápio Web" por 3 s.
+Responda APENAS com JSON: {{"titulo": ["...", "*...*"], "chaves": [...], "cenas": [...], "nome_em": s}}"""
 
 
 def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=False):
@@ -3235,15 +3241,17 @@ def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=Fals
     else:
         passo("Glautin (título, palavras-chave e números)")
         fala = "\n".join("{:.1f}: {}".format(b["de"], " ".join(w["w"] for w in b["ws"])) for b in glautin.blocos(ws))
-        r = json_final(claude(PLANO_GLAUTIN.format(titulo=c.get("titulo") or "", dur=dur, fala=fala), W, "sonnet", ao_passo=passo, limite=600))
+        r = json_final(claude(PLANO_GLAUTIN.format(titulo=c.get("titulo") or "", dur=dur, fala=fala, n_cenas=max(3, int((dur - 4) / 7))),
+                              W, "sonnet", ao_passo=passo, limite=900))
     nome_em = float(r.get("nome_em") or 5.0)
     plano = {"video": str(sem), "saida": str(W / "saida" / "{}_glautin.mp4".format(cid)), "palavras": ws,
              "titulo": {"linhas": (r.get("titulo") or [])[:2], "de": 0.2, "ate": 3.6}, "chaves": r.get("chaves") or [],
-             "numeros": r.get("numeros") or [], "nome": {"texto": "Glauton Santos", "cargo": "CEO · Cardápio Web", "de": nome_em}}
+             "cenas": r.get("cenas") or [], "numeros": r.get("numeros") or [],
+             "nome": {"texto": "Glauton Santos", "cargo": "CEO · Cardápio Web", "de": nome_em}}
     if isinstance(plano["titulo"]["linhas"], str):
         plano["titulo"]["linhas"] = [plano["titulo"]["linhas"]]
-    roteiro.write_text(json.dumps({"titulo": plano["titulo"]["linhas"], "chaves": plano["chaves"], "numeros": plano["numeros"],
-                                   "nome_em": nome_em}, ensure_ascii=False, indent=1), encoding="utf-8")
+    roteiro.write_text(json.dumps({"titulo": plano["titulo"]["linhas"], "chaves": plano["chaves"], "cenas": plano["cenas"],
+                                   "numeros": plano["numeros"], "nome_em": nome_em}, ensure_ascii=False, indent=1), encoding="utf-8")
     entrada = work / "glautin_render.json"
     entrada.write_text(json.dumps(plano, ensure_ascii=False), encoding="utf-8")
     passo("Render do Glautin (Editorial)")
@@ -3256,7 +3264,7 @@ def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=Fals
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(saida), "-c", "copy", str(final)], timeout=600)
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
                     "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
-    log("Glautin no", cid + ":", len(plano["chaves"]), "palavra(s)-chave,", len(plano["numeros"]), "número(s)")
+    log("Glautin no", cid + ":", len(plano["chaves"]), "palavra(s)-chave,", len(plano["cenas"]), "peça(s) de motion")
 
 
 # ------------------------------------------------------------------------------------------- motion CW-Fluido (23/10/2026)

@@ -444,6 +444,201 @@ def _voz_que_falta(a, ts, cs, por_t, n_max=1500):
     return cs, alvo
 
 
+# ------------------------------------------------------------------ mapa sem close (16/11/2026)
+# Episódio gravado no estúdio novo (Ep.2-001, lote 58): 4 pessoas e câmeras SEMPRE em dupla ou no plano aberto, nenhum close de
+# uma pessoa só. O mapa aprendia a voz nos closes, achou 0 e a esteira caía no método antigo (boca × voz no corte), que erra
+# com 2+ rostos na tela: "quase todo o lote com a pessoa errada". Aqui as vozes do episódio são separadas pelo timbre (CAM++)
+# e cada voz é ligada ao rosto cuja BOCA mais mexe enquanto ela fala, comparando os rostos do mesmo quadro (dupla/aberto).
+BOCA_ROSTO = 0.035  # rosto mínimo (fração da largura) para medir a boca
+_DET = {}
+
+
+def _boca_no_trecho(video, t, dur=1.2, lado=960):
+    """[(emb SFace, cx, movimento médio da boca)] dos rostos de um trecho curto (15 q/s): a boca mexendo além da cabeça toda."""
+    import cv2
+    import numpy as np
+    W, H = tamanho(video)
+    w2, h2 = lado, int(round(H * lado / W / 2) * 2)
+    aqui = Path(__file__).resolve().parent
+    if ("yn", w2, h2) not in _DET:
+        _DET[("yn", w2, h2)] = cv2.FaceDetectorYN.create(str(aqui / "face_detection_yunet.onnx"), "", (w2, h2), 0.7, 0.3, 5000)
+        _DET["sf"] = cv2.FaceRecognizerSF.create(str(aqui / "face_recognition_sface.onnx"), "")
+    yn, sf = _DET[("yn", w2, h2)], _DET["sf"]
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", "{:.2f}".format(max(0.0, t - dur / 2)), "-i", str(video), "-t",
+                        "{:.2f}".format(dur), "-vf", "fps=15,scale={}:{}".format(w2, h2), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                       capture_output=True)
+    n = len(r.stdout) // (w2 * h2 * 3)
+    if n < 6:
+        return []
+    qs = np.frombuffer(r.stdout[:n * w2 * h2 * 3], np.uint8).reshape(n, h2, w2, 3)
+    trilhas, ant = [], None
+    for k in range(n):
+        im = qs[k]
+        cinza = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if ant is not None and np.abs(cinza[::8, ::8] - ant[::8, ::8]).mean() > 25:   # troca de câmera no meio: para aqui
+            break
+        _, fs = yn.detect(im)
+        for f in (fs if fs is not None else []):
+            x, y, w, h = (float(v) for v in f[:4])
+            if w < w2 * BOCA_ROSTO:
+                continue
+            cx = (x + w / 2) / w2
+            tr = next((q for q in trilhas if abs(q["cx"] - cx) < 0.05), None)
+            if tr is None:
+                tr = {"cx": cx, "f": f, "im": im, "mov": []}
+                trilhas.append(tr)
+            if ant is None:
+                continue
+            mrx, mry, mlx, mly = (float(v) for v in f[10:14])
+            mx, my, mw = (mrx + mlx) / 2, (mry + mly) / 2, abs(mlx - mrx)
+            x0, x1 = int(max(0, mx - mw * 0.7)), int(min(w2, mx + mw * 0.7))
+            y0, y1 = int(max(0, my - h * 0.10)), int(min(h2, my + h * 0.25))
+            ex0, ex1, ey0, ey1 = int(max(0, x + w * .15)), int(min(w2, x + w * .85)), int(max(0, y + h * .2)), int(min(h2, y + h * .45))
+            if x1 - x0 >= 3 and y1 - y0 >= 3 and ex1 > ex0 and ey1 > ey0:
+                d = np.abs(cinza[y0:y1, x0:x1] - ant[y0:y1, x0:x1]).mean()
+                e = np.abs(cinza[ey0:ey1, ex0:ex1] - ant[ey0:ey1, ex0:ex1]).mean()
+                tr["mov"].append(float(d - 0.8 * e))
+        ant = cinza
+    out = []
+    for tr in trilhas:
+        if len(tr["mov"]) < 5:
+            continue
+        e = sf.feature(sf.alignCrop(tr["im"], tr["f"])).flatten()
+        out.append((e / (np.linalg.norm(e) + 1e-9), tr["cx"], float(np.mean(tr["mov"]))))
+    return out
+
+
+def _mapa_sem_close(video, a, ts, rostos, n_voz=2400, n_boca=420, log=None):
+    """Vozes do episódio (k-means no CAM++) ligadas aos rostos pela boca. rostos = centros SFace das pessoas do episódio.
+    Devolve (cs, acerto, detalhes): cs[pessoa] = centro da voz ou None."""
+    import numpy as np
+    P = len(rostos)
+    amostra = [float(t) for t in ts[::max(1, len(ts) // n_voz)]]
+    E = _impressoes(a, amostra)
+    # k-means esférico com k = número de pessoas; vozes que ficam parecidas demais (> 0,7) são a mesma pessoa
+    melhor = None
+    for sem in range(6):
+        r = np.random.default_rng(sem)
+        V = E[r.choice(len(E), P, replace=False)]
+        for _ in range(30):
+            lab = (E @ V.T).argmax(1)
+            V = np.array([E[lab == j].mean(0) if (lab == j).any() else V[j] for j in range(P)])
+            V /= np.linalg.norm(V, axis=1, keepdims=True) + 1e-9
+        tot = float((E @ V.T).max(1).sum())
+        if melhor is None or tot > melhor[0]:
+            melhor = (tot, lab, V)
+    _, lab, V = melhor
+    S = E @ V.T
+    ordem = np.sort(S, 1)
+    firme = (ordem[:, -1] >= 0.5) & (ordem[:, -1] - ordem[:, -2] >= 0.12)
+    k = len(V)
+    R = np.array(rostos)
+    votos, vistos = np.zeros((k, P)), np.zeros((k, P))
+    rg = np.random.default_rng(0)
+    por_voz = max(20, n_boca // k)
+    medidos = 0
+    for v in range(k):
+        idx = np.where(firme & (lab == v))[0]
+        if len(idx) > por_voz:
+            idx = np.sort(rg.choice(idx, por_voz, replace=False))
+        for i in idx:
+            fs = _boca_no_trecho(video, amostra[i])
+            ids = []
+            for emb, cx, mov in fs:
+                sims = R @ emb
+                pe = int(sims.argmax())
+                if sims[pe] >= MAPA_ROSTO and np.isfinite(mov):
+                    ids.append((pe, mov))
+            if len({pe for pe, _ in ids}) < 2:
+                continue   # um rosto só (ou nenhum conhecido): não dá para comparar bocas
+            medidos += 1
+            ids.sort(key=lambda x: -x[1])
+            for pe in {pe for pe, _ in ids}:
+                vistos[v, pe] += 1
+            if ids[0][1] - ids[1][1] > 0.15 * max(abs(ids[1][1]), 0.5):
+                votos[v, ids[0][0]] += 1
+    taxa = votos / np.maximum(vistos, 1)
+    cs, usadas, liga = [None] * P, set(), []
+    for v, pe in sorted(((v, pe) for v in range(k) for pe in range(P)), key=lambda x: -taxa[x]):
+        if v in usadas or cs[pe] is not None or votos[v, pe] < 8 or taxa[v, pe] < 0.45:
+            continue
+        cs[pe] = V[v]
+        usadas.add(v)
+        liga.append((v, pe, round(float(taxa[v, pe]), 2), int(votos[v, pe]), int(vistos[v, pe])))
+    acerto = float(np.mean([x[2] for x in liga])) if liga else 0.0
+    det = {"vozes": k, "amostras_voz": len(E), "firmes": int(firme.sum()), "bocas_medidas": medidos, "ligacoes": liga,
+           "votos": votos.astype(int).tolist(), "vistos": vistos.astype(int).tolist()}
+    if log:
+        log(det)
+    return cs, acerto, det
+
+
+def _mapa_pela_boca(video, a, ts, rostos, n_boca=600, conhecidas=None, log=None):
+    """A boca rotula, a voz aprende: em cada instante sorteado, a pessoa cuja boca mexe claramente mais que as outras do quadro
+    vira o rótulo daquele pedaço de voz; a voz de cada pessoa é o centro dos seus pedaços (sem os 30% mais longe) e o acerto é
+    conferido em metade dos pedaços que não entrou (como nos closes). conhecidas = {pessoa: voz da ficha} (ex.: o Glauton):
+    o pedaço com a voz da ficha ( ≥ 0,6) vira rótulo dela sem olhar a boca. Devolve (cs, acerto, detalhes)."""
+    import numpy as np
+    P = len(rostos)
+    R = np.array(rostos)
+    rg = np.random.default_rng(0)
+    tt = np.array(ts, float)
+    idx = np.sort(rg.choice(len(tt), min(n_boca, len(tt)), replace=False))
+    amostra = [float(tt[i]) for i in idx]
+    E = _impressoes(a, amostra)
+    ys = np.full(len(amostra), -1)
+    conh = {pe: np.asarray(v, float) for pe, v in (conhecidas or {}).items()}
+    pela_ficha = 0
+    for k, t in enumerate(amostra):
+        for pe, v in conh.items():
+            if float(E[k] @ v) >= 0.6:
+                ys[k] = pe
+                pela_ficha += 1
+        if ys[k] >= 0:
+            continue
+        ids = []
+        for emb, cx, mov in _boca_no_trecho(video, t):
+            sims = R @ emb
+            pe = int(sims.argmax())
+            if sims[pe] >= MAPA_ROSTO and np.isfinite(mov):
+                ids.append((pe, mov))
+        if len({pe for pe, _ in ids}) < 2:
+            continue
+        ids.sort(key=lambda x: -x[1])
+        if ids[0][1] > 0.5 and ids[0][1] - ids[1][1] > 0.25 * max(abs(ids[1][1]), 0.5):
+            ys[k] = ids[0][0]
+    rot = ys >= 0
+    grupo = (np.arange(len(ys)) // 10) % 2
+
+    def centros(sel):
+        cs = []
+        for pe in range(P):
+            X = E[sel & (ys == pe)]
+            if len(X) < 15:
+                cs.append(None)
+                continue
+            c = X.mean(0) / np.linalg.norm(X.mean(0))
+            c = X[X @ c >= np.percentile(X @ c, 30)].mean(0)
+            cs.append(c / np.linalg.norm(c))
+        return cs
+
+    acertos = []
+    for g in (0, 1):
+        cs = centros(rot & (grupo == g))
+        ok = [pe for pe in range(P) if cs[pe] is not None]
+        te = rot & (grupo != g) & np.isin(ys, ok)
+        if len(ok) >= 2 and te.sum() >= 20:
+            pred = np.array(ok)[(E[te] @ np.array([cs[pe] for pe in ok]).T).argmax(1)]
+            acertos.append(float(np.mean([(pred[ys[te] == pe] == pe).mean() for pe in ok])))
+    cs = centros(rot)
+    det = {"amostras": len(amostra), "rotuladas": int(rot.sum()), "pela_ficha": pela_ficha,
+           "por_pessoa": [int((ys == pe).sum()) for pe in range(P)], "acertos": [round(x, 2) for x in acertos],
+           "entre_vozes": [[None if (x is None or y is None) else round(float(x @ y), 2) for y in cs] for x in cs]}
+    if log:
+        log(det)
+    return cs, (min(acertos) if acertos else 0.0), det
+
+
 def mapa_episodio(video):
     """{"ok", "motivo", "pessoas": [{"id", "rosto": [128], "voz": [192] ou None, "cx": lado médio no plano aberto, "peso"}],
     "acerto"}. A voz de cada pessoa é aprendida nos closes dela (o episódio editado mostra quem fala quase sempre) e conferida
