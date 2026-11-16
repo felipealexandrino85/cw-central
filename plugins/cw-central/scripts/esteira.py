@@ -3384,6 +3384,13 @@ def formato_glautin(estilo):
     return "formato: glautin" in ((estilo or {}).get("receita") or "").lower()
 
 
+def glautin_editorial(estilo):
+    """Glautin no modelo Editorial (glautin.py, 16/11/2026). Desde o mesmo dia o padrão é o visual dos cortes de referência do
+    Felipe (Downloads › Cortes Glauton: headline na caixa roxa, legenda branca curta, b-roll no gancho) com o motion da marca
+    (timeu01); o Editorial só volta com "MOTION: EDITORIAL" na receita."""
+    return formato_glautin(estilo) and "motion: editorial" in ((estilo or {}).get("receita") or "").lower()
+
+
 def formato_02(estilo):
     """O estilo escolhido no pedido é o "Padrão #02"? (marca na receita: "FORMATO: PADRÃO #02")."""
     return "formato: padrão #02" in ((estilo or {}).get("receita") or "").lower()
@@ -3715,11 +3722,15 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             antes = json.dumps(pl, sort_keys=True)
             so = pl.setdefault("style_overrides", {})
             so["logo"] = dict(so.get("logo") or {}, file="")
-            if formato_glautin(estilo):   # perfil pessoal: sem card de CTA, sem clique na legenda, gancho sem flash nem estrondo
+            if formato_glautin(estilo):   # perfil pessoal: sem card de CTA, sem tela de ênfase, sem clique na legenda
                 pl.pop("cta", None)
                 pl["enfase"] = []
                 so["captions"] = dict(so.get("captions") or {}, highlight_sfx={})
-                so["hook_fx"] = dict(so.get("hook_fx") or {}, bed="", riser="", flash="", boom={"file": ""}, whoosh={"file": ""})
+                if glautin_editorial(estilo):   # o Editorial desenha os textos dele: gancho sem flash nem estrondo
+                    so["hook_fx"] = dict(so.get("hook_fx") or {}, bed="", riser="", flash="", boom={"file": ""}, whoosh={"file": ""})
+                else:   # como nos cortes de referência do Glauton: legenda e headline brancas, sem o amarelo do Titeu
+                    so["captions"]["highlight"] = "#FFFFFF"
+                    so["headline"] = dict(so.get("headline") or {}, highlight="#FFFFFF")
             if json.dumps(pl, sort_keys=True) != antes:
                 plan.write_text(json.dumps(pl, ensure_ascii=False, indent=1), encoding="utf-8")
         except (OSError, ValueError) as e:
@@ -3768,8 +3779,10 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     def motion():
         if formato_02(estilo):   # Padrão #02: fotos reais, transições com desfoque e SFX (formato ROI Hunters, 24/10/2026)
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, reusar=bool(trava and trava.reaproveitar_motion()))
-        elif formato_glautin(estilo):   # Glautin: modelo Editorial desenhado por cima do corte sem legenda
+        elif glautin_editorial(estilo):   # Glautin no modelo Editorial: desenhado por cima do corte sem legenda
             motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()))
+        elif formato_glautin(estilo):   # Glautin (padrão): o corte do Titeu + motion na marca da Cardápio Web (timeu01)
+            motion_timeu(cid, W, work, final, previa, pasta, passo)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
                           reusar=bool(trava and trava.reaproveitar_motion()))
