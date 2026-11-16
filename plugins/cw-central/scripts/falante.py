@@ -639,6 +639,65 @@ def _mapa_pela_boca(video, a, ts, rostos, n_boca=600, conhecidas=None, log=None)
     return cs, (min(acertos) if acertos else 0.0), det
 
 
+FICHA_ROSTO = 0.55       # SFace: rosto do episódio = pessoa da ficha (mesma pessoa 0,79–0,95; outra ≤ 0,34 no Ep.2-001)
+CONVIDADOS_VOZ = 0.45    # janela com a voz abaixo disso para todas as fichas = fala de quem não tem ficha (os convidados)
+
+
+def fichas_conhecidas():
+    """Fichas de voz e rosto das pessoas de casa (~/.cw-cortes/pessoas/*.json, feitas por pessoas.py; nunca no repositório)."""
+    out = []
+    for arq in sorted((Path.home() / ".cw-cortes" / "pessoas").glob("*.json")):
+        try:
+            f = json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if f.get("rosto") and f.get("voz"):
+            out.append(f)
+    return out
+
+
+def _mapa_por_fichas(a, ts, C, gente, cont, total, por_t):
+    """Mapa sem close (16/11/2026, Ep.2-001: 4 pessoas, câmeras só em dupla ou no aberto, o mapa achou 0 closes e o lote 58 saiu
+    quase todo com a pessoa errada). Quem tem ficha (Glauton, Felipe) é reconhecido pelo rosto e ganha a voz da ficha; quem não
+    tem são os convidados: a fala que não é de nenhuma ficha vira a voz deles. Com 2+ convidados, um "grupo" com essa voz: o
+    recorte mostra a dupla empilhada (Felipe: "pode mostrar empilhado"), porque a voz dos dois não se separa nesse estúdio."""
+    import numpy as np
+    fichas = fichas_conhecidas()
+    if not fichas:
+        return None
+    pessoas, conhecidas = [], []
+    for k, g in enumerate(gente):
+        r = np.asarray(C[g], float)
+        sim, f = max(((float(np.asarray(f["rosto"], float) @ r), f) for f in fichas), key=lambda x: x[0])
+        cxs = sorted(cx for _, q in por_t if len(q) >= 2 for cx, pe, _ in q if pe == k)
+        p = {"id": k, "rosto": [round(float(x), 5) for x in r], "voz": None,
+             "cx": round(cxs[len(cxs) // 2], 3) if cxs else None, "peso": round(cont[g] / total, 3)}
+        if sim >= FICHA_ROSTO:
+            p.update(voz=[round(float(x), 5) for x in f["voz"]], nome=f.get("nome"), voz_de="ficha")
+            conhecidas.append(k)
+        pessoas.append(p)
+    if not conhecidas or len(ts) < 30:
+        return None
+    amostra = [float(t) for t in ts[::max(1, len(ts) // 1500)]]
+    E = _impressoes(a, amostra)
+    mx = (E @ np.array([pessoas[k]["voz"] for k in conhecidas], float).T).max(1)
+    sem = [p["id"] for p in pessoas if p["voz"] is None]
+    fora = mx < CONVIDADOS_VOZ
+    if sem and fora.sum() >= 30:
+        Ef = E[fora]
+        c = Ef.mean(0) / np.linalg.norm(Ef.mean(0))
+        c = Ef[Ef @ c >= np.percentile(Ef @ c, 30)].mean(0)
+        c = [round(float(x), 5) for x in c / np.linalg.norm(c)]
+        if len(sem) == 1:
+            pessoas[sem[0]].update(voz=c, voz_de="fala fora das fichas")
+        else:
+            pessoas.append({"id": len(pessoas), "rosto": [0.0] * len(pessoas[0]["rosto"]), "voz": c, "grupo": sem,
+                            "cx": None, "peso": 0.0, "voz_de": "convidados (fala fora das fichas)"})
+    return {"ok": True, "versao": 2, "via": "fichas", "acerto": None, "amostras": len(amostra),
+            "fala_das_fichas": round(float((mx >= 0.5).mean()), 2), "fala_dos_outros": round(float(fora.mean()), 2),
+            "pessoas": pessoas}
+
+
 def mapa_episodio(video):
     """{"ok", "motivo", "pessoas": [{"id", "rosto": [128], "voz": [192] ou None, "cx": lado médio no plano aberto, "peso"}],
     "acerto"}. A voz de cada pessoa é aprendida nos closes dela (o episódio editado mostra quem fala quase sempre) e conferida
@@ -671,7 +730,8 @@ def mapa_episodio(video):
             ys.append(pe)
             grupo.append((n // 10) % 2)   # blocos de 10 closes: metade aprende, metade confere
     if len(amostra) < 60:
-        return {"ok": False, "motivo": "pouca fala nos closes ({} janelas)".format(len(amostra))}
+        pf = _mapa_por_fichas(a, ts, C, gente, cont, total, por_t)   # sem close: quem tem ficha + os convidados
+        return pf or {"ok": False, "motivo": "pouca fala nos closes ({} janelas)".format(len(amostra))}
     E = _impressoes(a, amostra)
     ys, grupo = np.array(ys), np.array(grupo)
 
@@ -706,7 +766,8 @@ def mapa_episodio(video):
     falam = [pe for pe in range(P) if cs[pe] is not None]
     acerto = min(acertos) if acertos else 0
     if len(falam) < 2 or acerto < 0.70:
-        return {"ok": False, "motivo": "vozes não separam no episódio (acerto {:.0%}, {} pessoa(s) com voz)".format(acerto, len(falam))}
+        pf = _mapa_por_fichas(a, ts, C, gente, cont, total, por_t)
+        return pf or {"ok": False, "motivo": "vozes não separam no episódio (acerto {:.0%}, {} pessoa(s) com voz)".format(acerto, len(falam))}
     cs, aprendida = _voz_que_falta(a, ts, cs, por_t)
     pessoas = []
     for k, g in enumerate(gente):
@@ -894,6 +955,14 @@ def _falas_por_frase(a, frases, mapa, por_t, extra):
 
 
 def medir_voz(video, mapa=None, confia_mapa=False, frases=None, palavras=None):
+    r = _medir_voz(video, mapa, confia_mapa, frases, palavras)
+    grupos = {str(p["id"]): p["grupo"] for p in (mapa or {}).get("pessoas") or [] if p.get("grupo")}
+    if grupos and isinstance(r, dict):
+        r["grupos"] = grupos   # id do grupo (a voz dos convidados) -> ids das pessoas: o recorte mostra a dupla empilhada
+    return r
+
+
+def _medir_voz(video, mapa=None, confia_mapa=False, frases=None, palavras=None):
     """{"ok", "motivo", "pessoa_da_voz", "falas": [[ini, fim, pessoa]], "amostras": [{"t", "rostos": [[cx, cy, pessoa]]}]}.
     ok=False quando não dá para confiar (uma pessoa só, rostos parecidos demais, vozes que não batem com quem aparece).
     Com o mapa do episódio (mapa_episodio) a voz e o rosto vêm dele (modo "mapa"); sem mapa ou se ele não bater, mede no corte."""

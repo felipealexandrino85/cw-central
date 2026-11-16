@@ -2012,6 +2012,7 @@ def _recorte_na_voz(pl, med, dur, pausas=()):
     import falante
     am = med.get("amostras") or []
     fora, mexeu = [], 0
+    gancho = float((pl.get("hook") or {}).get("duration") or 0)   # no gancho não se empilha (RE: gancho_empilhado)
     for chave in ("shots", "_base_shots"):
         shots = sorted(pl.get(chave) or [], key=lambda s: float(s.get("start") or 0))
         if not shots:
@@ -2055,6 +2056,21 @@ def _recorte_na_voz(pl, med, dur, pausas=()):
                     or sorted(r[0] for x in abertos for r in x["rostos"] if r[2] == p)
                 novo = dict(sh) if j == 0 else {k: v for k, v in sh.items() if k not in ("punch", "on_word")}
                 novo["start"] = round(pa, 3)
+                membros = (med.get("grupos") or {}).get(str(p))
+                if membros and pa >= gancho:   # fala dos convidados (a voz dos dois não se separa): a dupla empilhada
+                    pos = []
+                    for m in membros:
+                        q = sorted((r[0], r[1]) for x in abertos if pa <= x["t"] < pb for r in x["rostos"] if r[2] == m)
+                        if q:
+                            pos.append(q[len(q) // 2])
+                    if len(pos) >= 2:
+                        pos = sorted(pos[:2])
+                        stack = [{"cx": round(cx, 3), "cy": round(cy, 3)} for cx, cy in pos]
+                        if novo.get("stack") != stack:
+                            novo["stack"] = stack
+                            mexeu += 1
+                        novos.append(novo)
+                        continue
                 if cxs:
                     cx = round(cxs[len(cxs) // 2], 3)
                     if novo.get("stack") or abs(float(novo.get("cx") or 0.5) - cx) > 0.06:
@@ -2313,7 +2329,8 @@ def pessoa_errada(video, mapa, frases=None):
     for x in med.get("amostras") or []:
         rs = [r_ for r_ in x["rostos"] if r_[2] >= 0]
         quem = falante.quem_fala_em(med, x["t"] - 0.25, x["t"] + 0.25)
-        if len(rs) == 1 and quem is not None and rs[0][2] != quem:
+        do_grupo = rs and rs[0][2] in ((med.get("grupos") or {}).get(str(quem)) or [])   # um dos convidados na tela com a voz deles
+        if len(rs) == 1 and quem is not None and rs[0][2] != quem and not do_grupo:
             if trechos and x["t"] - trechos[-1][1] <= 0.6:
                 trechos[-1][1] = x["t"] + 0.5
             else:
@@ -3109,6 +3126,25 @@ e abra {quadros}/folha.jpg. Se alguma peça tapar o rosto, encostar na legenda o
 NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "pecas": n, "notas": "uma linha"}}"""
 
 
+PLANO_TELAS = """Você é o diretor de motion do corte {cid} (cortes do Glauton, perfil pessoal, marca Cardápio Web), sem ninguém
+olhando. O corte já está PRONTO (câmera, legenda, b-roll): {final} ({dur:.1f} s). Você só acrescenta TELAS CHEIAS DE MOTION ANIMADO.
+A fala com os tempos do vídeo final está em {fala} (uma linha por legenda: início-fim | texto).
+Leia o catálogo de telas em {telas} e o plano de exemplo em {exemplo} (copie o jeito das "telas", nunca os textos/tempos).
+
+Preencha {saida} (JSON; ele já existe com as chaves de configuração: mantenha-as) com "telas": [...] e "motion": [] (VAZIO).
+Felipe (16/11/2026): nada de tagzinha/pílula/etiqueta/notificação pequena; motion ANIMADO de verdade, pelo menos UMA TELA A CADA
+~10 s ({n_telas} telas neste corte), o resto do ritmo é b-roll:
+- cada tela 2,5–4 s, começando no instante em que a fala diz aquilo; nunca nos 3 primeiros segundos; pelo menos 3 s entre telas;
+- prefira as que se mexem e explicam: funil, grafico, barras, conta, pizza, numero (contando), medidor, linha_tempo, ranking,
+  comparacao, checklist, chat, comanda; "destaque" só se a fala não tiver nada que vire gráfico, e no máximo 1 por corte;
+- VARIE os tipos (nunca o mesmo tipo duas vezes seguidas); fundo "roxo" ou "amarelo" alternando;
+- números e textos fiéis à fala (nada inventado; sem número dito, use tela sem número); títulos curtos (≤ 2 linhas de ~22 letras).
+Depois confira: rode
+  python3 {motor} {saida} {final} {quadros} --quadros <tempos separados por vírgula: o meio de cada tela>
+e abra {quadros}/folha.jpg. Se algum texto sair cortado ou ilegível, ajuste (no máximo 2 voltas).
+NÃO renderize o vídeo (é automático). Responda APENAS com JSON: {{"ok": true, "telas": n, "notas": "uma linha"}}"""
+
+
 def _ass_t(x):
     h, m, s = x.strip().split(":")
     return int(h) * 3600 + int(m) * 60 + float(s)
@@ -3131,7 +3167,7 @@ def fala_do_ass(ass):
     return sorted(out)
 
 
-def motion_timeu(cid, W, work, final, previa, pasta, passo):
+def motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=False):
     motor = _motor_timeu()
     ass = work / "captions.ass"
     if not motor or not final.exists() or not ass.exists():
@@ -3153,11 +3189,19 @@ def motion_timeu(cid, W, work, final, previa, pasta, passo):
         passo("Motion design (planejando as peças)")
         doc0 = {"so_motion": True, "sfx": True, "limpa_audio": False, "palavras": "palavras_final.json", "motion": [], "telas": [], "destaques": []}
         cenas.write_text(json.dumps(doc0, ensure_ascii=False), encoding="utf-8")   # a conferência com --quadros já sai sem legenda duplicada
-        claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
-                                   exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
-                                   n_pecas=max(4, int((dur - 3) / 6)), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
-               W, "sonnet", ao_passo=passo, limite=1200)
+        if so_telas:   # Glautin: só telas cheias animadas, uma a cada ~10 s (sem as tags pequenas)
+            claude(PLANO_TELAS.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
+                                      exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
+                                      n_telas=max(2, round((dur - 3) / 10))),
+                   W, "sonnet", ao_passo=passo, limite=1200)
+        else:
+            claude(PLANO_MOTION.format(cid=cid, final=final, dur=dur, fala=work / "fala_final.txt", telas=motor.parent / "TELAS.md",
+                                       exemplo=motor.parent / "cenas_exemplo.json", saida=cenas, motor=motor, quadros=quadros,
+                                       n_pecas=max(4, int((dur - 3) / 6)), proibidos=", ".join(nomes_broll_proibidos(W, cid)) or "nenhum"),
+                   W, "sonnet", ao_passo=passo, limite=1200)
         doc = json.loads(cenas.read_text(encoding="utf-8"))
+        if so_telas:
+            doc["motion"] = []
         for m in doc.get("motion") or []:   # nunca no rosto: tudo na faixa do peito, abaixo da legenda queimada
             if m.get("tipo") != "balao" and float(m.get("y", 0.74)) < 0.76:
                 m["y"] = 0.80
@@ -3699,7 +3743,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                    else "o episódio não tem o mapa de quem é quem; diga o lado (esquerda/direita)")
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
-    if faltam and not (formato_canal2(estilo) or formato_glautin(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+    if faltam and not (formato_canal2(estilo) or glautin_editorial(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
         log("ritmo do", cid, "faltando em:", faltam)
         passo("Completando o ritmo (um momento visual a cada 12 s)")
         claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
@@ -3782,7 +3826,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
         elif glautin_editorial(estilo):   # Glautin no modelo Editorial: desenhado por cima do corte sem legenda
             motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()))
         elif formato_glautin(estilo):   # Glautin (padrão): o corte do Titeu + motion na marca da Cardápio Web (timeu01)
-            motion_timeu(cid, W, work, final, previa, pasta, passo)
+            motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=True)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
                           reusar=bool(trava and trava.reaproveitar_motion()))
