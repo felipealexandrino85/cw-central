@@ -567,6 +567,14 @@ def palavras_do_ass(ass, pal):
     for t0, t1, txt in linhas:
         ws = txt.split()
         perto = [w for w in pal if t0 - 0.25 <= float(w["t"]) <= t1 + 0.1]
+        caixa_alta = sum(c.isalpha() for c in txt) >= 4 and txt == txt.upper()
+        if caixa_alta:   # destaque amarelo do Titeu vem EM MAIÚSCULAS (l59c03): volta à grafia da fala
+            if len(perto) == len(ws):
+                ws = [x["w"].strip() if norm(x["w"]) == norm(w) else w.lower() for w, x in zip(ws, perto)]
+            else:
+                ws = [w.lower() for w in ws]
+            if not out or FIM.search(out[-1]["w"]):
+                ws[0] = ws[0][:1].upper() + ws[0][1:]
         if len(perto) == len(ws):
             out += [{"w": w, "t": float(x["t"]), "e": float(x["e"])} for w, x in zip(ws, perto)]
         else:
