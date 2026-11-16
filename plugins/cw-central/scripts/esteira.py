@@ -598,6 +598,8 @@ Responda APENAS com JSON: {{"resumo": "2-3 linhas sobre o episódio e o critéri
 
 SELECAO_GLAUTIN = """
 
+QUEM FALA: transcricao_glauton.txt (nesta pasta) é a mesma transcrição com cada linha marcada pela VOZ medida: [Glauton] ou
+[outro]. Escolha só trechos com as linhas [Glauton]; depois da escolha a voz é medida de novo e o trecho que não for dele sai.
 ESTES CORTES SÃO DO GLAUTIN, para o PERFIL PESSOAL do Glauton Santos (CEO da Cardápio Web): escolha SÓ momentos em que quem fala
 é o Glauton, do começo ao fim do trecho (pergunta curta de quem entrevista no meio pode). Se ele não participa deste episódio,
 responda com a lista vazia e diga no "resumo" que ele não aparece. Prefira o que soa como fundador falando: opinião forte, número
@@ -670,7 +672,9 @@ def selecionar(lote, ep, estilo=None):
             extra = [W]
         if formato_nanquim(estilo):
             prompt += SELECAO_NANQUIM.format(n=lote["quantidade"])
+        voz_glauton = None
         if formato_glautin(estilo):
+            voz_glauton = voz_da_pessoa(pasta, "glauton")
             prompt += SELECAO_GLAUTIN
         if formato_canal2(estilo) or formato_dark(estilo) or formato_nanquim(estilo):   # Zeca, Breu e Nanquim: momentos que os outros canais ainda não usaram
             usados = srv("trechos_usados", episodio=ep["id"], lote=lote["id"]) or []
@@ -697,6 +701,8 @@ def selecionar(lote, ep, estilo=None):
         if not cortes:
             raise RuntimeError("nenhum corte válido na seleção, nem pedindo de novo: " + (r.get("resumo") or "")[:400])
         resumo = r.get("resumo") or ""
+        if voz_glauton is not None:   # Glautin: só fica o trecho em que a fala é mesmo do Glauton (medida pela voz)
+            cortes, r["reservas"], resumo = so_da_pessoa(voz_glauton, cortes, r.get("reservas") or [], int(lote["quantidade"]), resumo)
         if n_res:
             cortes, resumo = mapa_falante(pasta, cortes, [c for c in r.get("reservas") or [] if valido(c)], int(lote["quantidade"]), resumo,
                                           confia_close=formato_nanquim(estilo))
@@ -705,6 +711,51 @@ def selecionar(lote, ep, estilo=None):
     except Exception as e:
         log("seleção do lote", lote["id"], "falhou:", traceback.format_exc()[-600:])
         srv("lote", id=lote["id"], estado="erro", erro=(str(e) or type(e).__name__)[:500])
+
+
+def voz_da_pessoa(pasta, nome):
+    """Glautin: [(t, semelhança)] da voz da pessoa no episódio inteiro (calculada uma vez e guardada) e a transcrição marcada
+    [Glauton]/[outro] para a seleção. Sem a ficha da pessoa nesta máquina, ou se ela não fala no episódio, o lote para."""
+    import pessoas
+    f = pessoas.carregar(nome)
+    if not f:
+        raise RuntimeError("falta a ficha de voz e rosto do {} neste servidor (~/.cw-cortes/pessoas/{}.json)".format(nome.title(), nome))
+    arq = pasta / "voz_{}.json".format(nome)
+    try:
+        serie = [tuple(x) for x in json.loads(arq.read_text(encoding="utf-8"))]
+    except (OSError, ValueError):
+        bruto = next(pasta.glob("bruto.*"))
+        log("medindo a voz do", nome, "no episódio", pasta.name)
+        serie = pessoas.voz_no_video(bruto, f)
+        arq.write_text(json.dumps(serie), encoding="utf-8")
+    total = pessoas.parte(serie, -1, 1e9) or 0
+    if total < 0.03:
+        raise RuntimeError("o {} não fala neste episódio (a voz dele aparece em {:.0%} da fala)".format(nome.title(), total))
+    segs = json.loads((pasta / "transcricao.json").read_text(encoding="utf-8"))
+    linhas = []
+    for sg in segs:
+        x = pessoas.parte(serie, float(sg["inicio"]), float(sg["fim"]))
+        quem = "?" if x is None else nome.title() if x >= 0.5 else "outro"
+        linhas.append("[{}] [{}] {}".format(hms(sg["inicio"]), quem, sg["texto"]))
+    (pasta / "transcricao_{}.txt".format(nome)).write_text("\n".join(linhas), encoding="utf-8")
+    log("voz do", nome, "em {:.0%} da fala do episódio".format(total))
+    return serie
+
+
+def so_da_pessoa(serie, cortes, reservas, n, resumo, nome="Glauton"):
+    """Tira da lista o trecho em que a fala não é da pessoa (menos de pessoas.CORTE_MIN) e completa com as reservas que são."""
+    import pessoas
+    dele = lambda c: (pessoas.parte(serie, float(c["inicio"]), float(c["fim"])) or 0) >= pessoas.CORTE_MIN
+    bons = [c for c in cortes if dele(c)]
+    res = [c for c in reservas if dele(c)]
+    fora = len(cortes) - len(bons)
+    final = bons + res[:max(0, n - len(bons))]
+    if fora:
+        log("Glautin:", fora, "trecho(s) sem a voz do", nome, "tirado(s);", len(final) - len(bons), "reserva(s) no lugar")
+        resumo = "{} trecho(s) escolhido(s) não eram do {} (medido pela voz) e saíram da lista.\n\n".format(fora, nome) + resumo
+    if not final:
+        raise RuntimeError("nenhum trecho escolhido é do {} pela voz: confira se ele fala neste episódio".format(nome))
+    return final, res[max(0, n - len(bons)):], resumo
 
 
 def mapa_falante(pasta, cortes, reservas, n, resumo, confia_close=False):
