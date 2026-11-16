@@ -227,6 +227,12 @@ def preparar(ep):
     try:
         srv("episodio", id=eid, estado="preparando", etapa="copiando o bruto do Drive", progresso=5)
         if not bruto.exists() or bruto.stat().st_size != origem.stat().st_size:
+            # ler pelo Drive montado também guarda o arquivo no cache do rclone (mesmo disco): conta 2× o tamanho + folga.
+            # Sem isso o disco chegava a 100% e derrubava os outros lotes (Pedro Leite, 34 GB, 16/11/2026).
+            gb, livre = origem.stat().st_size / 1e9, shutil.disk_usage(pasta).free / 1e9
+            if livre < 2 * gb + 10:
+                raise RuntimeError("sem espaço no servidor para copiar {:.0f} GB: precisa de {:.0f} GB livres e tem {:.0f} GB. "
+                                   "Exclua pastas antigas na aba Servidor e peça de novo".format(gb, 2 * gb + 10, livre))
             tmp = bruto.with_suffix(".parcial")
             shutil.copyfile(origem, tmp)
             tmp.replace(bruto)
