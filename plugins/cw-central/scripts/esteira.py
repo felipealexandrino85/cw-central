@@ -666,8 +666,9 @@ def selecionar(lote, ep, estilo=None):
             if usados:
                 prompt += ("\n\nESTES TRECHOS JÁ FORAM USADOS em cortes do canal oficial: escolha momentos DIFERENTES, sem sobrepor nenhum deles "
                            "(segundos do episódio): " + json.dumps(usados))
-        n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) or formato_nanquim(estilo) else 0
-        if n_res:   # Zeca: reservas para trocar os trechos em que quem fala não aparece na imagem
+        titeu = lote.get("linha") == "cortes" or (estilo or {}).get("slug") == "cw-cast-timeu"
+        n_res = max(2, int(lote["quantidade"]) // 2) if formato_canal2(estilo) or formato_nanquim(estilo) or titeu else 0
+        if n_res:   # Zeca, Nanquim e Titeu (Felipe, 16/11/2026): reservas para trocar os trechos em que quem fala não aparece na imagem
             prompt += ("\n\nDepois dos {n}, escolha mais {r} RESERVAS (momentos bons e diferentes, mesmo formato) na chave \"reservas\" do "
                        "JSON. Prefira trechos em que quem fala aparece no vídeo (o canal mostra a câmera do episódio).").format(n=lote["quantidade"], r=n_res)
         texto = claude(prompt, pasta, "opus", limite=2400, extra_dirs=extra)
