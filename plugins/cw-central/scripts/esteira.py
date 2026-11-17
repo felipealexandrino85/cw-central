@@ -3296,7 +3296,33 @@ Escreva o roteiro de motion do modelo Editorial (sóbrio, de revista de negócio
 Responda APENAS com JSON: {{"titulo": ["...", "*...*"], "chaves": [...], "cenas": [...], "nome_em": s}}"""
 
 
-def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=False):
+# Glautin · Cinema escuro (17/11/2026, maquete claude.ai/artifact/S75Pt5hWYeMUHuXT3CrnuZ): scripts/glautin_cinema.py por cima do
+# corte do Titeu sem legenda. Regra do Felipe: texto nunca em cima do rosto (o motor mede o rosto e põe tudo abaixo dele).
+PLANO_CINEMA = """Você é o Glautin, editor dos cortes do Glauton Santos (CEO da Cardápio Web) para o perfil PESSOAL dele no Instagram.
+Ninguém está olhando: decida e responda. Corte "{titulo}", {dur:.1f} s. A fala do vídeo final (segundo: frase) está abaixo.
+{fala}
+
+Escreva o roteiro de motion do estilo CINEMA ESCURO (calmo, de podcast premium: pouca coisa na tela, cada uma com peso).
+A legenda de uma palavra já sai sozinha; o b-roll já está no vídeo. Você escreve só os EVENTOS de texto:
+{{"de":s,"ate":s,"fundo":"video"|"escuro","lead":"linha fina, até 5 palavras","forte":[{{"texto":"...","t":s}}],
+  "estilo":"serif"|"pesado","cor":"amarelo"|"branco","sub":{{"texto":"até 3 palavras","t":s}}|null,
+  "conta":{{"de":0,"ate":200,"prefixo":"R$ ","sufixo":" mil","dur":0.8}}|null,"barra":30|null}}
+Regras:
+- O 1º evento é a abertura: de 0.2 a ~3 s, fundo "video", a ideia mais forte do corte ("lead" prepara, "forte" crava; ex.: lead
+  "ninguém sabia" + forte "o que é ROI"), fiel à fala.
+- Depois, UM evento a cada 5 a 8 s (~{n} no total), sem sobrepor e com pelo menos 2 s de respiro entre eles (só rosto e legenda).
+- "fundo":"escuro" (tela grafite) só no ÁPICE do corte: no máximo 2 por corte, de 1,5 a 4 s. O resto é "video".
+- "forte" com 1 a 3 palavras (até ~14 letras), DITAS na fala, no segundo em que ele diz ("t"). Numa enumeração dele, até 3 itens
+  em "forte" trocam no mesmo lugar (cada um no seu "t").
+- "estilo":"serif" + "cor":"amarelo" para emoção, opinião, virada; "estilo":"pesado" para número, nome, conceito ("cor" branco ou
+  amarelo; no máximo metade dos eventos em amarelo).
+- Número dito ganha apoio: porcentagem → "barra" com o valor; valor em dinheiro ou quantidade → "conta" (o "forte" leva o número
+  final escrito, ex. "R$ 200 mil"). Nunca invente número.
+- "lead" e "sub" opcionais; textos fiéis à fala (pode limpar vício de linguagem, nunca inventar).
+Responda APENAS com JSON: {{"eventos": [...]}}"""
+
+
+def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=False, modelo="editorial"):
     fluido = _motor_fluido()
     if not fluido or not final.exists():
         raise Falhou("Glautin: falta o motor sem legenda (motion-vox/cwfluido) neste servidor")
@@ -3319,6 +3345,9 @@ def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=Fals
     ws = glautin.palavras_do_ass(ass, pal) if ass.exists() else pal
     dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(sem)],
                                capture_output=True, text=True).stdout.strip() or 0)
+    if modelo == "cinema":
+        motion_cinema(cid, W, work, final, previa, pasta, passo, c, sem, ws, dur, reusar)
+        return
     roteiro = work / "glautin_plano.json"
     try:   # ajuste que não é sobre o motion: o mesmo título, as mesmas palavras e números de antes
         antigo = json.loads(roteiro.read_text(encoding="utf-8")) if reusar else None
@@ -3353,6 +3382,35 @@ def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=Fals
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
                     "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
     log("Glautin no", cid + ":", len(plano["chaves"]), "palavra(s)-chave,", len(plano["cenas"]), "peça(s) de motion")
+
+
+def motion_cinema(cid, W, work, final, previa, pasta, passo, c, sem, ws, dur, reusar=False):
+    import glautin
+    roteiro = work / "glautin_cinema.json"
+    try:   # ajuste que não é sobre o motion: os mesmos eventos de antes
+        antigo = json.loads(roteiro.read_text(encoding="utf-8")) if reusar else None
+    except (OSError, ValueError):
+        antigo = None
+    if not antigo:
+        passo("Glautin (frases, números e telas escuras)")
+        fala = "\n".join("{:.1f}: {}".format(b["de"], " ".join(w["w"] for w in b["ws"])) for b in glautin.blocos(ws))
+        antigo = json_final(claude(PLANO_CINEMA.format(titulo=c.get("titulo") or "", dur=dur, fala=fala, n=max(3, int(dur / 7))),
+                                   W, "sonnet", ao_passo=passo, limite=900))
+        roteiro.write_text(json.dumps(antigo, ensure_ascii=False, indent=1), encoding="utf-8")
+    plano = {"video": str(sem), "saida": str(W / "saida" / "{}_glautin.mp4".format(cid)), "palavras": ws, "eventos": antigo.get("eventos") or []}
+    entrada = work / "glautin_render.json"
+    entrada.write_text(json.dumps(plano, ensure_ascii=False), encoding="utf-8")
+    passo("Render do Glautin (cinema)")
+    r = subprocess.run([sys.executable, str(AQUI / "glautin_cinema.py"), str(entrada)], capture_output=True, text=True, timeout=3600)
+    (pasta / "motor.log").open("a").write("\n$ glautin_cinema.py\n{}\n{}\n".format(r.stdout[-1500:], r.stderr[-1500:]))
+    saida = Path(plano["saida"])
+    if r.returncode or not saida.exists() or saida.stat().st_size < 100000:
+        raise Falhou("Glautin: render: " + (r.stderr or r.stdout)[-300:])
+    shutil.move(str(final), str(final.with_name(final.stem + "_titeu" + final.suffix)))
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(saida), "-c", "copy", str(final)], timeout=600)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(final), "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26",
+                    "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(previa)], timeout=1200)
+    log("Glautin (cinema) no", cid + ":", len(plano["eventos"]), "evento(s) de texto")
 
 
 # ------------------------------------------------------------------------------------------- motion CW-Fluido (23/10/2026)
@@ -3470,6 +3528,13 @@ def formato_glautin(estilo):
     """Estilo do Glautin (marca na receita: "FORMATO: GLAUTIN"): cortes do Glauton (CEO) para o perfil pessoal dele, modelo
     Editorial (scripts/glautin.py desenha título, legenda, palavra-chave, nome e cartão de número sobre o corte do Titeu)."""
     return "formato: glautin" in ((estilo or {}).get("receita") or "").lower()
+
+
+def glautin_cinema(estilo):
+    """Glautin no estilo Cinema escuro (glautin_cinema.py, 17/11/2026): o padrão do Glautin desde então. O timeu01 só volta com
+    "MOTION: TIMEU" na receita, e o Editorial com "MOTION: EDITORIAL"."""
+    r = ((estilo or {}).get("receita") or "").lower()
+    return formato_glautin(estilo) and "motion: editorial" not in r and "motion: timeu" not in r
 
 
 def glautin_editorial(estilo):
@@ -3814,7 +3879,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 pl.pop("cta", None)
                 pl["enfase"] = []
                 so["captions"] = dict(so.get("captions") or {}, highlight_sfx={})
-                if glautin_editorial(estilo):   # o Editorial desenha os textos dele: gancho sem flash nem estrondo
+                if glautin_editorial(estilo) or glautin_cinema(estilo):   # textos desenhados por cima: gancho sem flash nem estrondo
                     so["hook_fx"] = dict(so.get("hook_fx") or {}, bed="", riser="", flash="", boom={"file": ""}, whoosh={"file": ""})
                 else:   # como nos cortes de referência do Glauton: legenda e headline brancas, sem o amarelo do Titeu
                     so["captions"]["highlight"] = "#FFFFFF"
@@ -3869,7 +3934,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, reusar=bool(trava and trava.reaproveitar_motion()))
         elif glautin_editorial(estilo):   # Glautin no modelo Editorial: desenhado por cima do corte sem legenda
             motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()))
-        elif formato_glautin(estilo):   # Glautin (padrão): o corte do Titeu + motion na marca da Cardápio Web (timeu01)
+        elif glautin_cinema(estilo):   # Glautin (padrão desde 17/11): cinema escuro desenhado por cima do corte sem legenda
+            motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()), modelo="cinema")
+        elif formato_glautin(estilo):   # Glautin com "MOTION: TIMEU": o corte do Titeu + motion da marca (timeu01)
             motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=True)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
