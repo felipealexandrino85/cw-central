@@ -333,17 +333,19 @@ def dados_do_corte(local):
     """headline, vídeo bruto e trechos usados, a partir do plano do corte do Titeu (saida/<cid>.mov → work/<cid>/plan.json)."""
     final = Path(local); cid = final.stem.split("_")[0]
     out = {}
+    # a pasta do estilo (a que tem work/<cid>): saida/<cid>.mov ou uma versão guardada em saida/versoes/ (a Publicação manda a
+    # versão; antes só subia 2 níveis, não achava o plano e a capa saía do corte pronto, com o selo e o logo gravados: "3 logos")
+    W = next((d for d in final.parents if (d / "work" / cid).is_dir()), final.parent.parent)
     try:
-        plano = json.loads((final.parent.parent / "work" / cid / "plan.json").read_text(encoding="utf-8"))
+        plano = json.loads((W / "work" / cid / "plan.json").read_text(encoding="utf-8"))
         out["headline"] = (plano.get("headline") or "").replace("|", " ").strip()
         out["bruto"] = plano.get("source") or ""
-        tr = json.loads((final.parent.parent / "work" / cid / "transcript.json").read_text(encoding="utf-8"))
+        tr = json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8"))
         out["trechos_do_bruto"] = [[round(float(a), 2), round(float(b), 2)] for a, b in tr.get("ranges") or []]
     except (OSError, ValueError, TypeError):
         pass
     if not out.get("bruto"):   # Zeca/Breu/Nanquim sem plan.json do Titeu: o bruto do episódio e os trechos da transcrição do corte
         try:
-            W = final.parent.parent
             bruto = next(W.parent.glob("bruto.*"), None)
             tr = json.loads((W / "work" / cid / "transcript.json").read_text(encoding="utf-8"))
             if bruto:
