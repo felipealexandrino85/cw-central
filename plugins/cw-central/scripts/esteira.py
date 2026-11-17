@@ -2102,15 +2102,17 @@ def enquadrar_por_rosto(W, cid, plan, passo, trava=None, aplicar=True):
         return {}
     try:
         passo("Enquadramento pelo rosto")
+        base = _base_do_corte(W, cid)
         r = subprocess.run([sys.executable, str(AQUI / "rosto.py"), str(plan), str(prev), "--transcript", str(W / "work" / cid / "transcript.json")]
-                           + (["--aplicar"] if pode else []), capture_output=True, text=True, timeout=600)
+                           + (["--base", str(base)] if base else []) + (["--aplicar"] if pode else []),
+                           capture_output=True, text=True, timeout=900)
         res = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else {}
     except Exception as e:
         log("enquadramento pelo rosto do", cid, "não rodou:", e)
         return {}
-    if res.get("ajustes") or res.get("sem_rosto") or res.get("sem_fala"):
+    if res.get("ajustes") or res.get("sem_rosto") or res.get("sem_fala") or res.get("vazios"):
         log("rosto do", cid + ":", json.dumps(res, ensure_ascii=False)[:600])
-    return {"refazer": bool(pode and res.get("ajustes"))}   # "sem_fala" fica só no log (falso positivo em prévia real)
+    return {"refazer": bool(pode and (res.get("ajustes") or res.get("vazios")))}   # "sem_fala" fica só no log (falso positivo em prévia real)
 
 
 FORA_QUADRO = """No corte {cid} (pasta {W}), QUEM ESTÁ FALANDO NÃO APARECE NA IMAGEM nestes trechos (o episódio editado mostra outra
