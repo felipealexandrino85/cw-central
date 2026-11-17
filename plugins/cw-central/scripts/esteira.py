@@ -3535,8 +3535,57 @@ def motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=Fals
     log("Glautin no", cid + ":", len(plano["chaves"]), "palavra(s)-chave,", len(plano["cenas"]), "peça(s) de motion")
 
 
+def aparar_outra_voz(video, palavras, dur):
+    """Glautin: a voz de OUTRA pessoa no começo ou no fim do corte (l66c01 abria com "É azul." do entrevistador, e a câmera, certa,
+    mostrava ele: parecia a pessoa errada). Mede a voz do Glauton no PRÓPRIO vídeo (a transcrição do episódio fica ~0,5 s fora do
+    tempo do corte) e devolve (ini, fim) para aparar, num espaço entre palavras. Sem ficha ou na dúvida, não apara."""
+    import pessoas
+    f = pessoas.carregar("glauton")
+    if not f or dur < 20:
+        return 0.0, dur
+    V = pessoas.VOZ_MESMA
+    ini, fim = 0.0, dur
+    try:
+        cab = pessoas.voz_no_video(video, f, 0.0, 4.0)
+        dele = [t for k, (t, x) in enumerate(cab) if x >= V and k + 1 < len(cab) and cab[k + 1][1] >= V]
+        outros = [t for t, x in cab if dele and t < dele[0] and x < 0.4]
+        if dele and outros and dele[0] >= 1.1:   # fala que não é dele antes da primeira fala dele
+            alvo = dele[0] - 0.6
+            ts = [float(w["t"]) for w in palavras if alvo - 0.4 <= float(w["t"]) <= dele[0]]
+            ini = max(0.0, (ts[0] if ts else alvo) - 0.08)
+        rab = pessoas.voz_no_video(video, f, max(0.0, dur - 4.0), dur)
+        ultimo_dele = max((t for t, x in rab if x >= V), default=None)
+        if rab and ultimo_dele is not None and rab[-1][0] - ultimo_dele >= 1.0 and min(x for t, x in rab if t > ultimo_dele) < 0.4:
+            es = [float(w["e"]) for w in palavras if float(w["e"]) <= ultimo_dele + 0.3]
+            fim = min(dur, (es[-1] if es else ultimo_dele) + 0.3)
+    except Exception as e:
+        log("voz do começo/fim do", Path(video).name, "não mediu:", e)
+        return 0.0, dur
+    if ini > 4.0 or fim - ini < 15:
+        return 0.0, dur
+    return round(ini, 2), round(fim, 2)
+
+
 def motion_cinema(cid, W, work, final, previa, pasta, passo, c, sem, ws, dur, reusar=False):
     import glautin
+    try:   # o tempo da legenda vem da medição no vídeo (a legenda do Titeu chega até 1,5 s atrasada; lote 66)
+        medidas = json.loads((work / "palavras_final.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        medidas = []
+    passo("Glautin (voz do Glauton no começo e no fim)")
+    a, b = aparar_outra_voz(sem, medidas or ws, dur)
+    if a > 0.05 or b < dur - 0.05:   # apara antes de tudo: o roteiro e a legenda já nascem no vídeo aparado
+        aparado = sem.with_name(sem.stem + "_aparado.mov")
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "{:.3f}".format(a), "-to", "{:.3f}".format(b), "-i", str(sem),
+                            "-c:v", "libx264", "-crf", "12", "-preset", "fast", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(aparado)],
+                           capture_output=True, text=True, timeout=1800)
+        if not r.returncode and aparado.exists():
+            desloca = lambda l: [dict(w, t=round(float(w["t"]) - a, 3), e=round(float(w["e"]) - a, 3)) for w in l
+                                 if a - 0.05 <= float(w["t"]) <= b]
+            onde = " e ".join(x for x, ok in (("começo", a > 0.05), ("fim", b < dur - 0.05)) if ok)
+            ws, medidas, sem, dur = desloca(ws), desloca(medidas), aparado, b - a
+            log("Glautin", cid, "aparado: outra voz no {} (fica {:.2f}–{:.2f} s do corte)".format(onde, a, b))
+            reusar = False   # o roteiro antigo foi feito no vídeo sem aparar
     roteiro = work / "glautin_cinema.json"
     try:   # ajuste que não é sobre o motion: os mesmos eventos de antes
         antigo = json.loads(roteiro.read_text(encoding="utf-8")) if reusar else None
@@ -3549,10 +3598,8 @@ def motion_cinema(cid, W, work, final, previa, pasta, passo, c, sem, ws, dur, re
                                    W, "sonnet", ao_passo=passo, limite=900))
         roteiro.write_text(json.dumps(antigo, ensure_ascii=False, indent=1), encoding="utf-8")
     plano = {"video": str(sem), "saida": str(W / "saida" / "{}_glautin.mp4".format(cid)), "palavras": ws, "eventos": antigo.get("eventos") or []}
-    try:   # o tempo da legenda vem da medição no vídeo (a legenda do Titeu chega até 1,5 s atrasada; lote 66)
-        plano["palavras_medidas"] = json.loads((work / "palavras_final.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        pass
+    if medidas:
+        plano["palavras_medidas"] = medidas
     try:   # gancho dividido (câmera em cima, b-roll embaixo): o texto fica no painel de cima
         hk = json.loads((work / "plan.json").read_text(encoding="utf-8")).get("hook") or {}
         if hk.get("media") and float(hk.get("duration") or 0) > 0:
@@ -4013,7 +4060,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                    else "o episódio não tem o mapa de quem é quem; diga o lado (esquerda/direita)")
     broll_ok()
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
-    if faltam and not (formato_canal2(estilo) or glautin_editorial(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+    # Glautin (qualquer motion) não completa a regra dos 12 s: encher a janela trazia b-roll sem relação com a fala (flores para
+    # "30 mil restaurantes", lote 66); fica só o b-roll que a decisão do corte escolheu pelo que ele está dizendo
+    if faltam and not (formato_canal2(estilo) or formato_glautin(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
         log("ritmo do", cid, "faltando em:", faltam)
         passo("Completando o ritmo (um momento visual a cada 12 s)")
         claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
