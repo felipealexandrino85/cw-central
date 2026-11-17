@@ -9,8 +9,10 @@ claude.ai/artifact/S75Pt5hWYeMUHuXT3CrnuZ, depois de achar o timeu01 ruim e o 3D
   - tela escura (grafite arroxeado) só no ápice, no máximo 2 por corte; a volta ao vídeo entra com foco;
   - apoio nos números: barra de porcentagem enchendo e contador;
   - marca sem logo: amarelo #FFC400 da Cardápio Web, fonte Museo Sans Rounded (Nunito se ela faltar).
-REGRA do Felipe: legenda e texto NUNCA em cima do rosto. O rosto é medido no vídeo (YuNet) e todo texto sobre o vídeo
-começa abaixo da base do rosto mais baixo do trecho + FOLGA, sem passar de TETO.
+REGRAS do Felipe: legenda e texto NUNCA em cima do rosto, e a legenda FIXA (não sobe e desce acompanhando o rosto).
+O rosto do Glauton (o MAIOR da tela; o rosto de uma foto de b-roll no gancho dividido é menor e não conta) é medido no vídeo
+(YuNet); a linha do texto é uma só no corte inteiro: a base dele em quase todo o corte (percentil 95) + FOLGA, sem passar de
+TETO. Assim, no gancho com b-roll embaixo, a legenda fica logo abaixo do Glauton e não em cima do b-roll.
 O b-roll vem do corte do Titeu (vídeo com movimento, regra dos 12 s); sem rosto na tela o texto fica em SEM_ROSTO.
 
 Uso: python glautin_cinema.py plano.json
@@ -207,7 +209,7 @@ def caber(txt, estilo, cor):
 
 # ------------------------------------------------------------------------------------------- rosto (regra do Felipe)
 def medir_rostos(video):
-    """Base do rosto (fração da altura) ~8 vezes por segundo. Só rostos de verdade (altura > 5% do quadro)."""
+    """Base do rosto MAIOR (fração da altura) ~8 vezes por segundo. Só rostos de verdade (altura > 5% do quadro)."""
     import cv2
     w2, h2 = 270, 480
     yn = cv2.FaceDetectorYN.create(str(AQUI / "face_detection_yunet.onnx"), "", (w2, h2), 0.6, 0.3, 5000)
@@ -219,18 +221,20 @@ def medir_rostos(video):
         if len(buf) < n:
             break
         _, fs = yn.detect(np.frombuffer(buf, np.uint8).reshape(h2, w2, 3))
-        bases = [float(f[1] + f[3]) / h2 for f in (fs if fs is not None else []) if f[3] / h2 > 0.05]
-        out.append((k / 8.0, max(bases) if bases else None))
+        rs = [f for f in (fs if fs is not None else []) if f[3] / h2 > 0.05]
+        maior = max(rs, key=lambda f: f[2] * f[3]) if rs else None
+        out.append((k / 8.0, float(maior[1] + maior[3]) / h2 if maior is not None else None))
         k += 1
     dec.wait()
     return out
 
 
-def linha_segura(rostos, a, b):
-    bs = [y for t, y in rostos if a <= t <= b and y is not None]
+def linha_fixa(rostos):
+    """Uma linha só para o corte inteiro (legenda fixa): abaixo do rosto do Glauton em 95% do tempo."""
+    bs = sorted(y for t, y in rostos if y is not None)
     if not bs:
         return SEM_ROSTO
-    return clamp(max(bs) + FOLGA, PISO, TETO)
+    return clamp(bs[min(len(bs) - 1, int(len(bs) * .95))] + FOLGA, PISO, TETO)
 
 
 # ------------------------------------------------------------------------------------------- plano
@@ -404,18 +408,16 @@ def render(plano_path):
     fps = float(num) / float(den)
     evs = [Evento(e) for e in limpar(p.get("eventos"), dur)]
     ws = [w for w in p.get("palavras") or [] if str(w.get("w", "")).strip()]
-    rostos = medir_rostos(video)
+    linha = linha_fixa(medir_rostos(video))
     topos = {}
     for ev in evs:
         e = ev.e
         if e["fundo"] == "escuro":
             topos[id(ev)] = int(H * .46 - ev.altura() / 2)
         else:
-            topos[id(ev)] = int(H * linha_segura(rostos, e["de"] - .2, e["ate"]))
-            if topos[id(ev)] + ev.altura() > H * .93:   # texto alto demais para o espaço: sobe só até a linha do rosto
-                topos[id(ev)] = int(max(H * linha_segura(rostos, e["de"] - .2, e["ate"]), H * .93 - ev.altura()))
+            topos[id(ev)] = int(H * linha)   # frase alta demais para o espaço: corta o excesso embaixo, nunca sobe no rosto
     escuro, sombra = fundo_escuro(), sombra_bloco()
-    leg_cache, ruim = {}, []
+    leg_cache = {}
     dec = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-vf", "scale={}:{}".format(W, H), "-f", "rawvideo",
                             "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     enc = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "{}x{}".format(W, H),
@@ -467,10 +469,7 @@ def render(plano_path):
                     if w not in leg_cache:
                         leg_cache[w] = Palavra(w, sans(62, 900), BRANCO)
                     pw = leg_cache[w]
-                    y = H * linha_segura(rostos, t - .5, t + .5)
-                    pw.desenha(cv, W / 2, y, float(ws[i]["t"]) - .2, t, passo=0, dur=.12)
-                    if y > H * TETO - 1:
-                        ruim.append(round(t, 1))
+                    pw.desenha(cv, W / 2, H * linha, float(ws[i]["t"]) - .2, t, passo=0, dur=.12)
             enc.stdin.write(cv.convert("RGB").tobytes())
             k += 1
     finally:
@@ -481,7 +480,7 @@ def render(plano_path):
     if enc.returncode or not saida.exists():
         raise SystemExit("render do Glautin (cinema) falhou")
     print(json.dumps({"ok": True, "quadros": k, "eventos": [(round(ev.e["de"], 1), ev.e["fundo"], [f["texto"] for f in ev.e["forte"]]) for ev in evs],
-                      "legenda_no_teto": sorted(set(ruim))[:20], "saida": str(saida)}, ensure_ascii=False))
+                      "linha": round(linha, 3), "saida": str(saida)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
