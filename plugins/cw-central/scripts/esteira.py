@@ -595,11 +595,24 @@ SELECAO = """Você é o selecionador de cortes da esteira do CW Studios (CW Cast
 Nesta pasta estão: transcricao.txt (linhas com [hh:mm:ss]), transcricao.json (tempo por palavra) e mapa.md (resumo do episódio).
 Escolha os {n} MELHORES momentos para cortes verticais (Reels/Shorts/TikTok), seguindo a skill de cortes do kit do time se ela estiver
 instalada (cw-kit-cortes-cwcast) e as lições do time que você recebeu.
-Cada corte: entre 25 e 90 segundos, começa e termina em frase completa, faz sentido sozinho, tem gancho nos 3 primeiros segundos e
-entrega a promessa. Sem dois cortes sobre a mesma ideia. Confira os tempos exatos em transcricao.json.
+Cada corte: entre 25 e 90 segundos (ideal 30 a 55), faz sentido sozinho e segue a ESTRUTURA DE CORTE VIRAL:
+- GANCHO nos 3 primeiros segundos: começa na PRIMEIRA PALAVRA de uma frase que já é a ideia forte. Nunca abre com conectivo ou
+  resposta solta ("Mas…", "E aí…", "Então…", "É, exato", "Sim"), pronome sem antecedente ("isso", "ele") nem referência ao que
+  ficou fora ("como eu falei"). Se é uma resposta, a pergunta curta entra no corte.
+- DESENVOLVIMENTO: exemplo, número ou história que sustenta o gancho. Nada de cortar no meio de uma lista ou entre a afirmação e
+  a prova dela.
+- PAYOFF (o arremate: conclusão, número final, punchline, conselho): o corte só termina DEPOIS dele. Escreva o payoff numa frase
+  e confira que ele está dentro do trecho; sem payoff claro, o momento não serve.
+- FIM na última palavra de uma frase fechada (ponto, interrogação ou exclamação), com a ideia fechada. Nunca termine em "e", "mas",
+  "então", "porque", "que", "né", nem logo antes de "então…/porque…/ou seja…" que completa a ideia; nunca no meio de uma história
+  ("Quantos trabalham? Um, dois…") nem no começo do próximo assunto.
+- Teste do estranho: quem nunca viu o episódio entende do primeiro ao último segundo, sem nada de antes.
+Sem dois cortes sobre a mesma ideia. Confira os tempos EXATOS em transcricao.json (início = "i" da primeira palavra, fim = "f" da
+última palavra do payoff ou da frase que o fecha).
 Pedido de quem pediu o lote: {instrucoes}
 Responda APENAS com JSON: {{"resumo": "2-3 linhas sobre o episódio e o critério", "cortes": [{{"titulo": "...", "inicio": segundos,
-"fim": segundos, "gancho": "primeira frase do corte", "motivo": "por que funciona"}}]}}"""
+"fim": segundos, "gancho": "primeira frase do corte", "payoff": "a frase do arremate, copiada literalmente da transcrição",
+"motivo": "por que funciona"}}]}}"""
 
 
 SELECAO_GLAUTIN = """
@@ -707,6 +720,8 @@ def selecionar(lote, ep, estilo=None):
         if not cortes:
             raise RuntimeError("nenhum corte válido na seleção, nem pedindo de novo: " + (r.get("resumo") or "")[:400])
         resumo = r.get("resumo") or ""
+        estruturar(ep["id"], cortes)   # começo na frase, fim com a ideia fechada e o payoff dentro (17/11/2026)
+        estruturar(ep["id"], [c for c in r.get("reservas") or [] if valido(c)])
         if voz_glauton is not None:   # Glautin: só fica o trecho em que a fala é mesmo do Glauton (medida pela voz)
             cortes, r["reservas"], resumo = so_da_pessoa(voz_glauton, cortes, r.get("reservas") or [], int(lote["quantidade"]), resumo)
         if n_res:
@@ -1506,63 +1521,188 @@ def sem_imagem_repetida(cenas_arq, W, cid):
     return saida
 
 
-def fim_da_frase(ep_id, fim, teto=8.0, inicio=None, emenda=False):
-    """Fim do corte numa frase fechada e com respiro (o time reclamou de "o final cortou o que a pessoa ia falar": cortes 30, 31,
-    47 e 71). Pode estender (frase em andamento) ou recuar (a frase seguinte mal começou, ou sobrou uma pergunta solta no fim).
-    O fim fica 0,35 s depois da última palavra, sem encostar na próxima."""
+# Estrutura do corte (Felipe, 17/11/2026: "cortou no meio da fala e finalizou o corte"). Regras tiradas de clippers abertos
+# (supoclip, openshorts, podcli, ViralCutter; só as regras, nada de código) e adaptadas ao português:
+# - fronteira de frase = pontuação final, ou silêncio >= 0,8 s depois de palavra que não é conectivo;
+# - no fim: primeiro ESTENDE até a frase fechar; só recua se não fechar; nunca termina em conectivo/preposição/artigo;
+# - se a fala seguinte (logo depois, sem pausa longa) começa com "então / porque / ou seja / só que..." é o arremate da ideia: entra;
+# - no começo: a primeira palavra de uma frase; conectivo ou resposta solta no início ("Mas...", "É, exato.") sai se for curta;
+# - o selecionador devolve o PAYOFF literal e o corte vai pelo menos até ele.
+FECHA_RE = re.compile(r"[.?!…][\"')\]}»]*$")
+SEM_FIM = set("e mas porque que então aí daí tipo né ou pois de do da dos das em no na nos nas pra pro para com por pelo pela o a os "
+              "as um uma uns umas se quando como onde é".split())
+ARREMATE = {"então", "porque", "aí", "daí", "inclusive", "senão", "mas", "por isso", "ou seja", "só que", "tanto que", "e aí",
+            "e por isso", "e é por isso"}
+INTERJ = {"ah", "é", "hã", "eh", "hum", "cara", "olha", "bom", "pô", "pois"}
+FRACO_INICIO = {"mas", "e", "ou", "porque", "aí", "daí", "então", "isso", "aquilo", "ele", "ela", "eles", "elas", "sim", "exato",
+                "verdade", "beleza", "tipo", "olha", "uhum", "é", "né"}
+VOLTA_INICIO = ("como eu falei", "como eu disse", "como você falou", "como você disse", "aquilo que", "esse ponto", "voltando")
+
+
+def _palavras_ep(ep_id):
     try:
         segs = json.loads((BASE / str(ep_id) / "transcricao.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return fim
-    ws = sorted((w for sg in segs for w in sg.get("palavras") or []), key=lambda w: float(w["i"]))
+        return []
+    return sorted((w for sg in segs for w in sg.get("palavras") or []), key=lambda w: float(w["i"]))
+
+
+def _n(w):
+    return re.sub(r"[^\wà-ú]+", "", (w.get("p") or "").strip().lower())
+
+
+def fim_da_frase(ep_id, fim, teto=8.0, inicio=None, emenda=False, piso=None):
+    """Fim do corte numa frase fechada, com a ideia fechada e com respiro (o time reclamou de "o final cortou o que a pessoa ia
+    falar": cortes 30, 31, 47, 71 e o lote 66 do Glautin). Estende antes de recuar; puxa o arremate ("então…", "porque…");
+    nunca termina em conectivo. O fim fica 0,35 s depois da última palavra, sem encostar na próxima."""
+    ws = _palavras_ep(ep_id)
     if not ws:
         return fim
-    I, F = (lambda w: float(w["i"])), (lambda w: float(w["f"]))
-    fecha = lambda w: re.search(r"[.?!…]$", (w.get("p") or "").strip()) is not None
-    pausa = lambda k: k + 1 >= len(ws) or I(ws[k + 1]) - F(ws[k]) > 0.6
+    I, F = (lambda k: float(ws[k]["i"])), (lambda k: float(ws[k]["f"]))
+    gap = lambda k: I(k + 1) - F(k) if k + 1 < len(ws) else 9.0
+    fecha = lambda k: FECHA_RE.search((ws[k].get("p") or "").strip()) is not None
+    fronteira = lambda k: (fecha(k) or gap(k) >= 0.8) and _n(ws[k]) not in SEM_FIM
 
     def com_respiro(k):   # 0,35 s depois da palavra k, sem pegar o começo da próxima
-        t = F(ws[k]) + 0.35
+        t = F(k) + 0.35
         if k + 1 < len(ws):
-            t = min(t, I(ws[k + 1]) - 0.05)
-        return round(max(t, F(ws[k]) + 0.05), 2)
+            t = min(t, I(k + 1) - 0.05)
+        return round(max(t, F(k) + 0.05), 2)
 
-    dentro = [k for k, w in enumerate(ws) if I(w) < fim - 0.02]
+    def ate_fechar(k, limite):   # a próxima fronteira a partir de k, sem passar de limite (None se não fecha)
+        while k + 1 < len(ws) and F(k + 1) <= limite and not fronteira(k):
+            k += 1
+        return k if fronteira(k) and F(k) <= limite else None
+
+    dentro = [k for k, w in enumerate(ws) if float(w["i"]) < fim - 0.02]
     if not dentro:
         return fim
     k = dentro[-1]   # última palavra que começou antes do fim (pode estar cortada no meio)
     minimo = (float(inicio) + 15.0) if inicio is not None else -1
-    # 1) a frase em que o fim caiu: fechou ali, ou estende até fechar, ou recua para a anterior se ela mal começou
-    if not (fecha(ws[k]) or pausa(k)) or F(ws[k]) > fim + 0.02:
-        a = k   # começo da frase atual
-        while a > 0 and not (fecha(ws[a - 1]) or pausa(a - 1)):
-            a -= 1
-        if a > 0 and fim - I(ws[a]) < 2.5 and F(ws[a - 1]) > minimo:
-            k = a - 1   # a frase seguinte mal começou: termina na anterior
-        else:
-            j = k
-            while j + 1 < len(ws) and F(ws[j + 1]) <= fim + teto and not (fecha(ws[j]) or pausa(j)):
-                j += 1
-            if not (fecha(ws[j]) or pausa(j)):
-                return fim   # a frase não fecha dentro do teto: não inventa um fim
+    if piso is not None:   # o payoff: o fim nunca recua para antes dele
+        minimo = max(minimo, float(piso) - 0.05)
+    # 1) a frase em que o fim caiu: fechou ali; senão ESTENDE até fechar (antes recuava quando a frase "mal tinha começado" e
+    #    cortava o arremate: l66c02 "Um, dois. | Ah, então você não está trabalhando no Google Ads."); só recua se não fechar
+    if not fronteira(k) or F(k) > fim + 0.02:
+        j = ate_fechar(k, fim + teto)
+        if j is not None:
             k = j
+        else:
+            a = k
+            while a > 0 and not fronteira(a - 1):
+                a -= 1
+            if a > 0 and F(a - 1) > minimo and fim - F(a - 1) <= 6.0:
+                k = a - 1
+            else:   # não fecha nem recuando pouco: não inventa um fim (com payoff, termina nele, com respiro)
+                if piso is None:
+                    return fim
+                k = max(x for x in range(len(ws)) if F(x) <= float(piso) + 0.01 or x == 0)   # a última palavra do payoff
     # 2) pergunta solta no fim (ex.: "Foi quanto tempo?" do entrevistador depois da resposta): termina na resposta
-    if (ws[k].get("p") or "").strip().endswith("?"):
+    if (ws[k].get("p") or "").strip().endswith("?") and _n(ws[k]) not in ("né", "entendeu", "sabe", "certo", "viu"):
         a = k
-        while a > 0 and not (fecha(ws[a - 1]) or pausa(a - 1)):
+        while a > 0 and not fronteira(a - 1):
             a -= 1
-        if a > 0 and F(ws[k]) - I(ws[a]) <= 3.0 and F(ws[a - 1]) > minimo:
+        if a > 0 and F(k) - I(a) <= 3.0 and F(a - 1) > minimo:
             k = a - 1
-    # 3) só quando o editor disse que o fim ficou cortado (emenda=True): a pessoa continua o raciocínio logo depois (corte 69:
-    #    "plantada. É claro que…", pausa curta) e o corte parece acabar com ela ainda falando. Vai até o fim da próxima frase
-    #    que fecha, dentro do teto; se a próxima fala vem depois de 1,5 s de silêncio, o fim já estava certo.
-    if emenda and k + 1 < len(ws) and I(ws[k + 1]) - F(ws[k]) < 1.5:
-        j = k + 1
-        while j + 1 < len(ws) and F(ws[j]) <= fim + teto and not fecha(ws[j]):
-            j += 1
-        if fecha(ws[j]) and F(ws[j]) <= fim + teto:   # frase fechada basta: o respiro não encosta na próxima palavra
+    # 3) o arremate: a fala continua logo depois com "então / porque / ou seja…" (l66c05 "engenheiros, entendeu? | Porque o
+    #    engenheiro…"): vai até a frase seguinte fechar, até 2 vezes, dentro do teto (+4 s)
+    for _ in range(2):
+        if k + 1 >= len(ws) or gap(k) > 1.2:
+            break
+        n = k + 1
+        while n < len(ws) - 1 and _n(ws[n]) in INTERJ and n - k <= 2:
+            n += 1
+        dois = _n(ws[n]) + (" " + _n(ws[n + 1]) if n + 1 < len(ws) else "")
+        tres = dois + (" " + _n(ws[n + 2]) if n + 2 < len(ws) else "")
+        if not (_n(ws[n]) in ARREMATE or dois in ARREMATE or tres in ARREMATE):
+            break
+        j = ate_fechar(n, fim + teto + 4.0)
+        if j is None:
+            break
+        k = j
+    # 4) só quando o editor disse que o fim ficou cortado (emenda=True): a pessoa continua o raciocínio logo depois (corte 69:
+    #    "plantada. É claro que…", pausa curta). Vai até o fim da próxima frase que fecha, dentro do teto.
+    if emenda and k + 1 < len(ws) and gap(k) < 1.5:
+        j = ate_fechar(k + 1, fim + teto)
+        if j is not None:
             k = j
     return com_respiro(k)
+
+
+def inicio_da_frase(ep_id, inicio, fim):
+    """Começo sem abertura fraca: frase curta (até 6 palavras) que começa com conectivo/resposta solta ("Mas…", "É, exato.") ou que
+    se refere ao que ficou fora ("como eu falei") sai, se o corte continuar com 15 s ou mais. Não "procura o começo da frase":
+    a pontuação da transcrição do episódio é fraca e isso caía em pedaço de outra frase (teste no lote 66); o encaixe fino do
+    início é do refinar_inicios.py do kit. Devolve (inicio, aviso)."""
+    ws = _palavras_ep(ep_id)
+    if not ws:
+        return inicio, ""
+    I = lambda k: float(ws[k]["i"])
+    fecha = lambda k: FECHA_RE.search((ws[k].get("p") or "").strip()) is not None
+    cand = [k for k, w in enumerate(ws) if float(w["i"]) >= inicio - 0.15]
+    if not cand:
+        return inicio, ""
+    k = cand[0]
+    inicio_novo = inicio
+    aviso = ""
+    for _ in range(3):   # abertura fraca e curta: pula a frase
+        fim_fr = k
+        while fim_fr + 1 < len(ws) and not fecha(fim_fr) and fim_fr - k < 12:
+            fim_fr += 1
+        texto = " ".join(_n(ws[x]) for x in range(k, fim_fr + 1))
+        fraco = _n(ws[k]) in FRACO_INICIO or any(texto.startswith(v) for v in VOLTA_INICIO)
+        if not fraco:
+            break
+        if fim_fr - k + 1 <= 6 and fecha(fim_fr) and fim_fr + 1 < len(ws) and fim - I(fim_fr + 1) >= 15:
+            k = fim_fr + 1
+            inicio_novo = round(max(0.0, I(k) - 0.1), 2)
+        else:
+            aviso = "começa com \"{}\" (abertura fraca, mas a frase é longa para pular)".format((ws[k].get("p") or "").strip())
+            break
+    return inicio_novo, aviso
+
+
+def _achar_frase(ws, frase, de, ate):
+    """Fim (s) da frase literal dentro de [de, ate], casando pelas últimas palavras (o selecionador copia da transcrição)."""
+    alvo = [x for x in (re.sub(r"[^\wà-ú]+", "", p.lower()) for p in str(frase or "").split()) if x]
+    if len(alvo) < 2:
+        return None
+    alvo = alvo[-5:]
+    nomes = [_n(w) for w in ws]
+    achou = None
+    for k in range(len(ws) - len(alvo) + 1):
+        if float(ws[k]["i"]) < de or float(ws[k]["i"]) > ate:
+            continue
+        if sum(nomes[k + x] == alvo[x] for x in range(len(alvo))) >= len(alvo) - 1 and nomes[k + len(alvo) - 1] == alvo[-1]:
+            achou = float(ws[k + len(alvo) - 1]["f"])
+    return achou
+
+
+def estruturar(ep_id, cortes):
+    """Logo depois da seleção: começo na frase, fim com a ideia fechada e o PAYOFF dentro do corte."""
+    ws = _palavras_ep(ep_id)
+    for c in cortes or []:
+        try:
+            ini, fim = float(c["inicio"]), float(c["fim"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        notas = []
+        pf = _achar_frase(ws, c.get("payoff"), ini, fim + 25) if ws and c.get("payoff") else None
+        if pf and pf > fim - 0.1:
+            notas.append("fim estendido até o payoff ({:.1f} → {:.1f} s)".format(fim, pf))
+            fim = pf
+        elif c.get("payoff") and not pf:
+            notas.append("payoff não achado na transcrição")
+        novo_fim = fim_da_frase(ep_id, fim, teto=2.0 if pf else 8.0, inicio=ini, piso=pf)   # com payoff: termina nele
+        novo_ini, aviso = inicio_da_frase(ep_id, ini, novo_fim)
+        if aviso:
+            notas.append(aviso)
+        if abs(novo_ini - ini) > 0.05 or abs(novo_fim - float(c["fim"])) > 0.05:
+            notas.append("pontas {:.1f}–{:.1f} → {:.1f}–{:.1f} s".format(ini, float(c["fim"]), novo_ini, novo_fim))
+        c["inicio"], c["fim"] = novo_ini, novo_fim
+        if notas:
+            log("estrutura do corte", (c.get("titulo") or "")[:50], ":", "; ".join(notas))
+    return cortes
 
 
 def fala_do_episodio(ep_id, transcript):
