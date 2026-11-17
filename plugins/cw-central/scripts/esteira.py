@@ -1620,6 +1620,14 @@ def fim_da_frase(ep_id, fim, teto=8.0, inicio=None, emenda=False, piso=None):
         if j is None:
             break
         k = j
+    # 3b) respiro: a pessoa emenda a frase seguinte sem pausa (< 0,3 s) e a voz fica até o último quadro ("continua finalizando no
+    #     meio de alguma fala", lote 66): anda até a próxima fronteira com pausa de verdade (>= 0,35 s), no máximo 6 s
+    if k + 1 < len(ws) and gap(k) < 0.3:
+        j, limite = k + 1, F(k) + 6.0
+        while j + 1 < len(ws) and F(j) <= limite and not (fronteira(j) and gap(j) >= 0.35):
+            j += 1
+        if fronteira(j) and gap(j) >= 0.35 and F(j) <= limite:
+            k = j
     # 4) só quando o editor disse que o fim ficou cortado (emenda=True): a pessoa continua o raciocínio logo depois (corte 69:
     #    "plantada. É claro que…", pausa curta). Vai até o fim da próxima frase que fecha, dentro do teto.
     if emenda and k + 1 < len(ws) and gap(k) < 1.5:

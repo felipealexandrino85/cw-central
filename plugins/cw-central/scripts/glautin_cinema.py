@@ -464,13 +464,14 @@ def alinhar(grafia, medidas):
 
 
 def unidades(ws):
-    """Uma palavra por vez; a palavra que ficaria menos de 0,22 s na tela sai junto com a seguinte (até 2 palavras, 16 letras)."""
-    limpa = lambda w: re.sub(r"[.,;:!?…]+$", "", str(w["w"]).strip())
+    """Uma palavra por vez; a palavra que ficaria menos de 0,22 s na tela sai junto com a seguinte (até 2 palavras, 16 letras).
+    COM a pontuação da fala (vírgula, ponto, interrogação): Felipe, 17/11/2026, "ele não coloca pontuação na legenda"."""
+    limpa = lambda w: str(w["w"]).strip()
     us, i = [], 0
     while i < len(ws):
         t0, txt = float(ws[i]["t"]), limpa(ws[i])
         prox = float(ws[i + 1]["t"]) if i + 1 < len(ws) else t0 + .7
-        if (prox - t0 < 0.22 and i + 1 < len(ws) and len(txt) + len(limpa(ws[i + 1])) <= 15
+        if (prox - t0 < 0.22 and i + 1 < len(ws) and len(txt) + len(limpa(ws[i + 1])) <= 16
                 and not re.search(r"[.,;:?!…]$", str(ws[i]["w"]).strip())):   # nunca atravessa vírgula nem fim de frase
             txt += " " + limpa(ws[i + 1])
             i += 1
@@ -530,7 +531,10 @@ def render(plano_path):
                             "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     enc = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "{}x{}".format(W, H),
                             "-r", "{:.6f}".format(fps), "-i", "-", "-i", str(video), "-map", "0:v", "-map", "1:a?", "-c:v", "libx264",
-                            "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(saida)],
+                            "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p",
+                            # fade de 0,3 s no fim: o corte nunca termina com a voz seca no último quadro (lote 66)
+                            "-af", "afade=t=out:st={:.3f}:d=0.3".format(max(0.0, dur - 0.3)), "-c:a", "aac", "-b:a", "192k",
+                            "-shortest", str(saida)],
                            stdin=subprocess.PIPE)
     k, n_quadro = 0, W * H * 3
     try:
