@@ -3450,7 +3450,10 @@ A legenda de uma palavra já sai sozinha; o b-roll já está no vídeo. Você es
 Regras:
 - O 1º evento é a abertura: de 0.2 a ~3 s, fundo "video", a ideia mais forte do corte ("lead" prepara, "forte" crava; ex.: lead
   "ninguém sabia" + forte "o que é ROI"), fiel à fala.
-- Depois, UM evento a cada 5 a 8 s (~{n} no total), sem sobrepor e com pelo menos 2 s de respiro entre eles (só rosto e legenda).
+- Depois, UM evento a cada 7 a 10 s (~{n} no total), sem sobrepor e com pelo menos 2 s de respiro entre eles (só rosto e legenda).
+  Nunca repita a mesma palavra forte em dois eventos.
+- "lead" e "forte" são palavras DITAS, copiadas da fala (o código confere: "lead" que não está na fala sai, e o "forte" entra no
+  segundo em que é dito). Paráfrase parece legenda errada parada na tela.
 - "fundo":"escuro" (tela grafite) só no ÁPICE do corte: no máximo 2 por corte, de 1,5 a 4 s. O resto é "video".
 - "forte" com 1 a 3 palavras (até ~14 letras), DITAS na fala, no segundo em que ele diz ("t"). Numa enumeração dele, até 3 itens
   em "forte" trocam no mesmo lugar (cada um no seu "t").
@@ -3534,10 +3537,20 @@ def motion_cinema(cid, W, work, final, previa, pasta, passo, c, sem, ws, dur, re
     if not antigo:
         passo("Glautin (frases, números e telas escuras)")
         fala = "\n".join("{:.1f}: {}".format(b["de"], " ".join(w["w"] for w in b["ws"])) for b in glautin.blocos(ws))
-        antigo = json_final(claude(PLANO_CINEMA.format(titulo=c.get("titulo") or "", dur=dur, fala=fala, n=max(3, int(dur / 7))),
+        antigo = json_final(claude(PLANO_CINEMA.format(titulo=c.get("titulo") or "", dur=dur, fala=fala, n=max(3, int(dur / 8))),
                                    W, "sonnet", ao_passo=passo, limite=900))
         roteiro.write_text(json.dumps(antigo, ensure_ascii=False, indent=1), encoding="utf-8")
     plano = {"video": str(sem), "saida": str(W / "saida" / "{}_glautin.mp4".format(cid)), "palavras": ws, "eventos": antigo.get("eventos") or []}
+    try:   # o tempo da legenda vem da medição no vídeo (a legenda do Titeu chega até 1,5 s atrasada; lote 66)
+        plano["palavras_medidas"] = json.loads((work / "palavras_final.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    try:   # gancho dividido (câmera em cima, b-roll embaixo): o texto fica no painel de cima
+        hk = json.loads((work / "plan.json").read_text(encoding="utf-8")).get("hook") or {}
+        if hk.get("media") and float(hk.get("duration") or 0) > 0:
+            plano["gancho"] = {"ate": float(hk["duration"]), "emenda": 0.6}
+    except (OSError, ValueError, TypeError):
+        pass
     entrada = work / "glautin_render.json"
     entrada.write_text(json.dumps(plano, ensure_ascii=False), encoding="utf-8")
     passo("Render do Glautin (cinema)")
