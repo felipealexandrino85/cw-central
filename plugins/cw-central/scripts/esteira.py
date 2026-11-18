@@ -2110,8 +2110,8 @@ def enquadrar_por_rosto(W, cid, plan, passo, trava=None, aplicar=True):
     except Exception as e:
         log("enquadramento pelo rosto do", cid, "não rodou:", e)
         return {}
-    if res.get("ajustes") or res.get("sem_rosto") or res.get("sem_fala") or res.get("vazios"):
-        log("rosto do", cid + ":", json.dumps(res, ensure_ascii=False)[:600])
+    log("rosto do", cid, "(horizontal: {}, aplica: {}):".format(base.name if base else "nenhum", pode), json.dumps(res, ensure_ascii=False)[:600]
+        if res else "sem resposta " + (r.stderr or "")[-300:])
     return {"refazer": bool(pode and (res.get("ajustes") or res.get("vazios")))}   # "sem_fala" fica só no log (falso positivo em prévia real)
 
 
