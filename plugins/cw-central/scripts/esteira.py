@@ -722,6 +722,7 @@ def selecionar(lote, ep, estilo=None):
         resumo = r.get("resumo") or ""
         estruturar(ep["id"], cortes)   # começo na frase, fim com a ideia fechada e o payoff dentro (17/11/2026)
         estruturar(ep["id"], [c for c in r.get("reservas") or [] if valido(c)])
+        fim_por_ideia(ep["id"], cortes + [c for c in r.get("reservas") or [] if valido(c)], pasta)   # o sentido, não só a pausa
         if voz_glauton is not None:   # Glautin: só fica o trecho em que a fala é mesmo do Glauton (medida pela voz)
             cortes, r["reservas"], resumo = so_da_pessoa(voz_glauton, cortes, r.get("reservas") or [], int(lote["quantidade"]), resumo)
         if n_res:
@@ -1769,6 +1770,56 @@ def estruturar(ep_id, cortes):
         c["inicio"], c["fim"] = novo_ini, novo_fim
         if notas:
             log("estrutura do corte", (c.get("titulo") or "")[:50], ":", "; ".join(notas))
+    return cortes
+
+
+FIM_IDEIA = """Você confere ONDE TERMINA cada corte de um podcast (vídeo curto para Reels). Para cada corte abaixo vem o fim da fala
+com o marcador ⟂ no ponto em que o corte termina hoje, e o que é dito logo depois. A transcrição é automática: a pontuação é
+fraca, não confie nela; leia o sentido.
+O fim certo fecha a ideia do corte: a última frase está completa, não termina em conectivo ("e", "mas", "porque", "então"),
+não anuncia algo que não entra ("o ponto importante que eu ia falar é…") e não deixa uma frase pela metade. Se fecha antes
+do ⟂, recue; se a frase em curso só fecha depois, estenda até ela fechar (no máximo ~15 s); se no ⟂ já fecha, mantenha.
+Responda APENAS com JSON: {{"fins": [{{"i": 0, "muda": true, "termina_em": "as últimas 4 a 8 palavras EXATAS da transcrição
+onde o corte deve terminar", "porque": "curto"}}]}}. Com "muda": false, "termina_em" vazio.
+
+{cortes}"""
+
+
+def fim_por_ideia(ep_id, cortes, pasta):
+    """A IA lê o fim de cada corte no contexto e diz onde a ideia fecha (lote 70 do Glautin, 19/11/2026: a regra de "frase
+    fechada" acerta a pausa mas não o sentido; a pontuação da transcrição do episódio é fraca e o corte terminava em "…para a
+    minha operação. E, e", ou em "o ponto importante que eu ia falar"). Uma chamada só para o lote; o fim vai para o silêncio
+    do áudio depois da última palavra. Sem resposta, fica o fim das regras."""
+    ws = _palavras_ep(ep_id)
+    cortes = [c for c in cortes or [] if c.get("fim") is not None]
+    if not ws or not cortes:
+        return cortes
+    blocos = []
+    for i, c in enumerate(cortes):
+        fim = float(c["fim"])
+        antes = " ".join(w["p"] for w in ws if fim - 30 <= float(w["i"]) < fim - 0.02)
+        depois = " ".join(w["p"] for w in ws if fim - 0.02 <= float(w["i"]) < fim + 25)
+        blocos.append("CORTE {} — \"{}\"\n…{} ⟂ {}…".format(i, (c.get("titulo") or "")[:80], antes, depois))
+    try:
+        r = json_final(claude(FIM_IDEIA.format(cortes="\n\n".join(blocos)), pasta, "sonnet", limite=600))
+    except Exception as e:
+        log("fim pela ideia não rodou:", e)
+        return cortes
+    for f in r.get("fins") or []:
+        try:
+            c = cortes[int(f["i"])]
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if not f.get("muda") or not f.get("termina_em"):
+            continue
+        ini, fim = float(c["inicio"]), float(c["fim"])
+        F = _achar_frase(ws, f["termina_em"], fim - 30, fim + 25)
+        if F is None or F < ini + 15 or F > fim + 16:
+            log("fim pela ideia de", (c.get("titulo") or "")[:40], "não aplicado:", f.get("termina_em"), "(não achado ou fora do limite)")
+            continue
+        novo = fim_no_silencio(ep_id, F + 0.05, frente=1.0, tras=0.3)[0]
+        log("fim pela ideia de", (c.get("titulo") or "")[:40], ": {:.1f} → {:.1f} s".format(fim, novo), "·", (f.get("porque") or "")[:120])
+        c["fim"] = novo
     return cortes
 
 
