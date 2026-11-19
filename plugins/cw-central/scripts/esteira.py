@@ -1637,6 +1637,62 @@ def fim_da_frase(ep_id, fim, teto=8.0, inicio=None, emenda=False, piso=None):
     return com_respiro(k)
 
 
+def fim_no_silencio(ep_id, fim, piso=None, frente=2.0, tras=1.2):
+    """O fim conferido no ÁUDIO do episódio (lote 70 do Glautin, 19/11/2026: "finaliza a grande maioria cortando a fala"; a
+    conferência mediu voz a -34 dB no último instante). O tempo das palavras da transcrição do episódio erra por alguns décimos,
+    então o fim calculado por ela cai com a voz ainda saindo. Aqui o fim vai para o começo do primeiro silêncio de verdade
+    (>= 0,25 s perto do ruído da sala) até `frente` s depois (estende antes de recuar: recuar tira palavra); sem silêncio na frente, recua até `tras` s (nunca
+    antes do payoff). Fica 0,25 s de respiro dentro do silêncio. Sem áudio ou sem silêncio por perto, devolve o fim como veio."""
+    import numpy as np
+    wav = BASE / str(ep_id) / "audio.wav"
+    if not wav.exists():
+        return fim, ""
+    de = max(0.0, fim - 8.0)   # janela larga para medir o ruído da sala (as pausas) e o nível da fala
+    try:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", "{:.3f}".format(de), "-t", "{:.3f}".format(fim - de + 4.0),
+                            "-i", str(wav), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"], capture_output=True, timeout=60)
+        a = np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    except Exception:
+        return fim, ""
+    q = 320   # quadros de 20 ms
+    n = len(a) // q
+    if n < 20:
+        return fim, ""
+    db = 20 * np.log10(np.sqrt((a[:n * q].reshape(n, q) ** 2).mean(axis=1)) + 1e-9)
+    p10, p90 = float(np.percentile(db, 10)), float(np.percentile(db, 90))
+    if p90 - p10 < 8:   # sem contraste entre pausa e fala (trilha, ruído alto): não dá para medir
+        return fim, ""
+    limiar = p10 + 0.3 * (p90 - p10)   # podcast tem ruído de sala: a pausa fica perto do piso, não no silêncio absoluto
+    mudo = db < limiar
+    trechos, k = [], max(0, int((fim - tras - de) / 0.02))   # (início, duração) de cada silêncio >= 0,25 s, em s do episódio
+    while k < n:
+        if mudo[k]:
+            j = k
+            while j < n and mudo[j]:
+                j += 1
+            if (j - k) * 0.02 >= 0.25:
+                trechos.append((de + k * 0.02, (j - k) * 0.02))
+            k = j
+        else:
+            k += 1
+    def no(t0, dur):
+        return round(t0 + min(0.25, dur - 0.05), 2)
+    # o fim já está num silêncio (a voz parou antes): fica onde está
+    for t0, dur in trechos:
+        if t0 <= fim - 0.1 and t0 + dur >= fim:
+            return fim, ""
+    frente_ok = [(t0, dur) for t0, dur in trechos if fim - 0.15 <= t0 <= fim + frente]
+    if frente_ok:
+        novo = no(*frente_ok[0])
+        return novo, "fim no silêncio do áudio ({:.2f} → {:.2f} s)".format(fim, novo)
+    piso_t = float(piso) if piso is not None else fim - tras
+    atras = [(t0, dur) for t0, dur in trechos if piso_t - 0.05 <= t0 < fim - 0.15]
+    if atras:
+        novo = no(*atras[-1])
+        return novo, "fim recuado para o silêncio do áudio ({:.2f} → {:.2f} s)".format(fim, novo)
+    return fim, "fim sem silêncio no áudio por perto ({:.2f} s): voz pode estar cortada".format(fim)
+
+
 def inicio_da_frase(ep_id, inicio, fim):
     """Começo sem abertura fraca: frase curta (até 6 palavras) que começa com conectivo/resposta solta ("Mas…", "É, exato.") ou que
     se refere ao que ficou fora ("como eu falei") sai, se o corte continuar com 15 s ou mais. Não "procura o começo da frase":
@@ -1702,6 +1758,9 @@ def estruturar(ep_id, cortes):
         elif c.get("payoff") and not pf:
             notas.append("payoff não achado na transcrição")
         novo_fim = fim_da_frase(ep_id, fim, teto=2.0 if pf else 8.0, inicio=ini, piso=pf)   # com payoff: termina nele
+        novo_fim, nota_audio = fim_no_silencio(ep_id, novo_fim, piso=pf)   # a transcrição erra o tempo: confere no áudio
+        if nota_audio:
+            notas.append(nota_audio)
         novo_ini, aviso = inicio_da_frase(ep_id, ini, novo_fim)
         if aviso:
             notas.append(aviso)
@@ -3911,6 +3970,9 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     ini, fim = float(c["inicio"]), float(c["fim"])
     if not c.get("ajuste") or "corte" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))):
         novo_fim = fim_da_frase(ep["id"], fim, inicio=ini)
+        novo_fim, nota_audio = fim_no_silencio(ep["id"], novo_fim)   # o tempo da transcrição erra: o fim vai para o silêncio do áudio
+        if nota_audio:
+            log("corte", cid, ":", nota_audio)
         if abs(novo_fim - fim) > 0.05:
             log("corte", cid, "termina no fim da frase:", fim, "→", novo_fim)
             fim = novo_fim
@@ -3944,6 +4006,8 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             except (OSError, ValueError, TypeError):
                 rg = []
             novo = fim_da_frase(ep["id"], rg[-1][1], teto=10.0, inicio=rg[0][0], emenda=True) if rg else None
+            if novo:
+                novo = fim_no_silencio(ep["id"], novo)[0]
             if novo and novo > rg[-1][1] + 0.1:
                 log("ajuste do", cid, ": fim levado ao fim da frase", round(rg[-1][1], 2), "→", round(novo, 2))
                 rg[-1][1] = novo
