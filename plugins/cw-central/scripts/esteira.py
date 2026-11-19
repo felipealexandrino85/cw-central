@@ -3741,10 +3741,15 @@ def formato_glautin(estilo):
 
 
 def glautin_cinema(estilo):
-    """Glautin no estilo Cinema escuro (glautin_cinema.py, 17/11/2026): o padrão do Glautin desde então. O timeu01 só volta com
-    "MOTION: TIMEU" na receita, e o Editorial com "MOTION: EDITORIAL"."""
-    r = ((estilo or {}).get("receita") or "").lower()
-    return formato_glautin(estilo) and "motion: editorial" not in r and "motion: timeu" not in r
+    """Glautin no estilo Cinema escuro (glautin_cinema.py, 17/11/2026): foi o padrão até 18/11; hoje só com "MOTION: CINEMA"."""
+    return formato_glautin(estilo) and "motion: cinema" in ((estilo or {}).get("receita") or "").lower()
+
+
+def glautin_titeu(estilo):
+    """Glautin no padrão do Titeu (18/11/2026, o padrão): o Glauton não gostou do cinema escuro e o Felipe decidiu ficar no corte
+    do Titeu como ele é (b-roll e manchete no gancho, legenda do Titeu, b-roll de apoio a cada 12 s), sem nada desenhado por
+    cima e sem marca (logo, CTA e tela de ênfase saem no sem_logo). Os outros modelos voltam com "MOTION: ..." na receita."""
+    return formato_glautin(estilo) and "motion: " not in ((estilo or {}).get("receita") or "").lower()
 
 
 def glautin_editorial(estilo):
@@ -4064,7 +4069,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     faltam = ritmo_faltando(plan, work / "transcript.json") if not trava or trava.livres is None or "broll" in trava.areas else []
     # Glautin (qualquer motion) não completa a regra dos 12 s: encher a janela trazia b-roll sem relação com a fala (flores para
     # "30 mil restaurantes", lote 66); fica só o b-roll que a decisão do corte escolheu pelo que ele está dizendo
-    if faltam and not (formato_canal2(estilo) or formato_glautin(estilo)):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
+    if faltam and not (formato_canal2(estilo) or (formato_glautin(estilo) and not glautin_titeu(estilo))):   # regra dos 12 s: completa as janelas vazias (uma rodada) e confere as imagens de novo
         log("ritmo do", cid, "faltando em:", faltam)
         passo("Completando o ritmo (um momento visual a cada 12 s)")
         claude(RITMO.format(cid=cid, W=W, janelas=", ".join("{}–{} s".format(a, b) for a, b in faltam),
@@ -4093,7 +4098,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
                 so["captions"] = dict(so.get("captions") or {}, highlight_sfx={})
                 if glautin_editorial(estilo) or glautin_cinema(estilo):   # textos desenhados por cima: gancho sem flash nem estrondo
                     so["hook_fx"] = dict(so.get("hook_fx") or {}, bed="", riser="", flash="", boom={"file": ""}, whoosh={"file": ""})
-                else:   # como nos cortes de referência do Glauton: legenda e headline brancas, sem o amarelo do Titeu
+                elif not glautin_titeu(estilo):   # "MOTION: TIMEU": legenda e headline brancas, sem o amarelo do Titeu
                     so["captions"]["highlight"] = "#FFFFFF"
                     so["headline"] = dict(so.get("headline") or {}, highlight="#FFFFFF")
             if json.dumps(pl, sort_keys=True) != antes:
@@ -4148,7 +4153,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()))
         elif glautin_cinema(estilo):   # Glautin (padrão desde 17/11): cinema escuro desenhado por cima do corte sem legenda
             motion_glautin(cid, W, work, final, previa, pasta, passo, c, ep, reusar=bool(trava and trava.reaproveitar_motion()), modelo="cinema")
-        elif formato_glautin(estilo):   # Glautin com "MOTION: TIMEU": o corte do Titeu + motion da marca (timeu01)
+        elif formato_glautin(estilo) and not glautin_titeu(estilo):   # Glautin com "MOTION: TIMEU": o corte do Titeu + motion da marca (timeu01)
             motion_timeu(cid, W, work, final, previa, pasta, passo, so_telas=True)
         elif formato_canal2(estilo):   # segundo canal: edição básica com frases animadas e imagens da internet/Higgsfield
             motion_fluido(cid, W, work, final, previa, pasta, passo, lote, hook_dur, tema="canal2", arroba=arroba_do_estilo(estilo),
