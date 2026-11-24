@@ -759,10 +759,18 @@ def cmd_rodar(_a):
     log("estação ligada:", nome, "em", maquina)
     meu = Path(__file__).resolve()
     marca = meu.stat().st_mtime
-    atual, pausa = None, 3
+    atual, pausa, conferiu = None, 3, 0.0
     while True:
         if atual and not atual.thread.is_alive():
             atual = None
+        if atual is None and time.time() - conferiu > 600:   # sem sessão interativa (servidor), ninguém copia a versão nova:
+            conferiu = time.time()                            # a estação confere o plugin instalado a cada 10 min (24/11/2026)
+            try:
+                de = plugin_instalado()
+                if de and de.resolve() != meu.parent and (de / "estacao.py").read_bytes() != meu.read_bytes():
+                    copiar_scripts(de)
+            except OSError as e:
+                log("cópia da estação nova:", e)
         if atual is None and meu.stat().st_mtime != marca:   # a abertura do plugin copiou uma versão nova
             log("versão nova da estação; reiniciando")
             if WINDOWS:   # o laço do rodar.cmd sobe a versão nova em seguida
@@ -803,7 +811,15 @@ def skills_da_oficina():
         return
     _OFICINA["ts"] = time.time()
     try:
-        import oficina
+        try:
+            import oficina
+        except ImportError:   # a cópia da estação (~/.cw-cortes/estacao/scripts) é de antes do oficina.py: usa o do plugin
+            # (24/11/2026: "No module named 'oficina'" a cada 10 min nos 4 robôs do servidor)
+            de = plugin_instalado()
+            if not de or not (de / "oficina.py").exists():
+                raise
+            sys.path.append(str(de))
+            import oficina
         oficina.instalar_skills(forcar=True, log=lambda *a: None)
         central.rpc("cw_skills_sistema", timeout=20)
     except central.ErroCentral as e:
@@ -949,16 +965,24 @@ def escrever_cerca():
         {"type": "command", "command": cmd, "timeout": ESPERA_OK_S + 120}]}]}}, indent=1))
 
 
-def copiar_scripts():
+def plugin_instalado():
+    """A pasta scripts da versão mais nova do cw-central instalada (cache do Claude Code), ou None."""
+    pl = sorted(Path.home().glob(".claude/plugins/cache/*/cw-central/*/scripts/estacao.py"),
+                key=lambda p: [int(x) if x.isdigit() else 0 for x in p.parent.parent.name.split(".")])
+    return pl[-1].parent if pl else None
+
+
+def copiar_scripts(de=None):
     """Copia estacao.py, central.py e central.json do plugin para ~/.cw-cortes/estacao. Devolve True se mudou algo."""
+    de = de or AQUI
     mudou = False
     (CASA / "scripts").mkdir(parents=True, exist_ok=True)
-    for origem, destino in [(AQUI / "estacao.py", CASA / "scripts" / "estacao.py"),
-                            (AQUI / "central.py", CASA / "scripts" / "central.py"),
-                            (AQUI / "capacidades.py", CASA / "scripts" / "capacidades.py"),
-                            (AQUI / "kit.py", CASA / "scripts" / "kit.py"),
-                            (AQUI / "oficina.py", CASA / "scripts" / "oficina.py"),
-                            (AQUI.parent / "central.json", CASA / "central.json")]:
+    for origem, destino in [(de / "estacao.py", CASA / "scripts" / "estacao.py"),
+                            (de / "central.py", CASA / "scripts" / "central.py"),
+                            (de / "capacidades.py", CASA / "scripts" / "capacidades.py"),
+                            (de / "kit.py", CASA / "scripts" / "kit.py"),
+                            (de / "oficina.py", CASA / "scripts" / "oficina.py"),
+                            (de.parent / "central.json", CASA / "central.json")]:
         if origem.resolve() == destino.resolve() or not origem.exists():
             continue
         if not destino.exists() or destino.read_bytes() != origem.read_bytes():
