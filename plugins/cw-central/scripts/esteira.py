@@ -87,10 +87,23 @@ def vigiar():
         _TAMANHOS[arq.name] = tam
 
 
+_REELS = {"ts": 0, "ligado": True}
+
+
+def reels_ligado():
+    """A linha de reels só recebe pastas novas enquanto houver um estilo de reels ativo (confere a cada 10 min)."""
+    if time.time() - _REELS["ts"] > 600:
+        estilos = srv("estilos")
+        if isinstance(estilos, list):
+            _REELS["ligado"] = any(e.get("linha") == "reels" for e in estilos)
+            _REELS["ts"] = time.time()
+    return _REELS["ligado"]
+
+
 def vigiar_reels():
     """Cada pasta nova em "1. ENVIE AQUI/Reels" vira um reel do FabI.Ano (depois que os arquivos pararem de mudar).
     Pastas que já tinham pronto nos PRONTOS antigos são registradas como arquivadas (não reprocessa o que já foi feito)."""
-    if not ENTRADA_REELS.is_dir():
+    if not ENTRADA_REELS.is_dir() or not reels_ligado():
         return
     for pasta in sorted(ENTRADA_REELS.iterdir()):
         if not pasta.is_dir():
