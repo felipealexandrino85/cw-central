@@ -2613,6 +2613,10 @@ def mapa_do_episodio(pasta_ep):
 FALA_HOST_MIN = 0.8   # fala (frase decidida pela voz) mais curta que isso não move o recorte; a regra vigente pede o host na
                       # tela mesmo numa interjeição de 1 s ("Usou um hack.", EP36_c1)
 ERRADA_TRAVA = 0.25   # pessoa errada na tela em mais que isso do corte: não vai para a prévia (Felipe, 09/11/2026)
+# FAIL dos gates que o time vê como corte com defeito (lote 79: legenda adiantada/atrasada/parada sobre silêncio). Os outros
+# (respiração na emenda, trecho parado, loudness, enquadramento) reprovam quase todo corte e seguem só no gates.json.
+QC_GRAVE = re.compile(r"Legenda ANTES da fala|Legenda SEM FALA|Legenda ATRASADA|Voz SEM LEGENDA|Corte brusco|Emenda com VOZ dos dois lados")
+QC_LEGENDA = re.compile(r"Legenda|Voz SEM LEGENDA")
 
 
 def pessoa_errada(video, mapa, frases=None):
@@ -4054,6 +4058,7 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
     work = W / "work" / cid
     plan = work / "plan.json"
     (work / "conferencia.json").unlink(missing_ok=True)   # o resultado da conferência é desta rodada
+    (work / "qc_grave.json").unlink(missing_ok=True)
     novo_enq = enquadramento_novo(lote, estilo)
     ini, fim = float(c["inicio"]), float(c["fim"])
     if not c.get("ajuste") or "corte" in areas_do_ajuste(itens_ajuste(c.get("ajuste"))):
@@ -4288,6 +4293,23 @@ def produzir_timeu(c, lote, ep, W, pasta, passo, higgs, janelas="", estilo=None)
             else:
                 com_fala_travada(corrigir, work, cid, "a correção dos gates")
         broll_ok()
+    graves = [x.get("msg") or "" for x in falhas if QC_GRAVE.search(x.get("msg") or "")]
+    if any(QC_LEGENDA.search(m) for m in graves) and (not trava or trava.livres is None or "legenda" in trava.areas):
+        passo("Legenda fora do tempo da fala: encaixando na voz medida")   # a correção da IA não resolveu: tentativa mecânica
+        rodar("Pontas e emendas", ["scripts/refinar_inicios.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+        rodar("Pontas e emendas", ["scripts/encaixar_voz.py", "work/{}/plan.json".format(cid)], ok=(0, 1))
+        sem_logo()
+        rodar("Render da prévia", ["scripts/render.py", "work/{}/plan.json".format(cid), "--preview"], tempo=1800)
+        rodar("Revisão técnica", ["tools/gates.py", "work/{}/plan.json".format(cid), "--root", ".", "--video", "saida/{}_rascunho.mp4".format(cid),
+                                  "--json", "work/{}/gates.json".format(cid), "--replay"], ok=(0, 1, 2))
+        try:
+            g = json.loads((work / "gates.json").read_text())
+        except (OSError, ValueError):
+            g = {}
+        graves = [x.get("msg") or "" for x in g.get("gates") or [] if x.get("status") == "FAIL" and QC_GRAVE.search(x.get("msg") or "")]
+    if graves:   # sobrou defeito grave: a prévia chega marcada e não vai sozinha para a Publicação
+        log("corte", cid, "vai para a prévia com defeito na conferência:", "; ".join(graves)[:400])
+        (work / "qc_grave.json").write_text(json.dumps(graves, ensure_ascii=False), encoding="utf-8")
     sem_logo()
     respeitar_editor(work)
     limpar_shots(work)
@@ -5046,6 +5068,12 @@ def entregar_previa(c, final, previa, cid, legenda, pasta, aviso=None):
         conf = json.loads((Path(final).parent.parent / "work" / cid / "conferencia.json").read_text(encoding="utf-8"))
         if not conf.get("atendido"):
             aviso = "PEDIDO DE AJUSTE NÃO ATENDIDO ({})".format((conf.get("motivo") or "sem motivo").strip()[:220]) + ("; " + aviso if aviso else "")
+    except (OSError, ValueError):
+        pass
+    try:   # defeito grave que sobrou nos gates (legenda fora da fala, palavra cortada): marcado, não entra na aprovação automática
+        graves = json.loads((Path(final).parent.parent / "work" / cid / "qc_grave.json").read_text(encoding="utf-8"))
+        if graves:
+            aviso = "DEFEITO NA CONFERÊNCIA: " + " | ".join(re.sub(r"\s*\(usuário[^)]*\)|\s*->.*$", "", m)[:110] for m in graves[:3]) + ("; " + aviso if aviso else "")
     except (OSError, ValueError):
         pass
     caminho = subir_previa(previa, c)
