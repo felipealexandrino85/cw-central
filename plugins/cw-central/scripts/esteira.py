@@ -374,7 +374,25 @@ def garantir_pasta_estilo(ep, estilo):
             log("pasta do estilo montada de novo:", W, (r.stderr or r.stdout)[-200:])
     if W.exists():
         aplicar_overrides(W, (estilo or {}).get("overrides") or {})
+        whisper_preciso(W)
     return W
+
+
+def whisper_preciso(W):
+    """O transcribe.py do estilo vem com o Whisper medium, que erra o tempo das palavras (legenda adiantada, atrasada ou
+    parada sobre silêncio). Com processador de sobra o padrão vira large-v3 (CW_WHISPER troca)."""
+    t = Path(W) / "scripts" / "transcribe.py"
+    modelo = os.environ.get("CW_WHISPER") or ("large-v3" if tem_gpu() or (os.cpu_count() or 0) >= 16 else "")
+    if not modelo or not t.exists():
+        return
+    try:
+        s = t.read_text(encoding="utf-8")
+        novo = re.sub(r'("--model", default=")[\w.-]+(")', r"\g<1>" + modelo + r"\g<2>", s, count=1)
+        if novo != s:
+            t.write_text(novo, encoding="utf-8")
+            log("transcrição dos cortes com Whisper", modelo, "em", Path(W).name)
+    except OSError as e:
+        log("whisper_preciso:", e)
 
 
 EDITAVEIS = re.compile(r"\.(md|json|txt|ya?ml|ass|css|py|sh)$", re.I)   # textos e scripts do pacote (a versão só vale depois do teste aprovado)
